@@ -79,10 +79,10 @@ async def lifespan(app: FastAPI):
     Lifespan context manager for the FastAPI application.
     Handles startup and shutdown events.
     """
-    # Ensure password verification file exists
-    if BackendAPISecurity.new_password_required():
-        # Create secrets manager with CONFIG_PASSWORD
-        secrets_manager = ETHKeyFileSecretManger(password=settings.security.config_password)
+    # Ensure password verification file exists and is valid
+    secrets_manager = ETHKeyFileSecretManger(password=settings.security.config_password)
+    if BackendAPISecurity.new_password_required() \
+            or not BackendAPISecurity.validate_password(secrets_manager):
         BackendAPISecurity.store_password_verification(secrets_manager)
         logging.info("Created password verification file for master_account")
 
