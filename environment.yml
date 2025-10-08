@@ -9,15 +9,13 @@ dependencies:
   - boto3
   - libcxx                
   - python-dotenv
-  - pandas=2.2.3
-  - numpy=1.26.*          
-  - pandas-ta=0.3.14b0    
+  - pandas=2.3.2
+  - numpy>=2.2.6       
+  - pandas-ta>=0.4.71b  
   - docker-py
   - pip
   - pip:
-      - hummingbot
-      - pandas==2.2.3
-      - pandas-ta<0.4.0       
+      - hummingbot    
       - msgpack>=1.0.5
       - flake8
       - isort
