@@ -27,9 +27,11 @@ class SwapQuoteResponse(BaseModel):
     """Response with swap quote details"""
     base: str = Field(description="Base token symbol")
     quote: str = Field(description="Quote token symbol")
-    price: Decimal = Field(description="Quoted price")
-    amount: Decimal = Field(description="Input amount")
-    expected_amount: Optional[Decimal] = Field(default=None, description="Expected output amount")
+    price: Decimal = Field(description="Quoted price (base/quote)")
+    amount: Decimal = Field(description="Amount specified in request (BUY: base amount to receive, SELL: base amount to sell)")
+    amount_in: Optional[Decimal] = Field(default=None, description="Actual input amount (BUY: quote to spend, SELL: base to sell)")
+    amount_out: Optional[Decimal] = Field(default=None, description="Actual output amount (BUY: base to receive, SELL: quote to receive)")
+    expected_amount: Optional[Decimal] = Field(default=None, description="Deprecated: use amount_out instead")
     slippage_pct: Decimal = Field(description="Applied slippage percentage")
     gas_estimate: Optional[Decimal] = Field(default=None, description="Estimated gas cost")
 
