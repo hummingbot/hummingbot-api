@@ -113,14 +113,27 @@ async def get_swap_quote(
             pool_address=None
         )
 
+        # Extract amounts from Gateway response (snake_case for consistency)
+        amount_in_raw = result.get("amountIn") or result.get("amount_in")
+        amount_out_raw = result.get("amountOut") or result.get("amount_out")
+
+        amount_in = Decimal(str(amount_in_raw)) if amount_in_raw else None
+        amount_out = Decimal(str(amount_out_raw)) if amount_out_raw else None
+
+        # Extract gas estimate (try both camelCase and snake_case)
+        gas_estimate = result.get("gasEstimate") or result.get("gas_estimate")
+        gas_estimate_value = Decimal(str(gas_estimate)) if gas_estimate else None
+
         return SwapQuoteResponse(
             base=base,
             quote=quote,
             price=Decimal(str(result.get("price", 0))),
             amount=request.amount,
-            expected_amount=Decimal(str(result.get("expectedAmount", 0))) if result.get("expectedAmount") else None,
+            amount_in=amount_in,
+            amount_out=amount_out,
+            expected_amount=amount_out,  # Deprecated, kept for backward compatibility
             slippage_pct=request.slippage_pct or Decimal("1.0"),
-            gas_estimate=Decimal(str(result.get("gasEstimate", 0))) if result.get("gasEstimate") else None
+            gas_estimate=gas_estimate_value
         )
 
     except HTTPException:
