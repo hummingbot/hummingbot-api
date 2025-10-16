@@ -8,14 +8,18 @@ dependencies:
   - uvicorn
   - boto3
   - libcxx                
+  - libta-lib>=0.6.4
   - python-dotenv
-  - pandas=2.3.2
-  - numpy>=2.2.6       
-  - pandas-ta>=0.4.71b  
+  - pandas>=2.3.2
+  - numba>=0.61.2
+  - numpy>=2.2.6
+  - pandas-ta>=0.4.71b
+  - ta-lib>=0.6.4
+  - tqdm>=4.67.1
   - docker-py
   - pip
   - pip:
-      - hummingbot    
+      - hummingbot
       - msgpack>=1.0.5
       - flake8
       - isort
