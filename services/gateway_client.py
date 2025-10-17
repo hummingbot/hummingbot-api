@@ -40,7 +40,7 @@ class GatewayClient:
                 async with session.post(url, json=json) as response:
                     return await response.json()
             elif method == "DELETE":
-                async with session.delete(url, json=json) as response:
+                async with session.delete(url, params=params, json=json) as response:
                     return await response.json()
         except Exception as e:
             logger.error(f"Gateway request failed: {method} {url} - {e}")
@@ -124,6 +124,13 @@ class GatewayClient:
                 "name": name,
                 "decimals": decimals
             }
+        })
+
+    async def delete_token(self, chain: str, network: str, token_address: str) -> Dict:
+        """Delete a custom token from Gateway's token list"""
+        return await self._request("DELETE", f"tokens/{token_address}", params={
+            "chain": chain,
+            "network": network
         })
 
     async def get_config(self, namespace: str) -> Dict:

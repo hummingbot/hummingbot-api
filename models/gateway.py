@@ -61,7 +61,6 @@ class AddTokenRequest(BaseModel):
     symbol: str = Field(description="Token symbol")
     name: Optional[str] = Field(default=None, description="Token name (defaults to symbol)")
     decimals: int = Field(description="Number of decimals for the token")
-    network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta', 'ethereum-mainnet')")
 
 
 # ============================================

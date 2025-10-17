@@ -205,7 +205,10 @@ async def update_connector_config(
             results.append(result)
 
         return {
-            "message": f"Updated {len(results)} config parameter(s) for {connector_name}",
+            "success": True,
+            "message": f"Updated {len(results)} config parameter(s) for {connector_name}. Restart Gateway for changes to take effect.",
+            "restart_required": True,
+            "restart_endpoint": "POST /gateway/restart",
             "results": results
         }
 
@@ -410,7 +413,10 @@ async def update_network_config(
             results.append(result)
 
         return {
-            "message": f"Updated {len(results)} config parameter(s) for {network_id}",
+            "success": True,
+            "message": f"Updated {len(results)} config parameter(s) for {network_id}. Restart Gateway for changes to take effect.",
+            "restart_required": True,
+            "restart_endpoint": "POST /gateway/restart",
             "results": results
         }
 
@@ -462,3 +468,122 @@ async def get_network_tokens(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting network tokens: {str(e)}")
+
+
+@router.post("/networks/{network_id}/tokens")
+async def add_network_token(
+    network_id: str,
+    token_request: AddTokenRequest,
+    accounts_service: AccountsService = Depends(get_accounts_service)
+) -> Dict:
+    """
+    Add a custom token to Gateway's token list for a specific network.
+
+    Args:
+        network_id: Network ID in format 'chain-network' (e.g., 'solana-mainnet-beta', 'ethereum-mainnet')
+        token_request: Token details (address, symbol, name, decimals)
+
+    Example: POST /gateway/networks/ethereum-mainnet/tokens
+    {
+        "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+        "symbol": "USDC",
+        "name": "USD Coin",
+        "decimals": 6
+    }
+
+    Note: After adding a token, restart Gateway for changes to take effect.
+    """
+    try:
+        if not await accounts_service.gateway_client.ping():
+            raise HTTPException(status_code=503, detail="Gateway service is not available")
+
+        # Parse network_id into chain and network
+        parts = network_id.split('-', 1)
+        if len(parts) != 2:
+            raise HTTPException(status_code=400, detail=f"Invalid network_id format. Expected 'chain-network', got '{network_id}'")
+
+        chain, network = parts
+
+        # Use symbol as name if name is not provided
+        token_name = token_request.name if token_request.name else token_request.symbol
+
+        result = await accounts_service.gateway_client.add_token(
+            chain=chain,
+            network=network,
+            address=token_request.address,
+            symbol=token_request.symbol,
+            name=token_name,
+            decimals=token_request.decimals
+        )
+
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=f"Failed to add token: {result.get('error')}")
+
+        return {
+            "success": True,
+            "message": f"Token {token_request.symbol} added to {network_id}. Restart Gateway for changes to take effect.",
+            "restart_required": True,
+            "restart_endpoint": "POST /gateway/restart",
+            "token": {
+                "symbol": token_request.symbol,
+                "address": token_request.address,
+                "network_id": network_id
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error adding token: {str(e)}")
+
+
+@router.delete("/networks/{network_id}/tokens/{token_address}")
+async def delete_network_token(
+    network_id: str,
+    token_address: str,
+    accounts_service: AccountsService = Depends(get_accounts_service)
+) -> Dict:
+    """
+    Delete a custom token from Gateway's token list for a specific network.
+
+    Args:
+        network_id: Network ID in format 'chain-network' (e.g., 'solana-mainnet-beta', 'ethereum-mainnet')
+        token_address: Token contract address to delete
+
+    Example: DELETE /gateway/networks/solana-mainnet-beta/tokens/9QFfgxdSqH5zT7j6rZb1y6SZhw2aFtcQu2r6BuYpump
+
+    Note: After deleting a token, restart Gateway for changes to take effect.
+    """
+    try:
+        if not await accounts_service.gateway_client.ping():
+            raise HTTPException(status_code=503, detail="Gateway service is not available")
+
+        # Parse network_id into chain and network
+        parts = network_id.split('-', 1)
+        if len(parts) != 2:
+            raise HTTPException(status_code=400, detail=f"Invalid network_id format. Expected 'chain-network', got '{network_id}'")
+
+        chain, network = parts
+
+        result = await accounts_service.gateway_client.delete_token(
+            chain=chain,
+            network=network,
+            token_address=token_address
+        )
+
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=f"Failed to delete token: {result.get('error')}")
+
+        return {
+            "success": True,
+            "message": f"Token {token_address} deleted from {network_id}. Restart Gateway for changes to take effect.",
+            "restart_required": True,
+            "restart_endpoint": "POST /gateway/restart",
+            "token_address": token_address,
+            "network_id": network_id
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error deleting token: {str(e)}")
