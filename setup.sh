@@ -166,4 +166,64 @@ docker pull hummingbot/hummingbot:latest &
 # Wait for both operations to complete
 wait
 
-echo -e "${GREEN}✅ All Docker operations completed!${NC}"
+echo -e "${GREEN}✅ Docker containers started!${NC}"
+echo ""
+
+# Wait for PostgreSQL to be ready
+echo -e "${YELLOW}⏳ Waiting for PostgreSQL to initialize...${NC}"
+sleep 5
+
+# Check PostgreSQL connection
+MAX_RETRIES=30
+RETRY_COUNT=0
+DB_READY=false
+
+while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+    if docker exec hummingbot-postgres pg_isready -U hbot -d hummingbot_api > /dev/null 2>&1; then
+        DB_READY=true
+        break
+    fi
+    RETRY_COUNT=$((RETRY_COUNT + 1))
+    echo -ne "\r${YELLOW}⏳ Waiting for database... ($RETRY_COUNT/$MAX_RETRIES)${NC}"
+    sleep 2
+done
+echo ""
+
+if [ "$DB_READY" = true ]; then
+    echo -e "${GREEN}✅ PostgreSQL is ready!${NC}"
+
+    # Verify database and user exist
+    echo -e "${YELLOW}🔍 Verifying database configuration...${NC}"
+
+    # Check if hbot user exists
+    USER_EXISTS=$(docker exec hummingbot-postgres psql -U postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='hbot'" 2>/dev/null)
+
+    # Check if database exists
+    DB_EXISTS=$(docker exec hummingbot-postgres psql -U postgres -tAc "SELECT 1 FROM pg_database WHERE datname='hummingbot_api'" 2>/dev/null)
+
+    if [ "$USER_EXISTS" = "1" ] && [ "$DB_EXISTS" = "1" ]; then
+        echo -e "${GREEN}✅ Database 'hummingbot_api' and user 'hbot' verified successfully!${NC}"
+    else
+        echo -e "${YELLOW}⚠️  Database initialization may be incomplete. Running manual initialization...${NC}"
+
+        # Run the init script manually
+        docker exec -i hummingbot-postgres psql -U postgres < init-db.sql
+
+        if [ $? -eq 0 ]; then
+            echo -e "${GREEN}✅ Database manually initialized successfully!${NC}"
+        else
+            echo -e "${RED}❌ Failed to initialize database. See troubleshooting below.${NC}"
+        fi
+    fi
+else
+    echo -e "${RED}❌ PostgreSQL failed to start within timeout period${NC}"
+    echo ""
+    echo -e "${YELLOW}Troubleshooting steps:${NC}"
+    echo "1. Check PostgreSQL logs: docker logs hummingbot-postgres"
+    echo "2. Verify container status: docker ps -a | grep postgres"
+    echo "3. Try removing old volumes: docker compose down -v && docker compose up emqx postgres -d"
+    echo "4. Manually verify database: docker exec -it hummingbot-postgres psql -U postgres"
+    echo ""
+fi
+
+echo -e "${GREEN}✅ Setup completed!${NC}"

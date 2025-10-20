@@ -50,14 +50,19 @@ services:
       retries: 5
   postgres:
     container_name: hummingbot-postgres
-    image: postgres:15
+    image: postgres:16
     restart: unless-stopped
     environment:
+      # These variables automatically create the user and database on first initialization
       - POSTGRES_DB=hummingbot_api
       - POSTGRES_USER=hbot
       - POSTGRES_PASSWORD=hummingbot-api
+      # Additional init parameters for better compatibility
+      - POSTGRES_INITDB_ARGS=--encoding=UTF8
     volumes:
       - postgres-data:/var/lib/postgresql/data
+      # Init script as safety net - only runs on first initialization
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
     ports:
       - "5432:5432"
     networks:

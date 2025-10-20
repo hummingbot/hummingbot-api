@@ -26,6 +26,8 @@ Stores all trading data including:
 - Positions and funding payments
 - Performance metrics
 
+**Note:** The database is automatically initialized using environment variables (`POSTGRES_USER`, `POSTGRES_DB`, `POSTGRES_PASSWORD`). The included `init-db.sql` script serves as a safety net for edge cases where automatic initialization doesn't complete properly.
+
 ### 2. EMQX Message Broker
 Enables real-time communication with trading bots:
 - Receives live updates from running bots
@@ -261,11 +263,92 @@ All API endpoints require HTTP Basic Authentication. Include your configured cre
 curl -u username:password http://localhost:8000/endpoint
 ```
 
+## Troubleshooting
+
+### Database Connection Issues
+
+If you encounter PostgreSQL database connection errors (such as "role 'hbot' does not exist" or "database 'hummingbot_api' does not exist"), use the automated fix script:
+
+```bash
+chmod +x fix-database.sh
+./fix-database.sh
+```
+
+This script will:
+1. Check if PostgreSQL is running
+2. Verify that the `hbot` user and `hummingbot_api` database exist
+3. Automatically fix any missing configuration
+4. Test the connection to ensure everything works
+
+#### Manual Database Verification
+
+If you prefer to check manually:
+
+```bash
+# Check if containers are running
+docker ps | grep -E "hummingbot-postgres|hummingbot-broker"
+
+# Check PostgreSQL logs
+docker logs hummingbot-postgres
+
+# Verify database connection
+docker exec -it hummingbot-postgres psql -U hbot -d hummingbot_api
+
+# If connection fails, run the initialization script
+docker exec -i hummingbot-postgres psql -U postgres < init-db.sql
+```
+
+#### Complete Database Reset
+
+If you need to start fresh (⚠️ this will delete all data):
+
+```bash
+# Stop all containers and remove volumes
+docker compose down -v
+
+# Restart setup
+./setup.sh
+```
+
+### EMQX Broker Issues
+
+If bots can't connect to the broker:
+
+```bash
+# Check EMQX status
+docker logs hummingbot-broker
+
+# Restart EMQX
+docker compose restart emqx
+
+# Access EMQX dashboard (if needed)
+# http://localhost:18083
+# Default credentials: admin/public
+```
+
+### Common Issues
+
+**Issue**: API won't start - "Database connection failed"
+- **Solution**: Run `./fix-database.sh` to repair the database configuration
+
+**Issue**: Bot containers won't start
+- **Solution**: Check Docker daemon is running and you have sufficient resources
+
+**Issue**: Can't access API at localhost:8000
+- **Solution**: Verify the API container is running: `docker ps | grep hummingbot-api`
+
+**Issue**: Authentication fails
+- **Solution**: Check your USERNAME and PASSWORD in the `.env` file
+
+**Issue**: Old bot data causing conflicts
+- **Solution**: Clean up old volumes: `docker compose down -v` (⚠️ deletes data)
+
 ## Support & Documentation
 
 - **API Documentation**: Available at `http://localhost:8000/docs` when running
 - **Detailed Examples**: Check the `CLAUDE.md` file for comprehensive API usage examples
 - **Issues**: Report bugs and feature requests through the project's issue tracker
+- **Database Troubleshooting**: Use `./fix-database.sh` for automated fixes
 ---
 
 Ready to start trading? Deploy your first account and start exploring the powerful capabilities of the Hummingbot API!
