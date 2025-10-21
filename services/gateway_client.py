@@ -43,7 +43,7 @@ class GatewayClient:
                 async with session.delete(url, params=params, json=json) as response:
                     return await response.json()
         except Exception as e:
-            logger.error(f"Gateway request failed: {method} {url} - {e}")
+            logger.debug(f"Gateway request failed: {method} {url} - {e}")
             raise
 
     async def ping(self) -> bool:
