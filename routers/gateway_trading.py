@@ -5,13 +5,15 @@ Supports Router swaps (Jupiter, 0x) and CLMM liquidity (Meteora, Raydium, Uniswa
 Note: AMM support removed. Use Router connectors for simple swaps, CLMM for liquidity provision.
 """
 import logging
-from typing import Dict, List
+from typing import Dict, List, Optional
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from deps import get_accounts_service
+from deps import get_accounts_service, get_database_manager
 from services.accounts_service import AccountsService
+from database import AsyncDatabaseManager
+from database.repositories import GatewaySwapRepository, GatewayCLMMRepository
 from models import (
     SwapQuoteRequest,
     SwapQuoteResponse,
@@ -148,7 +150,8 @@ async def get_swap_quote(
 @router.post("/swap/execute", response_model=SwapExecuteResponse)
 async def execute_swap(
     request: SwapExecuteRequest,
-    accounts_service: AccountsService = Depends(get_accounts_service)
+    accounts_service: AccountsService = Depends(get_accounts_service),
+    db_manager: AsyncDatabaseManager = Depends(get_database_manager)
 ):
     """
     Execute a swap transaction via router (Jupiter, 0x).
@@ -193,6 +196,44 @@ async def execute_swap(
         transaction_hash = result.get("signature") or result.get("txHash") or result.get("hash")
         if not transaction_hash:
             raise HTTPException(status_code=500, detail="No transaction hash returned from Gateway")
+
+        # Calculate price and amounts based on side
+        # Note: We'll get actual amounts from quote or transaction result
+        amount_in_raw = result.get("amountIn") or result.get("amount_in")
+        amount_out_raw = result.get("amountOut") or result.get("amount_out")
+        price_raw = result.get("price")
+
+        input_amount = Decimal(str(amount_in_raw)) if amount_in_raw else request.amount
+        output_amount = Decimal(str(amount_out_raw)) if amount_out_raw else Decimal("0")
+        price = Decimal(str(price_raw)) if price_raw else (output_amount / input_amount if input_amount > 0 else Decimal("0"))
+
+        # Store swap in database
+        try:
+            async with db_manager.get_session_context() as session:
+                swap_repo = GatewaySwapRepository(session)
+
+                swap_data = {
+                    "transaction_hash": transaction_hash,
+                    "network": request.network,
+                    "connector": request.connector,
+                    "wallet_address": wallet_address,
+                    "trading_pair": request.trading_pair,
+                    "base_token": base,
+                    "quote_token": quote,
+                    "side": request.side,
+                    "input_amount": float(input_amount),
+                    "output_amount": float(output_amount),
+                    "price": float(price),
+                    "slippage_pct": float(request.slippage_pct) if request.slippage_pct else 1.0,
+                    "status": "SUBMITTED",
+                    "pool_address": result.get("poolAddress") or result.get("pool_address")
+                }
+
+                await swap_repo.create_swap(swap_data)
+                logger.info(f"Recorded swap in database: {transaction_hash}")
+        except Exception as db_error:
+            # Log but don't fail the swap - it was submitted successfully
+            logger.error(f"Error recording swap in database: {db_error}", exc_info=True)
 
         return SwapExecuteResponse(
             transaction_hash=transaction_hash,
@@ -299,7 +340,8 @@ async def get_pool_info(
 @router.post("/clmm/open", response_model=CLMMOpenPositionResponse)
 async def open_clmm_position(
     request: CLMMOpenPositionRequest,
-    accounts_service: AccountsService = Depends(get_accounts_service)
+    accounts_service: AccountsService = Depends(get_accounts_service),
+    db_manager: AsyncDatabaseManager = Depends(get_database_manager)
 ):
     """
     Open a NEW CLMM position with initial liquidity.
@@ -375,6 +417,48 @@ async def open_clmm_position(
             raise HTTPException(status_code=500, detail="No transaction hash returned from Gateway")
         if not position_address:
             raise HTTPException(status_code=500, detail="No position address returned from Gateway")
+
+        # Store position and event in database
+        try:
+            async with db_manager.get_session_context() as session:
+                clmm_repo = GatewayCLMMRepository(session)
+
+                # Create position record
+                position_data = {
+                    "position_address": position_address,
+                    "pool_address": pool_address,
+                    "network": request.network,
+                    "connector": request.connector,
+                    "wallet_address": wallet_address,
+                    "trading_pair": request.trading_pair,
+                    "base_token": base,
+                    "quote_token": quote,
+                    "status": "OPEN",
+                    "lower_price": float(lower_price),
+                    "upper_price": float(upper_price),
+                    "base_token_amount": float(request.base_token_amount) if request.base_token_amount else 0,
+                    "quote_token_amount": float(request.quote_token_amount) if request.quote_token_amount else 0,
+                    "in_range": "UNKNOWN"  # Will be updated by poller
+                }
+
+                position = await clmm_repo.create_position(position_data)
+                logger.info(f"Recorded CLMM position in database: {position_address}")
+
+                # Create OPEN event
+                event_data = {
+                    "position_id": position.id,
+                    "transaction_hash": transaction_hash,
+                    "event_type": "OPEN",
+                    "base_token_amount": float(request.base_token_amount) if request.base_token_amount else None,
+                    "quote_token_amount": float(request.quote_token_amount) if request.quote_token_amount else None,
+                    "status": "SUBMITTED"
+                }
+
+                await clmm_repo.create_event(event_data)
+                logger.info(f"Recorded CLMM OPEN event in database: {transaction_hash}")
+        except Exception as db_error:
+            # Log but don't fail the operation - it was submitted successfully
+            logger.error(f"Error recording CLMM position in database: {db_error}", exc_info=True)
 
         return CLMMOpenPositionResponse(
             transaction_hash=transaction_hash,
@@ -711,6 +795,273 @@ async def get_clmm_positions_owned(
     except Exception as e:
         logger.error(f"Error getting CLMM positions owned: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error getting CLMM positions owned: {str(e)}")
+
+
+# ============================================
+# Query Endpoints for Swaps and Positions
+# ============================================
+
+@router.get("/swaps/{transaction_hash}/status")
+async def get_swap_status(
+    transaction_hash: str,
+    db_manager: AsyncDatabaseManager = Depends(get_database_manager)
+):
+    """
+    Get status of a specific swap by transaction hash.
+
+    Args:
+        transaction_hash: Transaction hash of the swap
+
+    Returns:
+        Swap details including current status
+    """
+    try:
+        async with db_manager.get_session_context() as session:
+            swap_repo = GatewaySwapRepository(session)
+            swap = await swap_repo.get_swap_by_tx_hash(transaction_hash)
+
+            if not swap:
+                raise HTTPException(status_code=404, detail=f"Swap not found: {transaction_hash}")
+
+            return swap_repo.to_dict(swap)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting swap status: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error getting swap status: {str(e)}")
+
+
+@router.post("/swaps/search")
+async def search_swaps(
+    network: Optional[str] = None,
+    connector: Optional[str] = None,
+    wallet_address: Optional[str] = None,
+    trading_pair: Optional[str] = None,
+    status: Optional[str] = None,
+    start_time: Optional[int] = None,
+    end_time: Optional[int] = None,
+    limit: int = 50,
+    offset: int = 0,
+    db_manager: AsyncDatabaseManager = Depends(get_database_manager)
+):
+    """
+    Search swap history with filters.
+
+    Args:
+        network: Filter by network (e.g., 'solana-mainnet-beta')
+        connector: Filter by connector (e.g., 'jupiter')
+        wallet_address: Filter by wallet address
+        trading_pair: Filter by trading pair (e.g., 'SOL-USDC')
+        status: Filter by status (SUBMITTED, CONFIRMED, FAILED)
+        start_time: Start timestamp (unix seconds)
+        end_time: End timestamp (unix seconds)
+        limit: Max results (default 50, max 1000)
+        offset: Pagination offset
+
+    Returns:
+        Paginated list of swaps
+    """
+    try:
+        # Validate limit
+        if limit > 1000:
+            limit = 1000
+
+        async with db_manager.get_session_context() as session:
+            swap_repo = GatewaySwapRepository(session)
+            swaps = await swap_repo.get_swaps(
+                network=network,
+                connector=connector,
+                wallet_address=wallet_address,
+                trading_pair=trading_pair,
+                status=status,
+                start_time=start_time,
+                end_time=end_time,
+                limit=limit,
+                offset=offset
+            )
+
+            # Get total count for pagination (simplified - actual count would need separate query)
+            has_more = len(swaps) == limit
+
+            return {
+                "data": [swap_repo.to_dict(swap) for swap in swaps],
+                "pagination": {
+                    "limit": limit,
+                    "offset": offset,
+                    "has_more": has_more,
+                    "total_count": len(swaps) + offset if not has_more else None
+                }
+            }
+
+    except Exception as e:
+        logger.error(f"Error searching swaps: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error searching swaps: {str(e)}")
+
+
+@router.get("/swaps/summary")
+async def get_swaps_summary(
+    network: Optional[str] = None,
+    wallet_address: Optional[str] = None,
+    start_time: Optional[int] = None,
+    end_time: Optional[int] = None,
+    db_manager: AsyncDatabaseManager = Depends(get_database_manager)
+):
+    """
+    Get swap summary statistics.
+
+    Args:
+        network: Filter by network
+        wallet_address: Filter by wallet address
+        start_time: Start timestamp (unix seconds)
+        end_time: End timestamp (unix seconds)
+
+    Returns:
+        Summary statistics including volume, fees, success rate
+    """
+    try:
+        async with db_manager.get_session_context() as session:
+            swap_repo = GatewaySwapRepository(session)
+            summary = await swap_repo.get_swaps_summary(
+                network=network,
+                wallet_address=wallet_address,
+                start_time=start_time,
+                end_time=end_time
+            )
+            return summary
+
+    except Exception as e:
+        logger.error(f"Error getting swaps summary: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error getting swaps summary: {str(e)}")
+
+
+@router.get("/clmm/positions/{position_address}")
+async def get_clmm_position(
+    position_address: str,
+    db_manager: AsyncDatabaseManager = Depends(get_database_manager)
+):
+    """
+    Get details of a specific CLMM position by address.
+
+    Args:
+        position_address: Position NFT address
+
+    Returns:
+        Position details
+    """
+    try:
+        async with db_manager.get_session_context() as session:
+            clmm_repo = GatewayCLMMRepository(session)
+            position = await clmm_repo.get_position_by_address(position_address)
+
+            if not position:
+                raise HTTPException(status_code=404, detail=f"Position not found: {position_address}")
+
+            return clmm_repo.position_to_dict(position)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting CLMM position: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error getting CLMM position: {str(e)}")
+
+
+@router.get("/clmm/positions/{position_address}/events")
+async def get_clmm_position_events(
+    position_address: str,
+    event_type: Optional[str] = None,
+    limit: int = 100,
+    db_manager: AsyncDatabaseManager = Depends(get_database_manager)
+):
+    """
+    Get event history for a CLMM position.
+
+    Args:
+        position_address: Position NFT address
+        event_type: Filter by event type (OPEN, ADD_LIQUIDITY, REMOVE_LIQUIDITY, COLLECT_FEES, CLOSE)
+        limit: Max events to return
+
+    Returns:
+        List of position events
+    """
+    try:
+        async with db_manager.get_session_context() as session:
+            clmm_repo = GatewayCLMMRepository(session)
+            events = await clmm_repo.get_position_events(
+                position_address=position_address,
+                event_type=event_type,
+                limit=limit
+            )
+
+            return {
+                "data": [clmm_repo.event_to_dict(event) for event in events],
+                "total_count": len(events)
+            }
+
+    except Exception as e:
+        logger.error(f"Error getting position events: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error getting position events: {str(e)}")
+
+
+@router.post("/clmm/positions/search")
+async def search_clmm_positions(
+    network: Optional[str] = None,
+    connector: Optional[str] = None,
+    wallet_address: Optional[str] = None,
+    trading_pair: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+    db_manager: AsyncDatabaseManager = Depends(get_database_manager)
+):
+    """
+    Search CLMM positions with filters.
+
+    Args:
+        network: Filter by network (e.g., 'solana-mainnet-beta')
+        connector: Filter by connector (e.g., 'meteora')
+        wallet_address: Filter by wallet address
+        trading_pair: Filter by trading pair (e.g., 'SOL-USDC')
+        status: Filter by status (OPEN, CLOSED)
+        limit: Max results (default 50, max 1000)
+        offset: Pagination offset
+
+    Returns:
+        Paginated list of positions
+    """
+    try:
+        # Validate limit
+        if limit > 1000:
+            limit = 1000
+
+        async with db_manager.get_session_context() as session:
+            clmm_repo = GatewayCLMMRepository(session)
+            positions = await clmm_repo.get_positions(
+                network=network,
+                connector=connector,
+                wallet_address=wallet_address,
+                trading_pair=trading_pair,
+                status=status,
+                limit=limit,
+                offset=offset
+            )
+
+            # Get total count for pagination
+            has_more = len(positions) == limit
+
+            return {
+                "data": [clmm_repo.position_to_dict(pos) for pos in positions],
+                "pagination": {
+                    "limit": limit,
+                    "offset": offset,
+                    "has_more": has_more,
+                    "total_count": len(positions) + offset if not has_more else None
+                }
+            }
+
+    except Exception as e:
+        logger.error(f"Error searching CLMM positions: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error searching CLMM positions: {str(e)}")
 
 
 @router.post("/clmm/position_info", response_model=CLMMPositionInfo)
