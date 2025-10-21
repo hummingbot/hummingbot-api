@@ -115,6 +115,25 @@ async def stop_gateway(gateway_service: GatewayService = Depends(get_gateway_ser
     return result
 
 
+@router.post("/restart")
+async def restart_gateway(
+    config: Optional[GatewayConfig] = None,
+    gateway_service: GatewayService = Depends(get_gateway_service)
+):
+    """
+    Restart Gateway container.
+
+    If config is provided, the container will be removed and recreated with new configuration.
+    If no config is provided, the container will be stopped and started with existing configuration.
+    """
+    result = gateway_service.restart(config)
+    if not result["success"]:
+        if "not found" in result["message"]:
+            raise HTTPException(status_code=404, detail=result["message"])
+        raise HTTPException(status_code=500, detail=result["message"])
+    return result
+
+
 @router.get("/logs")
 async def get_gateway_logs(
     tail: int = Query(default=100, ge=1, le=10000),
