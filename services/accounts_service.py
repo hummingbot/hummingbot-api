@@ -13,6 +13,7 @@ from config import settings
 from database import AsyncDatabaseManager, AccountRepository, OrderRepository, TradeRepository, FundingRepository
 from services.market_data_feed_manager import MarketDataFeedManager
 from services.gateway_client import GatewayClient
+from services.gateway_transaction_poller import GatewayTransactionPoller
 from utils.connector_manager import ConnectorManager
 from utils.file_system import fs_util
 
@@ -68,6 +69,15 @@ class AccountsService:
         # Initialize Gateway client
         self.gateway_client = GatewayClient(gateway_url)
 
+        # Initialize Gateway transaction poller
+        self.gateway_tx_poller = GatewayTransactionPoller(
+            db_manager=self.db_manager,
+            gateway_client=self.gateway_client,
+            poll_interval=10,  # Poll every 10 seconds
+            max_retry_age=3600  # Stop retrying after 1 hour
+        )
+        self._gateway_poller_started = False
+
     async def ensure_db_initialized(self):
         """Ensure database is initialized before using it."""
         if not self._db_initialized:
@@ -93,22 +103,45 @@ class AccountsService:
         # Start the update loop which will call check_all_connectors
         self._update_account_state_task = asyncio.create_task(self.update_account_state_loop())
 
+        # Start Gateway transaction poller
+        if not self._gateway_poller_started:
+            asyncio.create_task(self._start_gateway_poller())
+            self._gateway_poller_started = True
+            logger.info("Gateway transaction poller startup initiated")
+
+    async def _start_gateway_poller(self):
+        """Start the Gateway transaction poller (async helper)."""
+        try:
+            await self.gateway_tx_poller.start()
+            logger.info("Gateway transaction poller started successfully")
+        except Exception as e:
+            logger.error(f"Error starting Gateway transaction poller: {e}", exc_info=True)
+
     async def stop(self):
         """
         Stop all accounts service tasks and cleanup resources.
         This is the main cleanup method that should be called during application shutdown.
         """
         logger.info("Stopping AccountsService...")
-        
+
         # Stop the account state update loop
         if self._update_account_state_task:
             self._update_account_state_task.cancel()
             self._update_account_state_task = None
             logger.info("Stopped account state update loop")
-        
+
+        # Stop Gateway transaction poller
+        if self._gateway_poller_started:
+            try:
+                await self.gateway_tx_poller.stop()
+                logger.info("Gateway transaction poller stopped")
+                self._gateway_poller_started = False
+            except Exception as e:
+                logger.error(f"Error stopping Gateway transaction poller: {e}", exc_info=True)
+
         # Stop all connectors through the ConnectorManager
         await self.connector_manager.stop_all_connectors()
-        
+
         logger.info("AccountsService stopped successfully")
 
     async def update_account_state_loop(self):
