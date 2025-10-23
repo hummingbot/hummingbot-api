@@ -27,7 +27,7 @@ class GatewayClient:
         if self._session and not self._session.closed:
             await self._session.close()
 
-    async def _request(self, method: str, path: str, params: Dict = None, json: Dict = None) -> Dict:
+    async def _request(self, method: str, path: str, params: Dict = None, json: Dict = None) -> Optional[Dict]:
         """Make HTTP request to Gateway"""
         session = await self._get_session()
         url = f"{self.base_url}/{path}"
@@ -35,13 +35,22 @@ class GatewayClient:
         try:
             if method == "GET":
                 async with session.get(url, params=params) as response:
+                    response.raise_for_status()
                     return await response.json()
             elif method == "POST":
                 async with session.post(url, json=json) as response:
+                    response.raise_for_status()
                     return await response.json()
             elif method == "DELETE":
                 async with session.delete(url, params=params, json=json) as response:
+                    response.raise_for_status()
                     return await response.json()
+        except aiohttp.ClientResponseError as e:
+            logger.warning(f"Gateway request failed with status {e.status}: {method} {url} - {e.message}")
+            return None
+        except aiohttp.ClientError as e:
+            logger.debug(f"Gateway request error: {method} {url} - {e}")
+            return None
         except Exception as e:
             logger.debug(f"Gateway request failed: {method} {url} - {e}")
             raise
@@ -86,12 +95,12 @@ class GatewayClient:
             "address": address
         })
 
-    async def get_balances(self, chain: str, network: str, address: str, tokens: List[str]) -> Dict:
+    async def get_balances(self, chain: str, network: str, address: str, tokens: Optional[List[str]] = None) -> Dict:
         """Get token balances for a wallet"""
         return await self._request("POST", f"chains/{chain}/balances", json={
             "network": network,
             "address": address,
-            "tokens": tokens
+            "tokens": tokens if tokens is not None else []
         })
 
     async def get_chains(self) -> Dict:
@@ -215,7 +224,7 @@ class GatewayClient:
         """Execute a swap"""
         payload = {
             "network": network,
-            "address": wallet_address,
+            "walletAddress": wallet_address,
             "baseToken": base_asset,
             "quoteToken": quote_asset,
             "amount": str(amount),
@@ -379,4 +388,50 @@ class GatewayClient:
             "address": wallet_address,
             "positionAddress": position_address
         })
+
+    # ============================================
+    # Transaction Polling
+    # ============================================
+
+    async def poll_transaction(
+        self,
+        network_id: str,
+        tx_hash: str,
+        wallet_address: Optional[str] = None
+    ) -> Optional[Dict]:
+        """
+        Poll transaction status on blockchain.
+
+        Args:
+            network_id: Network ID in format 'chain-network' (e.g., 'solana-mainnet-beta', 'ethereum-mainnet')
+            tx_hash: Transaction hash/signature
+            wallet_address: Optional wallet address for verification
+
+        Returns:
+            Transaction status dict with fields:
+            - txStatus: 1 for confirmed, 0 for failed/pending
+            - fee: Transaction fee amount
+            - txData: Full transaction data including meta.err
+            Returns None if Gateway is unavailable or request fails.
+        """
+        try:
+            # Split network_id into chain and network
+            parts = network_id.split('-', 1)
+            if len(parts) != 2:
+                logger.error(f"Invalid network_id format: {network_id}. Expected 'chain-network'")
+                return None
+
+            chain, network = parts
+
+            payload = {
+                "network": network,
+                "signature": tx_hash
+            }
+            if wallet_address:
+                payload["walletAddress"] = wallet_address
+
+            return await self._request("POST", f"chains/{chain}/poll", json=payload)
+        except Exception as e:
+            logger.error(f"Error polling transaction {tx_hash}: {e}")
+            return None
 
