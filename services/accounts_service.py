@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Dict, List, Optional
@@ -33,6 +34,11 @@ class AccountsService:
         "xrpl": "RLUSD",
         "kraken": "USD",
     }
+    gateway_default_pricing_connector = {
+        "ethereum": "uniswap/router",
+        "solana": "jupiter/router",
+    }
+    potential_wrapped_tokens = ["ETH", "SOL", "BNB", "POL", "AVAX", "FTM", "ONE", "GLMR", "MOVR"]
     
     # Cache for storing last successful prices by trading pair with timestamps
     _last_known_prices = {}
@@ -1350,11 +1356,23 @@ class AccountsService:
                 logger.debug("No Gateway wallets found")
                 return
 
+            # Get all available chains and networks
+            chains_result = await self.gateway_client.get_chains()
+            if not chains_result or "chains" not in chains_result:
+                logger.error("Could not get chains from Gateway")
+                return
+
+            # Build a map of chain -> [networks]
+            chain_networks_map = {c["chain"]: c["networks"] for c in chains_result["chains"]}
+
             # Ensure master_account exists in accounts_state
             if "master_account" not in self.accounts_state:
                 self.accounts_state["master_account"] = {}
 
-            # Update balances for each chain's default wallet
+            # Collect all balance query tasks for parallel execution
+            balance_tasks = []
+            task_metadata = []  # Store (chain, network, address) for each task
+
             for wallet_info in wallets:
                 chain = wallet_info.get("chain")
                 wallet_addresses = wallet_info.get("walletAddresses", [])
@@ -1365,21 +1383,36 @@ class AccountsService:
                 # Use the first address as the default wallet for this chain
                 address = wallet_addresses[0]
 
-                try:
-                    # Use chain name as connector name (e.g., "gateway_solana", "gateway_ethereum")
-                    connector_name = f"gateway_{chain}"
+                # Get all networks for this chain
+                networks = chain_networks_map.get(chain, [])
+                if not networks:
+                    logger.warning(f"No networks found for chain '{chain}', skipping")
+                    continue
 
-                    # Get balances for this wallet
-                    balances = await self.get_gateway_balances(chain, address)
+                # Create tasks for all networks for this wallet
+                for network in networks:
+                    balance_tasks.append(self.get_gateway_balances(chain, address, network=network))
+                    task_metadata.append((chain, network, address))
 
-                    # Store in same format as CEX connectors
-                    self.accounts_state["master_account"][connector_name] = balances
+            # Execute all balance queries in parallel
+            if balance_tasks:
+                t_zero = time.time()
+                results = await asyncio.gather(*balance_tasks, return_exceptions=True)
+                duration = time.time() - t_zero
+                # Process results
+                for idx, (result, (chain, network, address)) in enumerate(zip(results, task_metadata)):
+                    chain_network = f"{chain}-{network}"
 
-                    logger.info(f"Updated Gateway balances for {chain}: {len(balances)} tokens")
-
-                except Exception as e:
-                    logger.error(f"Error updating Gateway balances for {chain} wallet {address}: {e}")
-                    self.accounts_state["master_account"][connector_name] = []
+                    if isinstance(result, Exception):
+                        logger.error(f"Error updating Gateway balances for {chain}-{network} wallet {address}: {result}")
+                        # Store empty list for error state
+                        self.accounts_state["master_account"][chain_network] = []
+                    elif result:
+                        # Only store if there are actual balances (non-empty list)
+                        self.accounts_state["master_account"][chain_network] = result
+                    else:
+                        # Store empty list to indicate we checked this network
+                        self.accounts_state["master_account"][chain_network] = []
 
         except Exception as e:
             logger.error(f"Error updating Gateway balances: {e}")
@@ -1459,13 +1492,14 @@ class AccountsService:
             logger.error(f"Error removing Gateway wallet: {e}")
             raise HTTPException(status_code=500, detail=f"Failed to remove wallet: {str(e)}")
 
-    async def get_gateway_balances(self, chain: str, address: str, tokens: Optional[List[str]] = None) -> List[Dict]:
+    async def get_gateway_balances(self, chain: str, address: str, network: Optional[str] = None, tokens: Optional[List[str]] = None) -> List[Dict]:
         """
         Get Gateway wallet balances with pricing from rate sources.
 
         Args:
             chain: Blockchain chain
             address: Wallet address
+            network: Optional network name (if not provided, uses default network for chain)
             tokens: Optional list of token symbols to query
 
         Returns:
@@ -1475,22 +1509,14 @@ class AccountsService:
             raise HTTPException(status_code=503, detail="Gateway service is not available")
 
         try:
-            # Get default network for chain
-            network = await self.gateway_client.get_default_network(chain)
+            # Get default network for chain if not provided
+            if not network:
+                network = await self.gateway_client.get_default_network(chain)
             if not network:
                 raise HTTPException(status_code=400, detail=f"Could not determine network for chain '{chain}'")
 
-            # If no tokens specified, get common tokens
-            if not tokens:
-                tokens_response = await self.gateway_client.get_tokens(chain, network)
-                if "tokens" in tokens_response:
-                    # Get top 20 tokens by default
-                    tokens = [t["symbol"] for t in tokens_response["tokens"][:20]]
-                else:
-                    tokens = []
-
             # Get balances from Gateway
-            balances_response = await self.gateway_client.get_balances(chain, network, address, tokens)
+            balances_response = await self.gateway_client.get_balances(chain, network, address, tokens=tokens)
 
             if "error" in balances_response:
                 raise HTTPException(status_code=400, detail=f"Gateway error: {balances_response['error']}")
@@ -1508,29 +1534,36 @@ class AccountsService:
 
             # Get prices using rate sources (similar to _get_connector_tokens_info)
             unique_tokens = [b["token"] for b in balances_list]
-            connector_name = f"gateway_{chain}"
-            trading_pairs = [self.get_default_market(token, connector_name) for token in unique_tokens if "USD" not in token]
+            connector_name = f"gateway_{chain}-{network}"
 
             # Try to get cached prices first
             prices_from_cache = {}
-            trading_pairs_need_update = []
+            tokens_need_update = []
 
             if self.market_data_feed_manager:
-                for trading_pair in trading_pairs:
+                for token in unique_tokens:
                     try:
+                        token_unwrapped = self.get_unwrapped_token(token)
+                        trading_pair = f"{token_unwrapped}-USDT"
                         cached_price = self.market_data_feed_manager.market_data_provider.get_rate(trading_pair)
                         if cached_price > 0:
                             prices_from_cache[trading_pair] = cached_price
                         else:
-                            trading_pairs_need_update.append(trading_pair)
+                            tokens_need_update.append(token)
                     except Exception:
-                        trading_pairs_need_update.append(trading_pair)
+                        tokens_need_update.append(token)
             else:
-                trading_pairs_need_update = trading_pairs
+                tokens_need_update = unique_tokens
 
             # Initialize rate sources for Gateway (using "gateway" as connector for AMM pairs)
-            if trading_pairs_need_update:
-                self._initialize_rate_sources_for_pairs("gateway", trading_pairs_need_update)
+            if tokens_need_update:
+                pricing_connector = self.gateway_default_pricing_connector[chain]
+                trading_pairs_need_update = [f"{token}-USDC" for token in tokens_need_update]
+                connector_pairs = [ConnectorPair(connector_name=pricing_connector, trading_pair=tp) for tp in trading_pairs_need_update]
+                for pair in connector_pairs:
+                    self.market_data_feed_manager.market_data_provider._rates_required.add_or_update(
+                        f"gateway_{chain}-{network}", pair
+                    )
                 logger.info(f"Added {len(trading_pairs_need_update)} Gateway trading pairs to market data provider: {trading_pairs_need_update}")
 
             # Use cached prices (rate sources will update in background)
@@ -1561,3 +1594,10 @@ class AccountsService:
         except Exception as e:
             logger.error(f"Error getting Gateway balances: {e}")
             raise HTTPException(status_code=500, detail=f"Failed to get balances: {str(e)}")
+
+    def get_unwrapped_token(self, token: str) -> str:
+        """Get the unwrapped version of a wrapped token symbol."""
+        for pw in self.potential_wrapped_tokens:
+            if token in pw:
+                return pw
+        return token
