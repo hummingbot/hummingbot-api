@@ -7,7 +7,7 @@ Unlike CEX connectors that emit events, DEX transactions require active polling 
 import asyncio
 import logging
 from typing import Optional, Dict, List
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from database import AsyncDatabaseManager
@@ -91,7 +91,7 @@ class GatewayTransactionPoller:
 
                 for swap in pending_swaps:
                     # Skip if too old (likely failed without proper error)
-                    age = (datetime.utcnow() - swap.timestamp).total_seconds()
+                    age = (datetime.now(timezone.utc) - swap.timestamp).total_seconds()
                     if age > self.max_retry_age:
                         logger.warning(f"Swap {swap.transaction_hash} exceeded max retry age, marking as FAILED")
                         await swap_repo.update_swap_status(
@@ -110,7 +110,7 @@ class GatewayTransactionPoller:
 
                 for event in pending_events:
                     # Skip if too old
-                    age = (datetime.utcnow() - event.timestamp).total_seconds()
+                    age = (datetime.now(timezone.utc) - event.timestamp).total_seconds()
                     if age > self.max_retry_age:
                         logger.warning(f"CLMM event {event.transaction_hash} exceeded max retry age, marking as FAILED")
                         await clmm_repo.update_event_status(
@@ -277,49 +277,80 @@ class GatewayTransactionPoller:
                 logger.warning("Gateway not available for transaction polling")
                 return None
 
+            # Reconstruct network_id from chain and network
+            network_id = f"{chain}-{network}"
+
             # Poll transaction status from Gateway
-            # This would use a Gateway endpoint like GET /chain/transaction/{txHash}
-            # For now, we'll implement a basic structure
+            result = await self.gateway_client.poll_transaction(
+                network_id=network_id,
+                tx_hash=tx_hash
+            )
 
-            # TODO: Implement actual Gateway transaction status polling
-            # result = await self.gateway_client._request(
-            #     "GET",
-            #     f"chain/transaction/{tx_hash}",
-            #     params={"chain": chain, "network": network}
-            # )
+            # Check if we got a valid response
+            if result is None or not isinstance(result, dict):
+                logger.warning(f"Invalid response from Gateway for transaction {tx_hash} on {network_id}: {result}")
+                return None
 
-            # Placeholder return - in production this would parse Gateway response
-            logger.debug(f"Checking transaction status: {tx_hash} on {chain}-{network}")
+            logger.debug(f"Polled transaction {tx_hash} on {network_id}: txStatus={result.get('txStatus')}")
 
-            # Return None for now (transaction still pending)
-            # Real implementation would return:
-            # {
-            #     "status": "CONFIRMED" | "FAILED" | "PENDING",
-            #     "gas_fee": 0.001,
-            #     "gas_token": "SOL",
-            #     "error_message": "..." if failed
-            # }
+            # Parse the response with defensive checks
+            tx_status = result.get("txStatus")
+            tx_data = result.get("txData") or {}
+            meta = tx_data.get("meta") if isinstance(tx_data, dict) else {}
+            error = meta.get("err") if isinstance(meta, dict) else None
+
+            # Determine gas token based on chain
+            gas_token = {
+                "solana": "SOL",
+                "ethereum": "ETH",
+                "arbitrum": "ETH",
+                "optimism": "ETH",
+                "polygon": "MATIC",
+                "avalanche": "AVAX"
+            }.get(chain, "UNKNOWN")
+
+            # Transaction is confirmed if txStatus == 1 and no error
+            if tx_status == 1 and error is None:
+                return {
+                    "status": "CONFIRMED",
+                    "gas_fee": result.get("fee", 0),
+                    "gas_token": gas_token,
+                    "error_message": None
+                }
+
+            # Transaction failed if there's an error
+            if error is not None:
+                error_msg = str(error) if error else "Transaction failed on-chain"
+                return {
+                    "status": "FAILED",
+                    "gas_fee": result.get("fee", 0),
+                    "gas_token": gas_token,
+                    "error_message": error_msg
+                }
+
+            # Transaction still pending (txStatus == 0 or not finalized)
             return None
 
         except Exception as e:
             logger.error(f"Error checking transaction status for {tx_hash}: {e}")
             return None
 
-    async def poll_transaction_once(self, tx_hash: str, network: str) -> Optional[Dict]:
+    async def poll_transaction_once(self, tx_hash: str, network_id: str, wallet_address: Optional[str] = None) -> Optional[Dict]:
         """
         Poll a specific transaction once (useful for immediate status checks).
 
         Args:
             tx_hash: Transaction hash
-            network: Network in format 'chain-network'
+            network_id: Network ID in format 'chain-network' (e.g., 'solana-mainnet-beta')
+            wallet_address: Optional wallet address for verification
 
         Returns:
             Transaction status dict or None if pending
         """
-        parts = network.split('-', 1)
+        parts = network_id.split('-', 1)
         if len(parts) != 2:
-            logger.error(f"Invalid network format: {network}")
+            logger.error(f"Invalid network format: {network_id}")
             return None
 
-        chain, network_name = parts
-        return await self._check_transaction_status(chain, network_name, tx_hash)
+        chain, network = parts
+        return await self._check_transaction_status(chain, network, tx_hash)
