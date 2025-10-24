@@ -197,15 +197,19 @@ async def execute_swap(
         if not transaction_hash:
             raise HTTPException(status_code=500, detail="No transaction hash returned from Gateway")
 
-        # Calculate price and amounts based on side
-        # Note: We'll get actual amounts from quote or transaction result
-        amount_in_raw = result.get("amountIn") or result.get("amount_in")
-        amount_out_raw = result.get("amountOut") or result.get("amount_out")
-        price_raw = result.get("price")
+        # Extract swap data from Gateway response
+        # Gateway returns amounts nested under 'data' object
+        data = result.get("data", {})
+        amount_in_raw = data.get("amountIn")
+        amount_out_raw = data.get("amountOut")
 
-        input_amount = Decimal(str(amount_in_raw)) if amount_in_raw else request.amount
-        output_amount = Decimal(str(amount_out_raw)) if amount_out_raw else Decimal("0")
-        price = Decimal(str(price_raw)) if price_raw else (output_amount / input_amount if input_amount > 0 else Decimal("0"))
+        # Use amounts from Gateway response, fallback to request amount if not available
+        input_amount = Decimal(str(amount_in_raw)) if amount_in_raw is not None else request.amount
+        output_amount = Decimal(str(amount_out_raw)) if amount_out_raw is not None else Decimal("0")
+
+        # Calculate price from actual swap amounts
+        # Price = output / input (how much quote you get/pay per base)
+        price = output_amount / input_amount if input_amount > 0 else Decimal("0")
 
         # Store swap in database
         try:
@@ -250,6 +254,139 @@ async def execute_swap(
     except Exception as e:
         logger.error(f"Error executing swap: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error executing swap: {str(e)}")
+
+@router.get("/swaps/{transaction_hash}/status")
+async def get_swap_status(
+    transaction_hash: str,
+    db_manager: AsyncDatabaseManager = Depends(get_database_manager)
+):
+    """
+    Get status of a specific swap by transaction hash.
+
+    Args:
+        transaction_hash: Transaction hash of the swap
+
+    Returns:
+        Swap details including current status
+    """
+    try:
+        async with db_manager.get_session_context() as session:
+            swap_repo = GatewaySwapRepository(session)
+            swap = await swap_repo.get_swap_by_tx_hash(transaction_hash)
+
+            if not swap:
+                raise HTTPException(status_code=404, detail=f"Swap not found: {transaction_hash}")
+
+            return swap_repo.to_dict(swap)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting swap status: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error getting swap status: {str(e)}")
+
+
+@router.post("/swaps/search")
+async def search_swaps(
+    network: Optional[str] = None,
+    connector: Optional[str] = None,
+    wallet_address: Optional[str] = None,
+    trading_pair: Optional[str] = None,
+    status: Optional[str] = None,
+    start_time: Optional[int] = None,
+    end_time: Optional[int] = None,
+    limit: int = 50,
+    offset: int = 0,
+    db_manager: AsyncDatabaseManager = Depends(get_database_manager)
+):
+    """
+    Search swap history with filters.
+
+    Args:
+        network: Filter by network (e.g., 'solana-mainnet-beta')
+        connector: Filter by connector (e.g., 'jupiter')
+        wallet_address: Filter by wallet address
+        trading_pair: Filter by trading pair (e.g., 'SOL-USDC')
+        status: Filter by status (SUBMITTED, CONFIRMED, FAILED)
+        start_time: Start timestamp (unix seconds)
+        end_time: End timestamp (unix seconds)
+        limit: Max results (default 50, max 1000)
+        offset: Pagination offset
+
+    Returns:
+        Paginated list of swaps
+    """
+    try:
+        # Validate limit
+        if limit > 1000:
+            limit = 1000
+
+        async with db_manager.get_session_context() as session:
+            swap_repo = GatewaySwapRepository(session)
+            swaps = await swap_repo.get_swaps(
+                network=network,
+                connector=connector,
+                wallet_address=wallet_address,
+                trading_pair=trading_pair,
+                status=status,
+                start_time=start_time,
+                end_time=end_time,
+                limit=limit,
+                offset=offset
+            )
+
+            # Get total count for pagination (simplified - actual count would need separate query)
+            has_more = len(swaps) == limit
+
+            return {
+                "data": [swap_repo.to_dict(swap) for swap in swaps],
+                "pagination": {
+                    "limit": limit,
+                    "offset": offset,
+                    "has_more": has_more,
+                    "total_count": len(swaps) + offset if not has_more else None
+                }
+            }
+
+    except Exception as e:
+        logger.error(f"Error searching swaps: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error searching swaps: {str(e)}")
+
+
+@router.get("/swaps/summary")
+async def get_swaps_summary(
+    network: Optional[str] = None,
+    wallet_address: Optional[str] = None,
+    start_time: Optional[int] = None,
+    end_time: Optional[int] = None,
+    db_manager: AsyncDatabaseManager = Depends(get_database_manager)
+):
+    """
+    Get swap summary statistics.
+
+    Args:
+        network: Filter by network
+        wallet_address: Filter by wallet address
+        start_time: Start timestamp (unix seconds)
+        end_time: End timestamp (unix seconds)
+
+    Returns:
+        Summary statistics including volume, fees, success rate
+    """
+    try:
+        async with db_manager.get_session_context() as session:
+            swap_repo = GatewaySwapRepository(session)
+            summary = await swap_repo.get_swaps_summary(
+                network=network,
+                wallet_address=wallet_address,
+                start_time=start_time,
+                end_time=end_time
+            )
+            return summary
+
+    except Exception as e:
+        logger.error(f"Error getting swaps summary: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error getting swaps summary: {str(e)}")
 
 
 # ============================================
@@ -795,144 +932,6 @@ async def get_clmm_positions_owned(
     except Exception as e:
         logger.error(f"Error getting CLMM positions owned: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error getting CLMM positions owned: {str(e)}")
-
-
-# ============================================
-# Query Endpoints for Swaps and Positions
-# ============================================
-
-@router.get("/swaps/{transaction_hash}/status")
-async def get_swap_status(
-    transaction_hash: str,
-    db_manager: AsyncDatabaseManager = Depends(get_database_manager)
-):
-    """
-    Get status of a specific swap by transaction hash.
-
-    Args:
-        transaction_hash: Transaction hash of the swap
-
-    Returns:
-        Swap details including current status
-    """
-    try:
-        async with db_manager.get_session_context() as session:
-            swap_repo = GatewaySwapRepository(session)
-            swap = await swap_repo.get_swap_by_tx_hash(transaction_hash)
-
-            if not swap:
-                raise HTTPException(status_code=404, detail=f"Swap not found: {transaction_hash}")
-
-            return swap_repo.to_dict(swap)
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting swap status: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error getting swap status: {str(e)}")
-
-
-@router.post("/swaps/search")
-async def search_swaps(
-    network: Optional[str] = None,
-    connector: Optional[str] = None,
-    wallet_address: Optional[str] = None,
-    trading_pair: Optional[str] = None,
-    status: Optional[str] = None,
-    start_time: Optional[int] = None,
-    end_time: Optional[int] = None,
-    limit: int = 50,
-    offset: int = 0,
-    db_manager: AsyncDatabaseManager = Depends(get_database_manager)
-):
-    """
-    Search swap history with filters.
-
-    Args:
-        network: Filter by network (e.g., 'solana-mainnet-beta')
-        connector: Filter by connector (e.g., 'jupiter')
-        wallet_address: Filter by wallet address
-        trading_pair: Filter by trading pair (e.g., 'SOL-USDC')
-        status: Filter by status (SUBMITTED, CONFIRMED, FAILED)
-        start_time: Start timestamp (unix seconds)
-        end_time: End timestamp (unix seconds)
-        limit: Max results (default 50, max 1000)
-        offset: Pagination offset
-
-    Returns:
-        Paginated list of swaps
-    """
-    try:
-        # Validate limit
-        if limit > 1000:
-            limit = 1000
-
-        async with db_manager.get_session_context() as session:
-            swap_repo = GatewaySwapRepository(session)
-            swaps = await swap_repo.get_swaps(
-                network=network,
-                connector=connector,
-                wallet_address=wallet_address,
-                trading_pair=trading_pair,
-                status=status,
-                start_time=start_time,
-                end_time=end_time,
-                limit=limit,
-                offset=offset
-            )
-
-            # Get total count for pagination (simplified - actual count would need separate query)
-            has_more = len(swaps) == limit
-
-            return {
-                "data": [swap_repo.to_dict(swap) for swap in swaps],
-                "pagination": {
-                    "limit": limit,
-                    "offset": offset,
-                    "has_more": has_more,
-                    "total_count": len(swaps) + offset if not has_more else None
-                }
-            }
-
-    except Exception as e:
-        logger.error(f"Error searching swaps: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error searching swaps: {str(e)}")
-
-
-@router.get("/swaps/summary")
-async def get_swaps_summary(
-    network: Optional[str] = None,
-    wallet_address: Optional[str] = None,
-    start_time: Optional[int] = None,
-    end_time: Optional[int] = None,
-    db_manager: AsyncDatabaseManager = Depends(get_database_manager)
-):
-    """
-    Get swap summary statistics.
-
-    Args:
-        network: Filter by network
-        wallet_address: Filter by wallet address
-        start_time: Start timestamp (unix seconds)
-        end_time: End timestamp (unix seconds)
-
-    Returns:
-        Summary statistics including volume, fees, success rate
-    """
-    try:
-        async with db_manager.get_session_context() as session:
-            swap_repo = GatewaySwapRepository(session)
-            summary = await swap_repo.get_swaps_summary(
-                network=network,
-                wallet_address=wallet_address,
-                start_time=start_time,
-                end_time=end_time
-            )
-            return summary
-
-    except Exception as e:
-        logger.error(f"Error getting swaps summary: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error getting swaps summary: {str(e)}")
 
 
 @router.get("/clmm/positions/{position_address}")
