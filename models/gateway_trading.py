@@ -4,7 +4,7 @@ Supports swaps via routers (Jupiter, 0x) and CLMM liquidity positions (Meteora, 
 
 Note: AMM support has been removed. Use Router for simple swaps, CLMM for liquidity provision.
 """
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
 from decimal import Decimal
 
@@ -64,20 +64,20 @@ class CLMMOpenPositionRequest(BaseModel):
     """Request to open a new CLMM position with initial liquidity"""
     connector: str = Field(description="CLMM connector (e.g., 'meteora', 'raydium', 'uniswap')")
     network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta')")
-    trading_pair: str = Field(description="Trading pair (e.g., 'SOL-USDC')")
+    pool_address: str = Field(description="Pool contract address")
 
-    # Position range - either absolute prices or center + widths
-    lower_price: Optional[Decimal] = Field(default=None, description="Lower price for position range")
-    upper_price: Optional[Decimal] = Field(default=None, description="Upper price for position range")
-    price: Optional[Decimal] = Field(default=None, description="Center price (alternative to absolute prices)")
-    lower_width_pct: Optional[Decimal] = Field(default=None, description="Lower range width % from center")
-    upper_width_pct: Optional[Decimal] = Field(default=None, description="Upper range width % from center")
+    # Position range
+    lower_price: Decimal = Field(description="Lower price for position range")
+    upper_price: Decimal = Field(description="Upper price for position range")
 
     # Initial liquidity
     base_token_amount: Optional[Decimal] = Field(default=None, description="Amount of base token to add")
     quote_token_amount: Optional[Decimal] = Field(default=None, description="Amount of quote token to add")
     slippage_pct: Optional[Decimal] = Field(default=1.0, description="Maximum slippage percentage (default: 1.0)")
     wallet_address: Optional[str] = Field(default=None, description="Wallet address (optional, uses default if not provided)")
+
+    # Connector-specific parameters (e.g., strategyType for Meteora)
+    extra_params: Optional[Dict[str, Any]] = Field(default=None, description="Additional connector-specific parameters")
 
 
 class CLMMOpenPositionResponse(BaseModel):
@@ -137,9 +137,10 @@ class CLMMCollectFeesResponse(BaseModel):
 
 
 class CLMMPositionsOwnedRequest(BaseModel):
-    """Request to get all CLMM positions owned by a wallet"""
+    """Request to get all CLMM positions owned by a wallet for a specific pool"""
     connector: str = Field(description="CLMM connector (e.g., 'meteora', 'raydium', 'uniswap')")
     network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta')")
+    pool_address: str = Field(description="Pool contract address to filter positions")
     wallet_address: Optional[str] = Field(default=None, description="Wallet address (optional, uses default if not provided)")
 
 
@@ -167,6 +168,13 @@ class CLMMGetPositionInfoRequest(BaseModel):
     connector: str = Field(description="CLMM connector (e.g., 'meteora', 'raydium', 'uniswap')")
     network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta')")
     position_address: str = Field(description="Position address to query")
+
+
+class CLMMPoolInfoRequest(BaseModel):
+    """Request to get CLMM pool information by pool address"""
+    connector: str = Field(description="CLMM connector (e.g., 'meteora', 'raydium')")
+    network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta')")
+    pool_address: str = Field(description="Pool contract address")
 
 
 # ============================================

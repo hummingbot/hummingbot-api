@@ -146,6 +146,7 @@ from .gateway_trading import (
     CLMMPositionsOwnedRequest,
     CLMMPositionInfo,
     CLMMGetPositionInfoRequest,
+    CLMMPoolInfoRequest,
     # Pool info models
     GetPoolInfoRequest,
     PoolInfo,
@@ -293,6 +294,7 @@ __all__ = [
     "CLMMPositionsOwnedRequest",
     "CLMMPositionInfo",
     "CLMMGetPositionInfoRequest",
+    "CLMMPoolInfoRequest",
     "GetPoolInfoRequest",
     "PoolInfo",
     # Portfolio models
