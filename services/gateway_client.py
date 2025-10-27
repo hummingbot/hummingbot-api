@@ -16,6 +16,30 @@ class GatewayClient:
         self.base_url = base_url
         self._session: Optional[aiohttp.ClientSession] = None
 
+    @staticmethod
+    def parse_network_id(network_id: str) -> tuple[str, str]:
+        """
+        Parse network_id in format 'chain-network' into (chain, network).
+
+        Examples:
+            'solana-mainnet-beta' -> ('solana', 'mainnet-beta')
+            'ethereum-mainnet' -> ('ethereum', 'mainnet')
+        """
+        parts = network_id.split('-', 1)
+        if len(parts) != 2:
+            raise ValueError(f"Invalid network_id format. Expected 'chain-network', got '{network_id}'")
+        return parts[0], parts[1]
+
+    async def get_wallet_address_or_default(self, chain: str, wallet_address: Optional[str] = None) -> str:
+        """Get wallet address - use provided or get default for chain"""
+        if wallet_address:
+            return wallet_address
+
+        default_wallet = await self.get_default_wallet_address(chain)
+        if not default_wallet:
+            raise ValueError(f"No wallet configured for chain '{chain}'")
+        return default_wallet
+
     async def _get_session(self) -> aiohttp.ClientSession:
         """Get or create aiohttp session"""
         if self._session is None or self._session.closed:
@@ -263,13 +287,13 @@ class GatewayClient:
         upper_price: float,
         base_token_amount: Optional[float] = None,
         quote_token_amount: Optional[float] = None,
-        slippage_pct: Optional[float] = None
+        slippage_pct: Optional[float] = None,
+        extra_params: Optional[Dict] = None
     ) -> Dict:
         """Open a NEW CLMM position with initial liquidity"""
         payload = {
-            "connector": connector,
             "network": network,
-            "address": wallet_address,
+            "walletAddress": wallet_address,
             "poolAddress": pool_address,
             "lowerPrice": lower_price,
             "upperPrice": upper_price
@@ -281,7 +305,11 @@ class GatewayClient:
         if slippage_pct is not None:
             payload["slippagePct"] = slippage_pct
 
-        return await self._request("POST", "clmm/liquidity/open", json=payload)
+        # Add any connector-specific parameters
+        if extra_params:
+            payload.update(extra_params)
+
+        return await self._request("POST", f"connectors/{connector}/clmm/open-position", json=payload)
 
     async def clmm_add_liquidity(
         self,
@@ -317,10 +345,9 @@ class GatewayClient:
         position_address: str
     ) -> Dict:
         """Close a CLMM position completely"""
-        return await self._request("POST", "clmm/liquidity/close", json={
-            "connector": connector,
+        return await self._request("POST", f"connectors/{connector}/clmm/close-position", json={
             "network": network,
-            "address": wallet_address,
+            "walletAddress": wallet_address,
             "positionAddress": position_address
         })
 
@@ -361,18 +388,16 @@ class GatewayClient:
         connector: str,
         network: str,
         wallet_address: str,
-        pool_address: Optional[str] = None
+        pool_address: str
     ) -> Dict:
-        """Get all CLMM positions owned by wallet"""
-        payload = {
-            "connector": connector,
+        """Get all CLMM positions owned by wallet for a specific pool"""
+        params = {
             "network": network,
-            "address": wallet_address
+            "walletAddress": wallet_address,
+            "poolAddress": pool_address
         }
-        if pool_address:
-            payload["poolAddress"] = pool_address
 
-        return await self._request("POST", "clmm/liquidity/positions", json=payload)
+        return await self._request("GET", f"connectors/{connector}/clmm/positions-owned", params=params)
 
     async def clmm_collect_fees(
         self,
@@ -387,6 +412,18 @@ class GatewayClient:
             "network": network,
             "address": wallet_address,
             "positionAddress": position_address
+        })
+
+    async def clmm_pool_info(
+        self,
+        connector: str,
+        network: str,
+        pool_address: str
+    ) -> Dict:
+        """Get detailed CLMM pool information by pool address"""
+        return await self._request("GET", f"connectors/{connector}/clmm/pool-info", params={
+            "network": network,
+            "poolAddress": pool_address
         })
 
     # ============================================
