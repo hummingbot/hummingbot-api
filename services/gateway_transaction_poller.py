@@ -3,6 +3,8 @@ Gateway Transaction Poller
 
 This service polls blockchain transactions to confirm Gateway swap and CLMM operations.
 Unlike CEX connectors that emit events, DEX transactions require active polling until confirmation.
+
+Additionally polls CLMM position state to keep database in sync with on-chain state.
 """
 import asyncio
 import logging
@@ -12,6 +14,7 @@ from decimal import Decimal
 
 from database import AsyncDatabaseManager
 from database.repositories import GatewaySwapRepository, GatewayCLMMRepository
+from database.models import GatewayCLMMEvent, GatewayCLMMPosition
 from services.gateway_client import GatewayClient
 
 logger = logging.getLogger(__name__)
@@ -19,7 +22,10 @@ logger = logging.getLogger(__name__)
 
 class GatewayTransactionPoller:
     """
-    Polls Gateway for transaction status updates and updates database records.
+    Polls Gateway for transaction status updates and position state.
+
+    - Transaction polling: Confirms pending swap/CLMM transactions
+    - Position polling: Updates CLMM position state (in_range, liquidity, fees)
 
     Unlike CEX connectors that emit events when orders fill, DEX transactions
     need to be polled until they are confirmed on-chain or fail.
@@ -29,15 +35,19 @@ class GatewayTransactionPoller:
         self,
         db_manager: AsyncDatabaseManager,
         gateway_client: GatewayClient,
-        poll_interval: int = 10,  # Poll every 10 seconds
+        poll_interval: int = 10,  # Poll every 10 seconds for transactions
+        position_poll_interval: int = 300,  # Poll every 5 minutes for positions
         max_retry_age: int = 3600  # Stop retrying after 1 hour
     ):
         self.db_manager = db_manager
         self.gateway_client = gateway_client
         self.poll_interval = poll_interval
+        self.position_poll_interval = position_poll_interval
         self.max_retry_age = max_retry_age
         self._running = False
         self._poll_task: Optional[asyncio.Task] = None
+        self._position_poll_task: Optional[asyncio.Task] = None
+        self._last_position_poll: Optional[datetime] = None
 
     async def start(self):
         """Start the polling service."""
@@ -47,7 +57,8 @@ class GatewayTransactionPoller:
 
         self._running = True
         self._poll_task = asyncio.create_task(self._poll_loop())
-        logger.info(f"GatewayTransactionPoller started (poll_interval={self.poll_interval}s)")
+        self._position_poll_task = asyncio.create_task(self._position_poll_loop())
+        logger.info(f"GatewayTransactionPoller started (tx_poll={self.poll_interval}s, pos_poll={self.position_poll_interval}s)")
 
     async def stop(self):
         """Stop the polling service."""
@@ -55,10 +66,20 @@ class GatewayTransactionPoller:
             return
 
         self._running = False
+
+        # Cancel transaction polling task
         if self._poll_task:
             self._poll_task.cancel()
             try:
                 await self._poll_task
+            except asyncio.CancelledError:
+                pass
+
+        # Cancel position polling task
+        if self._position_poll_task:
+            self._position_poll_task.cancel()
+            try:
+                await self._position_poll_task
             except asyncio.CancelledError:
                 pass
 
@@ -226,7 +247,6 @@ class GatewayTransactionPoller:
         try:
             # Get position through session
             async with self.db_manager.get_session_context() as session:
-                from database.models import GatewayCLMMEvent
                 result = await session.execute(
                     session.query(GatewayCLMMEvent).filter(GatewayCLMMEvent.id == event.id)
                 )
@@ -354,3 +374,166 @@ class GatewayTransactionPoller:
 
         chain, network = parts
         return await self._check_transaction_status(chain, network, tx_hash)
+
+    # ============================================
+    # Position State Polling
+    # ============================================
+
+    async def _position_poll_loop(self):
+        """Position state polling loop (runs less frequently)."""
+        while self._running:
+            try:
+                # Check if it's time to poll positions
+                now = datetime.now(timezone.utc)
+                if self._last_position_poll is None or \
+                   (now - self._last_position_poll).total_seconds() >= self.position_poll_interval:
+                    await self._poll_open_positions()
+                    self._last_position_poll = now
+
+                # Sleep for a short time to avoid busy waiting
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in position poll loop: {e}", exc_info=True)
+                await asyncio.sleep(10)
+
+    async def _poll_open_positions(self):
+        """Poll all open CLMM positions and update their state."""
+        try:
+            # Check if Gateway is available
+            if not await self.gateway_client.ping():
+                logger.debug("Gateway not available, skipping position polling")
+                return
+
+            async with self.db_manager.get_session_context() as session:
+                clmm_repo = GatewayCLMMRepository(session)
+
+                # Get all open positions
+                open_positions = await clmm_repo.get_open_positions()
+                if not open_positions:
+                    logger.debug("No open CLMM positions to poll")
+                    return
+
+                logger.info(f"Polling {len(open_positions)} open CLMM positions")
+
+                # Extract position details before closing session
+                position_details = [
+                    {
+                        "position_address": pos.position_address,
+                        "pool_address": pos.pool_address,
+                        "connector": pos.connector,
+                        "network": pos.network,
+                        "wallet_address": pos.wallet_address
+                    }
+                    for pos in open_positions
+                ]
+
+            # Poll each position in a separate session
+            for pos_detail in position_details:
+                try:
+                    async with self.db_manager.get_session_context() as session:
+                        clmm_repo = GatewayCLMMRepository(session)
+                        position = await clmm_repo.get_position_by_address(pos_detail["position_address"])
+                        if position and position.status == "OPEN":
+                            await self._refresh_position_state(position, clmm_repo)
+                except Exception as e:
+                    logger.warning(f"Failed to poll position {pos_detail['position_address']}: {e}")
+                    continue
+
+        except Exception as e:
+            logger.error(f"Error polling open positions: {e}", exc_info=True)
+
+    async def _refresh_position_state(self, position: GatewayCLMMPosition, clmm_repo: GatewayCLMMRepository):
+        """
+        Refresh a single position's state from Gateway.
+
+        Updates:
+        - in_range status
+        - liquidity amounts
+        - pending fees
+        - position status (if closed externally)
+        """
+        try:
+            # Parse network to get chain and network name
+            parts = position.network.split('-', 1)
+            if len(parts) != 2:
+                logger.error(f"Invalid network format for position {position.position_address}: {position.network}")
+                return
+
+            chain, network = parts
+
+            # Get all positions for this pool from Gateway
+            try:
+                positions_list = await self.gateway_client.clmm_positions_owned(
+                    connector=position.connector,
+                    network=network,
+                    wallet_address=position.wallet_address,
+                    pool_address=position.pool_address
+                )
+
+                # Find our specific position in the list
+                result = None
+                if isinstance(positions_list, list):
+                    for pos in positions_list:
+                        if pos.get("address") == position.position_address:
+                            result = pos
+                            break
+
+                # If position not found, it was closed externally
+                if result is None:
+                    logger.info(f"Position {position.position_address} not found on Gateway, marking as CLOSED")
+                    await clmm_repo.close_position(position.position_address)
+                    return
+
+            except Exception as e:
+                logger.warning(f"Error fetching position {position.position_address} from Gateway: {e}")
+                return
+
+            # Extract current state
+            current_price = Decimal(str(result.get("price", 0)))
+            lower_price = Decimal(str(result.get("lowerPrice", 0))) if result.get("lowerPrice") else Decimal("0")
+            upper_price = Decimal(str(result.get("upperPrice", 0))) if result.get("upperPrice") else Decimal("0")
+
+            # Calculate in_range status
+            in_range = "UNKNOWN"
+            if current_price > 0 and lower_price > 0 and upper_price > 0:
+                if lower_price <= current_price <= upper_price:
+                    in_range = "IN_RANGE"
+                else:
+                    in_range = "OUT_OF_RANGE"
+
+            # Extract token amounts
+            base_token_amount = Decimal(str(result.get("baseTokenAmount", 0)))
+            quote_token_amount = Decimal(str(result.get("quoteTokenAmount", 0)))
+
+            # Check if position has been closed (zero liquidity)
+            if base_token_amount == 0 and quote_token_amount == 0:
+                logger.info(f"Position {position.position_address} has zero liquidity, marking as CLOSED")
+                await clmm_repo.close_position(position.position_address)
+                return
+
+            # Update liquidity amounts and in_range status
+            await clmm_repo.update_position_liquidity(
+                position_address=position.position_address,
+                base_token_amount=base_token_amount,
+                quote_token_amount=quote_token_amount,
+                in_range=in_range
+            )
+
+            # Update pending fees if available
+            base_fee_pending = Decimal(str(result.get("baseFeeAmount", 0)))
+            quote_fee_pending = Decimal(str(result.get("quoteFeeAmount", 0)))
+
+            if base_fee_pending or quote_fee_pending:
+                await clmm_repo.update_position_fees(
+                    position_address=position.position_address,
+                    base_fee_pending=base_fee_pending,
+                    quote_fee_pending=quote_fee_pending
+                )
+
+            logger.debug(f"Refreshed position {position.position_address}: in_range={in_range}, "
+                        f"base={base_token_amount}, quote={quote_token_amount}")
+
+        except Exception as e:
+            logger.error(f"Error refreshing position state {position.position_address}: {e}", exc_info=True)
