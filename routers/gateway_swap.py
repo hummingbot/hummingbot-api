@@ -24,6 +24,28 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Gateway Swaps"], prefix="/gateway")
 
 
+def get_transaction_status_from_response(gateway_response: dict) -> str:
+    """
+    Determine transaction status from Gateway response.
+
+    Gateway returns status field in the response:
+    - status: 1 = confirmed
+    - status: 0 = pending/submitted
+
+    Returns:
+        "CONFIRMED" if status == 1
+        "SUBMITTED" if status == 0 or not present
+    """
+    status = gateway_response.get("status")
+
+    # Status 1 means transaction is confirmed on-chain
+    if status == 1:
+        return "CONFIRMED"
+
+    # Status 0 or missing means submitted but not confirmed yet
+    return "SUBMITTED"
+
+
 @router.post("/swap/quote", response_model=SwapQuoteResponse)
 async def get_swap_quote(
     request: SwapQuoteRequest,
@@ -164,6 +186,9 @@ async def execute_swap(
         # Price = output / input (how much quote you get/pay per base)
         price = output_amount / input_amount if input_amount > 0 else Decimal("0")
 
+        # Get transaction status from Gateway response
+        tx_status = get_transaction_status_from_response(result)
+
         # Store swap in database
         try:
             async with db_manager.get_session_context() as session:
@@ -182,12 +207,12 @@ async def execute_swap(
                     "output_amount": float(output_amount),
                     "price": float(price),
                     "slippage_pct": float(request.slippage_pct) if request.slippage_pct else 1.0,
-                    "status": "SUBMITTED",
+                    "status": tx_status,
                     "pool_address": result.get("poolAddress") or result.get("pool_address")
                 }
 
                 await swap_repo.create_swap(swap_data)
-                logger.info(f"Recorded swap in database: {transaction_hash}")
+                logger.info(f"Recorded swap in database: {transaction_hash} (status: {tx_status})")
         except Exception as db_error:
             # Log but don't fail the swap - it was submitted successfully
             logger.error(f"Error recording swap in database: {db_error}", exc_info=True)
