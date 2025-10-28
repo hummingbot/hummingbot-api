@@ -111,6 +111,7 @@ BANNED_TOKENS=$BANNED_TOKENS
 # 🌐 Gateway Configuration (GATEWAY_*) - Optional
 # =================================================================
 GATEWAY_PASSPHRASE=$GATEWAY_PASSPHRASE
+GATEWAY_URL=http://localhost:15888
 
 # =================================================================
 # 📁 Legacy Settings (maintained for backward compatibility)
