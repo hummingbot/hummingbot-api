@@ -6,7 +6,7 @@ import logging
 from typing import List, Optional
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from deps import get_accounts_service, get_database_manager
 from services.accounts_service import AccountsService
@@ -22,12 +22,128 @@ from models import (
     CLMMCollectFeesResponse,
     CLMMPositionsOwnedRequest,
     CLMMPositionInfo,
-    CLMMGetPositionInfoRequest,
 )
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Gateway CLMM"], prefix="/gateway")
+
+
+def get_transaction_status_from_response(gateway_response: dict) -> str:
+    """
+    Determine transaction status from Gateway response.
+
+    Gateway returns status field in the response:
+    - status: 1 = confirmed
+    - status: 0 = pending/submitted
+
+    Returns:
+        "CONFIRMED" if status == 1
+        "SUBMITTED" if status == 0 or not present
+    """
+    status = gateway_response.get("status")
+
+    # Status 1 means transaction is confirmed on-chain
+    if status == 1:
+        return "CONFIRMED"
+
+    # Status 0 or missing means submitted but not confirmed yet
+    return "SUBMITTED"
+
+
+async def _refresh_position_data(position, accounts_service: AccountsService, clmm_repo: GatewayCLMMRepository):
+    """
+    Refresh position data from Gateway and update database.
+
+    This updates:
+    - in_range status
+    - liquidity amounts
+    - pending fees
+    - position status (if closed externally)
+    """
+    try:
+        # Parse network to get chain and network name
+        chain, network = accounts_service.gateway_client.parse_network_id(position.network)
+
+        # Get wallet address for the position
+        wallet_address = position.wallet_address
+
+        # Get all positions for this pool and find our specific position
+        try:
+            positions_list = await accounts_service.gateway_client.clmm_positions_owned(
+                connector=position.connector,
+                network=network,
+                wallet_address=wallet_address,
+                pool_address=position.pool_address
+            )
+
+            # Find our specific position in the list
+            result = None
+            if isinstance(positions_list, list):
+                for pos in positions_list:
+                    if pos.get("address") == position.position_address:
+                        result = pos
+                        break
+
+            # If position not found, it was closed externally
+            if result is None:
+                logger.info(f"Position {position.position_address} not found on Gateway, marking as CLOSED")
+                await clmm_repo.close_position(position.position_address)
+                return
+
+        except Exception as e:
+            # If we can't fetch positions, log error but don't mark as closed
+            logger.error(f"Error fetching position from Gateway: {e}")
+            return
+
+        # Extract current state
+        current_price = Decimal(str(result.get("price", 0)))
+        lower_price = Decimal(str(result.get("lowerPrice", 0))) if result.get("lowerPrice") else Decimal("0")
+        upper_price = Decimal(str(result.get("upperPrice", 0))) if result.get("upperPrice") else Decimal("0")
+
+        # Calculate in_range status
+        in_range = "UNKNOWN"
+        if current_price > 0 and lower_price > 0 and upper_price > 0:
+            if lower_price <= current_price <= upper_price:
+                in_range = "IN_RANGE"
+            else:
+                in_range = "OUT_OF_RANGE"
+
+        # Extract token amounts
+        base_token_amount = Decimal(str(result.get("baseTokenAmount", 0)))
+        quote_token_amount = Decimal(str(result.get("quoteTokenAmount", 0)))
+
+        # Check if position has been closed (zero liquidity)
+        if base_token_amount == 0 and quote_token_amount == 0:
+            logger.info(f"Position {position.position_address} has zero liquidity, marking as CLOSED")
+            await clmm_repo.close_position(position.position_address)
+            return
+
+        # Update liquidity amounts and in_range status
+        await clmm_repo.update_position_liquidity(
+            position_address=position.position_address,
+            base_token_amount=base_token_amount,
+            quote_token_amount=quote_token_amount,
+            in_range=in_range
+        )
+
+        # Update pending fees if available
+        base_fee_pending = Decimal(str(result.get("baseFeeAmount", 0)))
+        quote_fee_pending = Decimal(str(result.get("quoteFeeAmount", 0)))
+
+        if base_fee_pending or quote_fee_pending:
+            await clmm_repo.update_position_fees(
+                position_address=position.position_address,
+                base_fee_pending=base_fee_pending,
+                quote_fee_pending=quote_fee_pending
+            )
+
+        logger.debug(f"Refreshed position {position.position_address}: in_range={in_range}, "
+                    f"base={base_token_amount}, quote={quote_token_amount}")
+
+    except Exception as e:
+        logger.error(f"Error refreshing position {position.position_address}: {e}", exc_info=True)
+        raise
 
 
 @router.get("/clmm/pool-info")
@@ -151,10 +267,18 @@ async def open_clmm_position(
         data = result.get("data", {})
         position_address = result.get("positionAddress") or result.get("position") or data.get("positionAddress") or data.get("position")
 
+        # Extract position rent (SOL locked for position NFT)
+        position_rent = data.get("positionRent")
+        if position_rent:
+            logger.info(f"Position rent: {position_rent} SOL")
+
         if not transaction_hash:
             raise HTTPException(status_code=500, detail="No transaction hash returned from Gateway")
         if not position_address:
             raise HTTPException(status_code=500, detail="No position address returned from Gateway")
+
+        # Get transaction status from Gateway response
+        tx_status = get_transaction_status_from_response(result)
 
         # Store position and event in database
         try:
@@ -174,6 +298,9 @@ async def open_clmm_position(
                     "status": "OPEN",
                     "lower_price": float(request.lower_price),
                     "upper_price": float(request.upper_price),
+                    "initial_base_token_amount": float(request.base_token_amount) if request.base_token_amount else 0,
+                    "initial_quote_token_amount": float(request.quote_token_amount) if request.quote_token_amount else 0,
+                    "position_rent": float(position_rent) if position_rent else None,
                     "base_token_amount": float(request.base_token_amount) if request.base_token_amount else 0,
                     "quote_token_amount": float(request.quote_token_amount) if request.quote_token_amount else 0,
                     "in_range": "UNKNOWN"  # Will be updated by poller
@@ -182,18 +309,18 @@ async def open_clmm_position(
                 position = await clmm_repo.create_position(position_data)
                 logger.info(f"Recorded CLMM position in database: {position_address}")
 
-                # Create OPEN event
+                # Create OPEN event with polled status
                 event_data = {
                     "position_id": position.id,
                     "transaction_hash": transaction_hash,
                     "event_type": "OPEN",
                     "base_token_amount": float(request.base_token_amount) if request.base_token_amount else None,
                     "quote_token_amount": float(request.quote_token_amount) if request.quote_token_amount else None,
-                    "status": "SUBMITTED"
+                    "status": tx_status
                 }
 
                 await clmm_repo.create_event(event_data)
-                logger.info(f"Recorded CLMM OPEN event in database: {transaction_hash}")
+                logger.info(f"Recorded CLMM OPEN event in database: {transaction_hash} (status: {tx_status})")
         except Exception as db_error:
             # Log but don't fail the operation - it was submitted successfully
             logger.error(f"Error recording CLMM position in database: {db_error}", exc_info=True)
@@ -220,7 +347,8 @@ async def open_clmm_position(
 @router.post("/clmm/add")
 async def add_liquidity_to_clmm_position(
     request: CLMMAddLiquidityRequest,
-    accounts_service: AccountsService = Depends(get_accounts_service)
+    accounts_service: AccountsService = Depends(get_accounts_service),
+    db_manager: AsyncDatabaseManager = Depends(get_database_manager)
 ):
     """
     Add MORE liquidity to an EXISTING CLMM position.
@@ -265,6 +393,30 @@ async def add_liquidity_to_clmm_position(
         if not transaction_hash:
             raise HTTPException(status_code=500, detail="No transaction hash returned from Gateway")
 
+        # Get transaction status from Gateway response
+        tx_status = get_transaction_status_from_response(result)
+
+        # Store ADD_LIQUIDITY event in database
+        try:
+            async with db_manager.get_session_context() as session:
+                clmm_repo = GatewayCLMMRepository(session)
+
+                # Get position to link event
+                position = await clmm_repo.get_position_by_address(request.position_address)
+                if position:
+                    event_data = {
+                        "position_id": position.id,
+                        "transaction_hash": transaction_hash,
+                        "event_type": "ADD_LIQUIDITY",
+                        "base_token_amount": float(request.base_token_amount) if request.base_token_amount else None,
+                        "quote_token_amount": float(request.quote_token_amount) if request.quote_token_amount else None,
+                        "status": tx_status
+                    }
+                    await clmm_repo.create_event(event_data)
+                    logger.info(f"Recorded CLMM ADD_LIQUIDITY event: {transaction_hash} (status: {tx_status})")
+        except Exception as db_error:
+            logger.error(f"Error recording ADD_LIQUIDITY event: {db_error}", exc_info=True)
+
         return {
             "transaction_hash": transaction_hash,
             "position_address": request.position_address,
@@ -283,7 +435,8 @@ async def add_liquidity_to_clmm_position(
 @router.post("/clmm/remove")
 async def remove_liquidity_from_clmm_position(
     request: CLMMRemoveLiquidityRequest,
-    accounts_service: AccountsService = Depends(get_accounts_service)
+    accounts_service: AccountsService = Depends(get_accounts_service),
+    db_manager: AsyncDatabaseManager = Depends(get_database_manager)
 ):
     """
     Remove SOME liquidity from a CLMM position (partial removal).
@@ -324,6 +477,29 @@ async def remove_liquidity_from_clmm_position(
         if not transaction_hash:
             raise HTTPException(status_code=500, detail="No transaction hash returned from Gateway")
 
+        # Get transaction status from Gateway response
+        tx_status = get_transaction_status_from_response(result)
+
+        # Store REMOVE_LIQUIDITY event in database
+        try:
+            async with db_manager.get_session_context() as session:
+                clmm_repo = GatewayCLMMRepository(session)
+
+                # Get position to link event
+                position = await clmm_repo.get_position_by_address(request.position_address)
+                if position:
+                    event_data = {
+                        "position_id": position.id,
+                        "transaction_hash": transaction_hash,
+                        "event_type": "REMOVE_LIQUIDITY",
+                        "percentage": float(request.percentage),
+                        "status": tx_status
+                    }
+                    await clmm_repo.create_event(event_data)
+                    logger.info(f"Recorded CLMM REMOVE_LIQUIDITY event: {transaction_hash} (status: {tx_status})")
+        except Exception as db_error:
+            logger.error(f"Error recording REMOVE_LIQUIDITY event: {db_error}", exc_info=True)
+
         return {
             "transaction_hash": transaction_hash,
             "position_address": request.position_address,
@@ -343,7 +519,8 @@ async def remove_liquidity_from_clmm_position(
 @router.post("/clmm/close")
 async def close_clmm_position(
     request: CLMMClosePositionRequest,
-    accounts_service: AccountsService = Depends(get_accounts_service)
+    accounts_service: AccountsService = Depends(get_accounts_service),
+    db_manager: AsyncDatabaseManager = Depends(get_database_manager)
 ):
     """
     CLOSE a CLMM position completely (removes all liquidity).
@@ -382,6 +559,28 @@ async def close_clmm_position(
         if not transaction_hash:
             raise HTTPException(status_code=500, detail="No transaction hash returned from Gateway")
 
+        # Get transaction status from Gateway response
+        tx_status = get_transaction_status_from_response(result)
+
+        # Store CLOSE event in database
+        try:
+            async with db_manager.get_session_context() as session:
+                clmm_repo = GatewayCLMMRepository(session)
+
+                # Get position to link event
+                position = await clmm_repo.get_position_by_address(request.position_address)
+                if position:
+                    event_data = {
+                        "position_id": position.id,
+                        "transaction_hash": transaction_hash,
+                        "event_type": "CLOSE",
+                        "status": tx_status
+                    }
+                    await clmm_repo.create_event(event_data)
+                    logger.info(f"Recorded CLMM CLOSE event: {transaction_hash} (status: {tx_status})")
+        except Exception as db_error:
+            logger.error(f"Error recording CLOSE event: {db_error}", exc_info=True)
+
         return {
             "transaction_hash": transaction_hash,
             "position_address": request.position_address,
@@ -400,7 +599,8 @@ async def close_clmm_position(
 @router.post("/clmm/collect-fees", response_model=CLMMCollectFeesResponse)
 async def collect_fees_from_clmm_position(
     request: CLMMCollectFeesRequest,
-    accounts_service: AccountsService = Depends(get_accounts_service)
+    accounts_service: AccountsService = Depends(get_accounts_service),
+    db_manager: AsyncDatabaseManager = Depends(get_database_manager)
 ):
     """
     Collect accumulated fees from a CLMM liquidity position.
@@ -421,22 +621,55 @@ async def collect_fees_from_clmm_position(
         # Parse network_id
         chain, network = accounts_service.gateway_client.parse_network_id(request.network)
 
-        # Get wallet address
-        wallet_address = await accounts_service.gateway_client.get_wallet_address_or_default(
-            chain=chain,
-            wallet_address=request.wallet_address
-        )
+        # Get pool_address and wallet_address from database
+        pool_address = None
+        wallet_address = None
 
-        # Get position info to check fees before collecting
-        position_info = await accounts_service.gateway_client.clmm_position_info(
-            connector=request.connector,
-            network=network,
-            wallet_address=wallet_address,
-            position_address=request.position_address
-        )
+        async with db_manager.get_session_context() as session:
+            clmm_repo = GatewayCLMMRepository(session)
+            db_position = await clmm_repo.get_position_by_address(request.position_address)
+            if db_position:
+                pool_address = db_position.pool_address
+                wallet_address = db_position.wallet_address
 
-        base_fee = position_info.get("baseFeeAmount", 0)
-        quote_fee = position_info.get("quoteFeeAmount", 0)
+        # If not in database, use default wallet
+        if not wallet_address:
+            wallet_address = await accounts_service.gateway_client.get_wallet_address_or_default(
+                chain=chain,
+                wallet_address=request.wallet_address
+            )
+
+        # If no pool_address from database, we can't query Gateway
+        if not pool_address:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Position {request.position_address} not found in database. Pool address is required."
+            )
+
+        # Fetch pending fees BEFORE collecting (Gateway doesn't always return collected amounts in response)
+        base_fee_to_collect = Decimal("0")
+        quote_fee_to_collect = Decimal("0")
+
+        try:
+            positions_list = await accounts_service.gateway_client.clmm_positions_owned(
+                connector=request.connector,
+                network=network,
+                wallet_address=wallet_address,
+                pool_address=pool_address
+            )
+
+            # Find our specific position and get pending fees
+            if positions_list and isinstance(positions_list, list):
+                for pos in positions_list:
+                    if pos and pos.get("address") == request.position_address:
+                        base_fee_to_collect = Decimal(str(pos.get("baseFeeAmount", 0)))
+                        quote_fee_to_collect = Decimal(str(pos.get("quoteFeeAmount", 0)))
+                        logger.info(f"Pending fees before collection: base={base_fee_to_collect}, quote={quote_fee_to_collect}")
+                        break
+            else:
+                logger.warning(f"Could not find position {request.position_address} in positions_owned response")
+        except Exception as e:
+            logger.warning(f"Could not fetch pending fees before collection: {e}", exc_info=True)
 
         # Collect fees
         result = await accounts_service.gateway_client.clmm_collect_fees(
@@ -446,15 +679,67 @@ async def collect_fees_from_clmm_position(
             position_address=request.position_address
         )
 
+        if not result:
+            raise HTTPException(status_code=500, detail="No response from Gateway collect-fees endpoint")
+
         transaction_hash = result.get("signature") or result.get("txHash") or result.get("hash")
         if not transaction_hash:
             raise HTTPException(status_code=500, detail="No transaction hash returned from Gateway")
 
+        # Get transaction status from Gateway response
+        tx_status = get_transaction_status_from_response(result)
+
+        # Try to extract collected amounts from Gateway response, fallback to pre-fetched amounts
+        data = result.get("data", {})
+        base_fee_from_response = data.get("baseFeeAmountCollected")
+        quote_fee_from_response = data.get("quoteFeeAmountCollected")
+
+        # Use response values if available, otherwise use pre-fetched values
+        base_fee_collected = Decimal(str(base_fee_from_response)) if base_fee_from_response is not None else base_fee_to_collect
+        quote_fee_collected = Decimal(str(quote_fee_from_response)) if quote_fee_from_response is not None else quote_fee_to_collect
+
+        logger.info(f"Collected fees: base={base_fee_collected}, quote={quote_fee_collected}")
+
+        # Store COLLECT_FEES event in database and update position
+        try:
+            async with db_manager.get_session_context() as session:
+                clmm_repo = GatewayCLMMRepository(session)
+
+                # Get position to link event
+                position = await clmm_repo.get_position_by_address(request.position_address)
+                if position:
+                    # Create event record
+                    event_data = {
+                        "position_id": position.id,
+                        "transaction_hash": transaction_hash,
+                        "event_type": "COLLECT_FEES",
+                        "base_fee_collected": float(base_fee_collected) if base_fee_collected else None,
+                        "quote_fee_collected": float(quote_fee_collected) if quote_fee_collected else None,
+                        "status": tx_status
+                    }
+                    await clmm_repo.create_event(event_data)
+                    logger.info(f"Recorded CLMM COLLECT_FEES event: {transaction_hash} (status: {tx_status})")
+
+                    # Update position: add to collected, reset pending to 0
+                    new_base_collected = Decimal(str(position.base_fee_collected)) + base_fee_collected
+                    new_quote_collected = Decimal(str(position.quote_fee_collected)) + quote_fee_collected
+
+                    await clmm_repo.update_position_fees(
+                        position_address=request.position_address,
+                        base_fee_collected=new_base_collected,
+                        quote_fee_collected=new_quote_collected,
+                        base_fee_pending=Decimal("0"),
+                        quote_fee_pending=Decimal("0")
+                    )
+                    logger.info(f"Updated position {request.position_address}: collected fees updated, pending fees reset to 0")
+        except Exception as db_error:
+            logger.error(f"Error recording COLLECT_FEES event: {db_error}", exc_info=True)
+
         return CLMMCollectFeesResponse(
             transaction_hash=transaction_hash,
             position_address=request.position_address,
-            base_fee_collected=Decimal(str(base_fee)) if base_fee else None,
-            quote_fee_collected=Decimal(str(quote_fee)) if quote_fee else None,
+            base_fee_collected=Decimal(str(base_fee_collected)) if base_fee_collected else None,
+            quote_fee_collected=Decimal(str(quote_fee_collected)) if quote_fee_collected else None,
             status="submitted"
         )
 
@@ -560,37 +845,6 @@ async def get_clmm_positions_owned(
         raise HTTPException(status_code=500, detail=f"Error getting CLMM positions owned: {str(e)}")
 
 
-@router.get("/clmm/positions/{position_address}")
-async def get_clmm_position(
-    position_address: str,
-    db_manager: AsyncDatabaseManager = Depends(get_database_manager)
-):
-    """
-    Get details of a specific CLMM position by address.
-
-    Args:
-        position_address: Position NFT address
-
-    Returns:
-        Position details
-    """
-    try:
-        async with db_manager.get_session_context() as session:
-            clmm_repo = GatewayCLMMRepository(session)
-            position = await clmm_repo.get_position_by_address(position_address)
-
-            if not position:
-                raise HTTPException(status_code=404, detail=f"Position not found: {position_address}")
-
-            return clmm_repo.position_to_dict(position)
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting CLMM position: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error getting CLMM position: {str(e)}")
-
-
 @router.get("/clmm/positions/{position_address}/events")
 async def get_clmm_position_events(
     position_address: str,
@@ -635,9 +889,12 @@ async def search_clmm_positions(
     wallet_address: Optional[str] = None,
     trading_pair: Optional[str] = None,
     status: Optional[str] = None,
+    position_addresses: Optional[List[str]] = Query(None),
     limit: int = 50,
     offset: int = 0,
-    db_manager: AsyncDatabaseManager = Depends(get_database_manager)
+    refresh: bool = False,
+    db_manager: AsyncDatabaseManager = Depends(get_database_manager),
+    accounts_service: AccountsService = Depends(get_accounts_service)
 ):
     """
     Search CLMM positions with filters.
@@ -648,8 +905,10 @@ async def search_clmm_positions(
         wallet_address: Filter by wallet address
         trading_pair: Filter by trading pair (e.g., 'SOL-USDC')
         status: Filter by status (OPEN, CLOSED)
+        position_addresses: Filter by specific position addresses (list of addresses)
         limit: Max results (default 50, max 1000)
         offset: Pagination offset
+        refresh: If True, refresh position data from Gateway before returning (default False)
 
     Returns:
         Paginated list of positions
@@ -659,6 +918,49 @@ async def search_clmm_positions(
         if limit > 1000:
             limit = 1000
 
+        # Optionally refresh position data from Gateway first
+        if refresh and await accounts_service.gateway_client.ping():
+            # Get positions to refresh
+            async with db_manager.get_session_context() as session:
+                clmm_repo = GatewayCLMMRepository(session)
+                positions_to_refresh = await clmm_repo.get_positions(
+                    network=network,
+                    connector=connector,
+                    wallet_address=wallet_address,
+                    trading_pair=trading_pair,
+                    status=status,
+                    position_addresses=position_addresses,
+                    limit=limit,
+                    offset=offset
+                )
+
+                # Extract position addresses and details before closing session
+                position_details = [
+                    {
+                        "position_address": pos.position_address,
+                        "pool_address": pos.pool_address,
+                        "connector": pos.connector,
+                        "network": pos.network,
+                        "wallet_address": pos.wallet_address
+                    }
+                    for pos in positions_to_refresh
+                ]
+
+            # Refresh each position in a separate session
+            logger.info(f"Refreshing {len(position_details)} positions from Gateway")
+            for pos_detail in position_details:
+                try:
+                    async with db_manager.get_session_context() as session:
+                        clmm_repo = GatewayCLMMRepository(session)
+                        # Get position again in this session
+                        position = await clmm_repo.get_position_by_address(pos_detail["position_address"])
+                        if position:
+                            await _refresh_position_data(position, accounts_service, clmm_repo)
+                except Exception as e:
+                    logger.warning(f"Failed to refresh position {pos_detail['position_address']}: {e}")
+                    # Continue with other positions even if one fails
+
+        # Get final results after refresh
         async with db_manager.get_session_context() as session:
             clmm_repo = GatewayCLMMRepository(session)
             positions = await clmm_repo.get_positions(
@@ -667,6 +969,7 @@ async def search_clmm_positions(
                 wallet_address=wallet_address,
                 trading_pair=trading_pair,
                 status=status,
+                position_addresses=position_addresses,
                 limit=limit,
                 offset=offset
             )
@@ -689,77 +992,3 @@ async def search_clmm_positions(
         raise HTTPException(status_code=500, detail=f"Error searching CLMM positions: {str(e)}")
 
 
-@router.post("/clmm/position_info", response_model=CLMMPositionInfo)
-async def get_clmm_position_info(
-    request: CLMMGetPositionInfoRequest,
-    accounts_service: AccountsService = Depends(get_accounts_service)
-):
-    """
-    Get detailed information about a specific CLMM position.
-
-    Example:
-        connector: 'meteora'
-        network: 'solana-mainnet-beta'
-        position_address: '...'
-
-    Returns:
-        CLMM position information
-    """
-    try:
-        if not await accounts_service.gateway_client.ping():
-            raise HTTPException(status_code=503, detail="Gateway service is not available")
-
-        # Parse network_id
-        chain, network = accounts_service.gateway_client.parse_network_id(request.network)
-
-        # Get default wallet address for position info call
-        wallet_address = await accounts_service.gateway_client.get_default_wallet_address(chain)
-        if not wallet_address:
-            raise HTTPException(status_code=400, detail=f"No wallet configured for chain '{chain}'")
-
-        # Get position info
-        result = await accounts_service.gateway_client.clmm_position_info(
-            connector=request.connector,
-            network=network,
-            wallet_address=wallet_address,
-            position_address=request.position_address
-        )
-
-        base_token = result.get("baseToken", "")
-        quote_token = result.get("quoteToken", "")
-        trading_pair = f"{base_token}-{quote_token}" if base_token and quote_token else ""
-
-        current_price = Decimal(str(result.get("price", 0)))
-        lower_price = Decimal(str(result.get("lowerPrice", 0))) if result.get("lowerPrice") else Decimal("0")
-        upper_price = Decimal(str(result.get("upperPrice", 0))) if result.get("upperPrice") else Decimal("0")
-
-        # Determine if position is in range
-        in_range = False
-        if current_price > 0 and lower_price > 0 and upper_price > 0:
-            in_range = lower_price <= current_price <= upper_price
-
-        return CLMMPositionInfo(
-            position_address=request.position_address,
-            pool_address=result.get("poolAddress", ""),
-            trading_pair=trading_pair,
-            base_token=base_token,
-            quote_token=quote_token,
-            base_token_amount=Decimal(str(result.get("baseTokenAmount", 0))),
-            quote_token_amount=Decimal(str(result.get("quoteTokenAmount", 0))),
-            current_price=current_price,
-            lower_price=lower_price,
-            upper_price=upper_price,
-            base_fee_amount=Decimal(str(result.get("baseFeeAmount", 0))) if result.get("baseFeeAmount") else None,
-            quote_fee_amount=Decimal(str(result.get("quoteFeeAmount", 0))) if result.get("quoteFeeAmount") else None,
-            lower_bin_id=result.get("lowerBinId"),
-            upper_bin_id=result.get("upperBinId"),
-            in_range=in_range
-        )
-
-    except HTTPException:
-        raise
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(f"Error getting CLMM position info: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error getting CLMM position info: {str(e)}")
