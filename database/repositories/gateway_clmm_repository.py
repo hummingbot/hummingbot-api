@@ -94,6 +94,7 @@ class GatewayCLMMRepository:
         wallet_address: Optional[str] = None,
         trading_pair: Optional[str] = None,
         status: Optional[str] = None,
+        position_addresses: Optional[List[str]] = None,
         limit: int = 100,
         offset: int = 0
     ) -> List[GatewayCLMMPosition]:
@@ -111,6 +112,8 @@ class GatewayCLMMRepository:
             query = query.where(GatewayCLMMPosition.trading_pair == trading_pair)
         if status:
             query = query.where(GatewayCLMMPosition.status == status)
+        if position_addresses:
+            query = query.where(GatewayCLMMPosition.position_address.in_(position_addresses))
 
         # Apply ordering and pagination
         query = query.order_by(GatewayCLMMPosition.created_at.desc())
@@ -217,7 +220,27 @@ class GatewayCLMMRepository:
     # ============================================
 
     def position_to_dict(self, position: GatewayCLMMPosition) -> Dict:
-        """Convert GatewayCLMMPosition model to dictionary format."""
+        """Convert GatewayCLMMPosition model to dictionary format with PnL calculation."""
+        # Calculate PnL if initial amounts are available
+        pnl_summary = None
+        if position.initial_base_token_amount is not None and position.initial_quote_token_amount is not None:
+            # Current total value = current liquidity + fees collected
+            current_base_total = float(position.base_token_amount) + float(position.base_fee_collected) + float(position.base_fee_pending)
+            current_quote_total = float(position.quote_token_amount) + float(position.quote_fee_collected) + float(position.quote_fee_pending)
+
+            # PnL = current - initial
+            base_pnl = current_base_total - float(position.initial_base_token_amount)
+            quote_pnl = current_quote_total - float(position.initial_quote_token_amount)
+
+            pnl_summary = {
+                "initial_base": float(position.initial_base_token_amount),
+                "initial_quote": float(position.initial_quote_token_amount),
+                "current_base_total": current_base_total,
+                "current_quote_total": current_quote_total,
+                "base_pnl": base_pnl,
+                "quote_pnl": quote_pnl
+            }
+
         return {
             "position_address": position.position_address,
             "pool_address": position.pool_address,
@@ -234,6 +257,9 @@ class GatewayCLMMRepository:
             "upper_price": float(position.upper_price),
             "lower_bin_id": position.lower_bin_id,
             "upper_bin_id": position.upper_bin_id,
+            "initial_base_token_amount": float(position.initial_base_token_amount) if position.initial_base_token_amount is not None else None,
+            "initial_quote_token_amount": float(position.initial_quote_token_amount) if position.initial_quote_token_amount is not None else None,
+            "position_rent": float(position.position_rent) if position.position_rent is not None else None,
             "base_token_amount": float(position.base_token_amount),
             "quote_token_amount": float(position.quote_token_amount),
             "in_range": position.in_range,
@@ -241,6 +267,7 @@ class GatewayCLMMRepository:
             "quote_fee_collected": float(position.quote_fee_collected),
             "base_fee_pending": float(position.base_fee_pending),
             "quote_fee_pending": float(position.quote_fee_pending),
+            "pnl_summary": pnl_summary,
             "last_updated": position.last_updated.isoformat(),
         }
 

@@ -284,6 +284,13 @@ class GatewayCLMMPosition(Base):
     lower_bin_id = Column(Integer, nullable=True)  # For bin-based CLMM (Meteora)
     upper_bin_id = Column(Integer, nullable=True)
 
+    # Initial deposit amounts (for PnL calculation)
+    initial_base_token_amount = Column(Numeric(precision=30, scale=18), nullable=True)
+    initial_quote_token_amount = Column(Numeric(precision=30, scale=18), nullable=True)
+
+    # Position rent (SOL locked for position NFT, returned on close)
+    position_rent = Column(Numeric(precision=30, scale=18), nullable=True)
+
     # Current liquidity amounts
     base_token_amount = Column(Numeric(precision=30, scale=18), nullable=False, default=0)
     quote_token_amount = Column(Numeric(precision=30, scale=18), nullable=False, default=0)
