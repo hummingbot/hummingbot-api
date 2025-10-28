@@ -407,8 +407,7 @@ class GatewayClient:
         position_address: str
     ) -> Dict:
         """Collect accumulated fees from a CLMM position"""
-        return await self._request("POST", "clmm/liquidity/collect-fees", json={
-            "connector": connector,
+        return await self._request("POST", f"connectors/{connector}/clmm/collect-fees", json={
             "network": network,
             "address": wallet_address,
             "positionAddress": position_address
