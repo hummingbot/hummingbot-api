@@ -111,7 +111,8 @@ async def lifespan(app: FastAPI):
 
     accounts_service = AccountsService(
         account_update_interval=settings.app.account_update_interval,
-        market_data_feed_manager=market_data_feed_manager
+        market_data_feed_manager=market_data_feed_manager,
+        gateway_url=settings.gateway.url
     )
     docker_service = DockerService()
     gateway_service = GatewayService()
