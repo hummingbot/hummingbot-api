@@ -177,6 +177,64 @@ class CLMMPoolInfoRequest(BaseModel):
     pool_address: str = Field(description="Pool contract address")
 
 
+class CLMMPoolBin(BaseModel):
+    """Individual bin in a CLMM pool (e.g., Meteora)"""
+    bin_id: int = Field(alias="binId", description="Bin identifier")
+    price: Decimal = Field(description="Price at this bin")
+    base_token_amount: Decimal = Field(alias="baseTokenAmount", description="Base token amount in bin")
+    quote_token_amount: Decimal = Field(alias="quoteTokenAmount", description="Quote token amount in bin")
+
+    model_config = {
+        "populate_by_name": True,
+        "json_schema_extra": {
+            "example": {
+                "bin_id": -374,
+                "price": 0.47366592950616504,
+                "base_token_amount": 19656.740028,
+                "quote_token_amount": 18197.718539
+            }
+        }
+    }
+
+
+class CLMMPoolInfoResponse(BaseModel):
+    """Response with detailed CLMM pool information"""
+    address: str = Field(description="Pool address")
+    base_token_address: str = Field(alias="baseTokenAddress", description="Base token contract address")
+    quote_token_address: str = Field(alias="quoteTokenAddress", description="Quote token contract address")
+    bin_step: int = Field(alias="binStep", description="Bin step (price difference between bins)")
+    fee_pct: Decimal = Field(alias="feePct", description="Pool fee percentage")
+    price: Decimal = Field(description="Current pool price")
+    base_token_amount: Decimal = Field(alias="baseTokenAmount", description="Total base token liquidity")
+    quote_token_amount: Decimal = Field(alias="quoteTokenAmount", description="Total quote token liquidity")
+    active_bin_id: int = Field(alias="activeBinId", description="Currently active bin ID")
+    dynamic_fee_pct: Optional[Decimal] = Field(None, alias="dynamicFeePct", description="Dynamic fee percentage")
+    min_bin_id: int = Field(alias="minBinId", description="Minimum bin ID")
+    max_bin_id: int = Field(alias="maxBinId", description="Maximum bin ID")
+    bins: List[CLMMPoolBin] = Field(default_factory=list, description="List of bins with liquidity")
+
+    model_config = {
+        "populate_by_name": True,
+        "json_schema_extra": {
+            "example": {
+                "address": "5hbf9JP8k5zdrZp9pokPypFQoBse5mGCmW6nqodurGcd",
+                "base_token_address": "METvsvVRapdj9cFLzq4Tr43xK4tAjQfwX76z3n6mWQL",
+                "quote_token_address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+                "bin_step": 20,
+                "fee_pct": 0.2,
+                "price": 0.47366592950616504,
+                "base_token_amount": 8645709.142366,
+                "quote_token_amount": 1095942.335132,
+                "active_bin_id": -374,
+                "dynamic_fee_pct": 0.2,
+                "min_bin_id": -21835,
+                "max_bin_id": 21835,
+                "bins": []
+            }
+        }
+    }
+
+
 # ============================================
 # Pool Information Models
 # ============================================

@@ -22,6 +22,7 @@ from models import (
     CLMMCollectFeesResponse,
     CLMMPositionsOwnedRequest,
     CLMMPositionInfo,
+    CLMMPoolInfoResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -146,7 +147,7 @@ async def _refresh_position_data(position, accounts_service: AccountsService, cl
         raise
 
 
-@router.get("/clmm/pool-info")
+@router.get("/clmm/pool-info", response_model=CLMMPoolInfoResponse, response_model_by_alias=False)
 async def get_clmm_pool_info(
     connector: str,
     network: str,
@@ -166,6 +167,7 @@ async def get_clmm_pool_info(
 
     Returns:
         Pool information including liquidity, price, bins (for Meteora), etc.
+        All field names are returned in snake_case format.
     """
     try:
         if not await accounts_service.gateway_client.ping():
@@ -181,8 +183,9 @@ async def get_clmm_pool_info(
             pool_address=pool_address
         )
 
-        # Return Gateway response directly
-        return result
+        # Parse the camelCase Gateway response into snake_case Pydantic model
+        # The model's aliases will handle the conversion
+        return CLMMPoolInfoResponse(**result)
 
     except HTTPException:
         raise
