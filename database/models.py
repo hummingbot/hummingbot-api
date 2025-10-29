@@ -298,6 +298,9 @@ class GatewayCLMMPosition(Base):
     # In range status
     in_range = Column(String, nullable=False, default="UNKNOWN")  # IN_RANGE, OUT_OF_RANGE, UNKNOWN
 
+    # Price range percentage: (upper_price - lower_price) / lower_price
+    percentage = Column(Numeric(precision=10, scale=6), nullable=True)
+
     # Accumulated fees (CLMM)
     base_fee_collected = Column(Numeric(precision=30, scale=18), nullable=False, default=0)
     quote_fee_collected = Column(Numeric(precision=30, scale=18), nullable=False, default=0)
@@ -329,9 +332,6 @@ class GatewayCLMMEvent(Base):
     # Event amounts
     base_token_amount = Column(Numeric(precision=30, scale=18), nullable=True)
     quote_token_amount = Column(Numeric(precision=30, scale=18), nullable=True)
-
-    # For partial removals
-    percentage = Column(Numeric(precision=10, scale=6), nullable=True)
 
     # For fee collection
     base_fee_collected = Column(Numeric(precision=30, scale=18), nullable=True)
