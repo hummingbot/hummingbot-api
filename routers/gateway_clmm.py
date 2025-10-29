@@ -576,6 +576,12 @@ async def open_clmm_position(
         if not position_address:
             raise HTTPException(status_code=500, detail="No position address returned from Gateway")
 
+        # Calculate percentage: (upper_price - lower_price) / lower_price
+        percentage = None
+        if request.lower_price and request.upper_price and request.lower_price > 0:
+            percentage = float((request.upper_price - request.lower_price) / request.lower_price)
+            logger.info(f"Position price range percentage: {percentage:.4f} ({percentage*100:.2f}%)")
+
         # Get transaction status from Gateway response
         tx_status = get_transaction_status_from_response(result)
 
@@ -601,6 +607,7 @@ async def open_clmm_position(
                     "status": "OPEN",
                     "lower_price": float(request.lower_price),
                     "upper_price": float(request.upper_price),
+                    "percentage": percentage,
                     "initial_base_token_amount": float(request.base_token_amount) if request.base_token_amount else 0,
                     "initial_quote_token_amount": float(request.quote_token_amount) if request.quote_token_amount else 0,
                     "position_rent": float(position_rent) if position_rent else None,
