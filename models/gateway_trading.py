@@ -209,8 +209,8 @@ class CLMMPoolInfoResponse(BaseModel):
     quote_token_amount: Decimal = Field(alias="quoteTokenAmount", description="Total quote token liquidity")
     active_bin_id: int = Field(alias="activeBinId", description="Currently active bin ID")
     dynamic_fee_pct: Optional[Decimal] = Field(None, alias="dynamicFeePct", description="Dynamic fee percentage")
-    min_bin_id: int = Field(alias="minBinId", description="Minimum bin ID")
-    max_bin_id: int = Field(alias="maxBinId", description="Maximum bin ID")
+    min_bin_id: Optional[int] = Field(None, alias="minBinId", description="Minimum bin ID (Meteora-specific)")
+    max_bin_id: Optional[int] = Field(None, alias="maxBinId", description="Maximum bin ID (Meteora-specific)")
     bins: List[CLMMPoolBin] = Field(default_factory=list, description="List of bins with liquidity")
 
     model_config = {
