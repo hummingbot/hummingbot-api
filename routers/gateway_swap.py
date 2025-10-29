@@ -167,7 +167,8 @@ async def execute_swap(
             side=request.side,
             slippage_pct=float(request.slippage_pct) if request.slippage_pct else 1.0
         )
-
+        if not result:
+            raise HTTPException(status_code=500, detail="Gateway service is not able to execute swap")
         transaction_hash = result.get("signature") or result.get("txHash") or result.get("hash")
         if not transaction_hash:
             raise HTTPException(status_code=500, detail="No transaction hash returned from Gateway")
