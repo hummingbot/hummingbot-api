@@ -13,7 +13,7 @@ services:
       # Override specific values for Docker networking
       - BROKER_HOST=emqx
       - DATABASE_URL=postgresql+asyncpg://hbot:hummingbot-api@postgres:5432/hummingbot_api
-      - GATEWAY_URL=http://gateway:15888
+      - GATEWAY_URL=http://host.docker.internal:15888
     networks:
       - emqx-bridge
     depends_on:
