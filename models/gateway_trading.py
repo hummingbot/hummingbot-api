@@ -261,3 +261,34 @@ class PoolInfo(BaseModel):
     # CLMM-specific
     bin_step: Optional[int] = Field(default=None, description="Bin step (CLMM)")
     active_bin_id: Optional[int] = Field(default=None, description="Active bin ID (CLMM)")
+
+
+# ============================================
+# CLMM Pool Listing Models
+# ============================================
+
+class CLMMPoolListItem(BaseModel):
+    """Individual pool item in CLMM pool listing"""
+    address: str = Field(description="Pool address")
+    name: str = Field(description="Pool name (e.g., 'SOL-USDC')")
+    trading_pair: str = Field(description="Trading pair derived from tokens")
+    mint_x: str = Field(description="Base token mint address")
+    mint_y: str = Field(description="Quote token mint address")
+    bin_step: int = Field(description="Bin step size")
+    current_price: Decimal = Field(description="Current pool price")
+    liquidity: str = Field(description="Total liquidity in pool")
+    reserve_x: str = Field(description="Base token reserves")
+    reserve_y: str = Field(description="Quote token reserves")
+    apr: Optional[Decimal] = Field(default=None, description="Annual percentage rate")
+    apy: Optional[Decimal] = Field(default=None, description="Annual percentage yield")
+    volume_24h: Optional[Decimal] = Field(default=None, description="24h trading volume")
+    fees_24h: Optional[Decimal] = Field(default=None, description="24h fees collected")
+    is_verified: bool = Field(default=False, description="Whether tokens are verified")
+
+
+class CLMMPoolListResponse(BaseModel):
+    """Response with list of available CLMM pools"""
+    pools: List[CLMMPoolListItem] = Field(description="List of available pools")
+    total: int = Field(description="Total number of pools")
+    page: int = Field(description="Current page number")
+    limit: int = Field(description="Results per page")

@@ -152,6 +152,9 @@ from .gateway_trading import (
     # Pool info models
     GetPoolInfoRequest,
     PoolInfo,
+    # Pool listing models
+    CLMMPoolListItem,
+    CLMMPoolListResponse,
 )
 
 # Portfolio models
@@ -301,6 +304,8 @@ __all__ = [
     "CLMMPoolInfoResponse",
     "GetPoolInfoRequest",
     "PoolInfo",
+    "CLMMPoolListItem",
+    "CLMMPoolListResponse",
     # Portfolio models
     "TokenBalance",
     "ConnectorBalances",
