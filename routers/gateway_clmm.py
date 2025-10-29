@@ -649,191 +649,191 @@ async def open_clmm_position(
         raise HTTPException(status_code=500, detail=f"Error opening CLMM position: {str(e)}")
 
 
-@router.post("/clmm/add")
-async def add_liquidity_to_clmm_position(
-    request: CLMMAddLiquidityRequest,
-    accounts_service: AccountsService = Depends(get_accounts_service),
-    db_manager: AsyncDatabaseManager = Depends(get_database_manager)
-):
-    """
-    Add MORE liquidity to an EXISTING CLMM position.
-
-    Example:
-        connector: 'meteora'
-        network: 'solana-mainnet-beta'
-        position_address: '...'
-        base_token_amount: 0.5
-        quote_token_amount: 50.0
-        slippage_pct: 1
-        wallet_address: (optional)
-
-    Returns:
-        Transaction hash
-    """
-    try:
-        if not await accounts_service.gateway_client.ping():
-            raise HTTPException(status_code=503, detail="Gateway service is not available")
-
-        # Parse network_id
-        chain, network = accounts_service.gateway_client.parse_network_id(request.network)
-
-        # Get wallet address
-        wallet_address = await accounts_service.gateway_client.get_wallet_address_or_default(
-            chain=chain,
-            wallet_address=request.wallet_address
-        )
-
-        # Add liquidity to existing position
-        result = await accounts_service.gateway_client.clmm_add_liquidity(
-            connector=request.connector,
-            network=network,
-            wallet_address=wallet_address,
-            position_address=request.position_address,
-            base_token_amount=float(request.base_token_amount) if request.base_token_amount else None,
-            quote_token_amount=float(request.quote_token_amount) if request.quote_token_amount else None,
-            slippage_pct=float(request.slippage_pct) if request.slippage_pct else 1.0
-        )
-
-        transaction_hash = result.get("signature") or result.get("txHash") or result.get("hash")
-        if not transaction_hash:
-            raise HTTPException(status_code=500, detail="No transaction hash returned from Gateway")
-
-        # Get transaction status from Gateway response
-        tx_status = get_transaction_status_from_response(result)
-
-        # Extract gas fee from Gateway response
-        data = result.get("data", {})
-        gas_fee = data.get("fee")
-        gas_token = "SOL" if chain == "solana" else "ETH" if chain == "ethereum" else None
-
-        # Store ADD_LIQUIDITY event in database
-        try:
-            async with db_manager.get_session_context() as session:
-                clmm_repo = GatewayCLMMRepository(session)
-
-                # Get position to link event
-                position = await clmm_repo.get_position_by_address(request.position_address)
-                if position:
-                    event_data = {
-                        "position_id": position.id,
-                        "transaction_hash": transaction_hash,
-                        "event_type": "ADD_LIQUIDITY",
-                        "base_token_amount": float(request.base_token_amount) if request.base_token_amount else None,
-                        "quote_token_amount": float(request.quote_token_amount) if request.quote_token_amount else None,
-                        "gas_fee": float(gas_fee) if gas_fee else None,
-                        "gas_token": gas_token,
-                        "status": tx_status
-                    }
-                    await clmm_repo.create_event(event_data)
-                    logger.info(f"Recorded CLMM ADD_LIQUIDITY event: {transaction_hash} (status: {tx_status}, gas: {gas_fee} {gas_token})")
-        except Exception as db_error:
-            logger.error(f"Error recording ADD_LIQUIDITY event: {db_error}", exc_info=True)
-
-        return {
-            "transaction_hash": transaction_hash,
-            "position_address": request.position_address,
-            "status": "submitted"
-        }
-
-    except HTTPException:
-        raise
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(f"Error adding liquidity to CLMM position: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error adding liquidity to CLMM position: {str(e)}")
-
-
-@router.post("/clmm/remove")
-async def remove_liquidity_from_clmm_position(
-    request: CLMMRemoveLiquidityRequest,
-    accounts_service: AccountsService = Depends(get_accounts_service),
-    db_manager: AsyncDatabaseManager = Depends(get_database_manager)
-):
-    """
-    Remove SOME liquidity from a CLMM position (partial removal).
-
-    Example:
-        connector: 'meteora'
-        network: 'solana-mainnet-beta'
-        position_address: '...'
-        percentage: 50
-        wallet_address: (optional)
-
-    Returns:
-        Transaction hash
-    """
-    try:
-        if not await accounts_service.gateway_client.ping():
-            raise HTTPException(status_code=503, detail="Gateway service is not available")
-
-        # Parse network_id
-        chain, network = accounts_service.gateway_client.parse_network_id(request.network)
-
-        # Get wallet address
-        wallet_address = await accounts_service.gateway_client.get_wallet_address_or_default(
-            chain=chain,
-            wallet_address=request.wallet_address
-        )
-
-        # Remove liquidity
-        result = await accounts_service.gateway_client.clmm_remove_liquidity(
-            connector=request.connector,
-            network=network,
-            wallet_address=wallet_address,
-            position_address=request.position_address,
-            percentage=float(request.percentage)
-        )
-
-        transaction_hash = result.get("signature") or result.get("txHash") or result.get("hash")
-        if not transaction_hash:
-            raise HTTPException(status_code=500, detail="No transaction hash returned from Gateway")
-
-        # Get transaction status from Gateway response
-        tx_status = get_transaction_status_from_response(result)
-
-        # Extract gas fee from Gateway response
-        data = result.get("data", {})
-        gas_fee = data.get("fee")
-        gas_token = "SOL" if chain == "solana" else "ETH" if chain == "ethereum" else None
-
-        # Store REMOVE_LIQUIDITY event in database
-        try:
-            async with db_manager.get_session_context() as session:
-                clmm_repo = GatewayCLMMRepository(session)
-
-                # Get position to link event
-                position = await clmm_repo.get_position_by_address(request.position_address)
-                if position:
-                    event_data = {
-                        "position_id": position.id,
-                        "transaction_hash": transaction_hash,
-                        "event_type": "REMOVE_LIQUIDITY",
-                        "percentage": float(request.percentage),
-                        "gas_fee": float(gas_fee) if gas_fee else None,
-                        "gas_token": gas_token,
-                        "status": tx_status
-                    }
-                    await clmm_repo.create_event(event_data)
-                    logger.info(f"Recorded CLMM REMOVE_LIQUIDITY event: {transaction_hash} (status: {tx_status}, gas: {gas_fee} {gas_token})")
-        except Exception as db_error:
-            logger.error(f"Error recording REMOVE_LIQUIDITY event: {db_error}", exc_info=True)
-
-        return {
-            "transaction_hash": transaction_hash,
-            "position_address": request.position_address,
-            "percentage": float(request.percentage),
-            "status": "submitted"
-        }
-
-    except HTTPException:
-        raise
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(f"Error removing liquidity from CLMM position: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error removing liquidity from CLMM position: {str(e)}")
-
+# @router.post("/clmm/add")
+# async def add_liquidity_to_clmm_position(
+#     request: CLMMAddLiquidityRequest,
+#     accounts_service: AccountsService = Depends(get_accounts_service),
+#     db_manager: AsyncDatabaseManager = Depends(get_database_manager)
+# ):
+#     """
+#     Add MORE liquidity to an EXISTING CLMM position.
+#
+#     Example:
+#         connector: 'meteora'
+#         network: 'solana-mainnet-beta'
+#         position_address: '...'
+#         base_token_amount: 0.5
+#         quote_token_amount: 50.0
+#         slippage_pct: 1
+#         wallet_address: (optional)
+#
+#     Returns:
+#         Transaction hash
+#     """
+#     try:
+#         if not await accounts_service.gateway_client.ping():
+#             raise HTTPException(status_code=503, detail="Gateway service is not available")
+#
+#         # Parse network_id
+#         chain, network = accounts_service.gateway_client.parse_network_id(request.network)
+#
+#         # Get wallet address
+#         wallet_address = await accounts_service.gateway_client.get_wallet_address_or_default(
+#             chain=chain,
+#             wallet_address=request.wallet_address
+#         )
+#
+#         # Add liquidity to existing position
+#         result = await accounts_service.gateway_client.clmm_add_liquidity(
+#             connector=request.connector,
+#             network=network,
+#             wallet_address=wallet_address,
+#             position_address=request.position_address,
+#             base_token_amount=float(request.base_token_amount) if request.base_token_amount else None,
+#             quote_token_amount=float(request.quote_token_amount) if request.quote_token_amount else None,
+#             slippage_pct=float(request.slippage_pct) if request.slippage_pct else 1.0
+#         )
+#
+#         transaction_hash = result.get("signature") or result.get("txHash") or result.get("hash")
+#         if not transaction_hash:
+#             raise HTTPException(status_code=500, detail="No transaction hash returned from Gateway")
+#
+#         # Get transaction status from Gateway response
+#         tx_status = get_transaction_status_from_response(result)
+#
+#         # Extract gas fee from Gateway response
+#         data = result.get("data", {})
+#         gas_fee = data.get("fee")
+#         gas_token = "SOL" if chain == "solana" else "ETH" if chain == "ethereum" else None
+#
+#         # Store ADD_LIQUIDITY event in database
+#         try:
+#             async with db_manager.get_session_context() as session:
+#                 clmm_repo = GatewayCLMMRepository(session)
+#
+#                 # Get position to link event
+#                 position = await clmm_repo.get_position_by_address(request.position_address)
+#                 if position:
+#                     event_data = {
+#                         "position_id": position.id,
+#                         "transaction_hash": transaction_hash,
+#                         "event_type": "ADD_LIQUIDITY",
+#                         "base_token_amount": float(request.base_token_amount) if request.base_token_amount else None,
+#                         "quote_token_amount": float(request.quote_token_amount) if request.quote_token_amount else None,
+#                         "gas_fee": float(gas_fee) if gas_fee else None,
+#                         "gas_token": gas_token,
+#                         "status": tx_status
+#                     }
+#                     await clmm_repo.create_event(event_data)
+#                     logger.info(f"Recorded CLMM ADD_LIQUIDITY event: {transaction_hash} (status: {tx_status}, gas: {gas_fee} {gas_token})")
+#         except Exception as db_error:
+#             logger.error(f"Error recording ADD_LIQUIDITY event: {db_error}", exc_info=True)
+#
+#         return {
+#             "transaction_hash": transaction_hash,
+#             "position_address": request.position_address,
+#             "status": "submitted"
+#         }
+#
+#     except HTTPException:
+#         raise
+#     except ValueError as e:
+#         raise HTTPException(status_code=400, detail=str(e))
+#     except Exception as e:
+#         logger.error(f"Error adding liquidity to CLMM position: {e}", exc_info=True)
+#         raise HTTPException(status_code=500, detail=f"Error adding liquidity to CLMM position: {str(e)}")
+#
+#
+# @router.post("/clmm/remove")
+# async def remove_liquidity_from_clmm_position(
+#     request: CLMMRemoveLiquidityRequest,
+#     accounts_service: AccountsService = Depends(get_accounts_service),
+#     db_manager: AsyncDatabaseManager = Depends(get_database_manager)
+# ):
+#     """
+#     Remove SOME liquidity from a CLMM position (partial removal).
+#
+#     Example:
+#         connector: 'meteora'
+#         network: 'solana-mainnet-beta'
+#         position_address: '...'
+#         percentage: 50
+#         wallet_address: (optional)
+#
+#     Returns:
+#         Transaction hash
+#     """
+#     try:
+#         if not await accounts_service.gateway_client.ping():
+#             raise HTTPException(status_code=503, detail="Gateway service is not available")
+#
+#         # Parse network_id
+#         chain, network = accounts_service.gateway_client.parse_network_id(request.network)
+#
+#         # Get wallet address
+#         wallet_address = await accounts_service.gateway_client.get_wallet_address_or_default(
+#             chain=chain,
+#             wallet_address=request.wallet_address
+#         )
+#
+#         # Remove liquidity
+#         result = await accounts_service.gateway_client.clmm_remove_liquidity(
+#             connector=request.connector,
+#             network=network,
+#             wallet_address=wallet_address,
+#             position_address=request.position_address,
+#             percentage=float(request.percentage)
+#         )
+#
+#         transaction_hash = result.get("signature") or result.get("txHash") or result.get("hash")
+#         if not transaction_hash:
+#             raise HTTPException(status_code=500, detail="No transaction hash returned from Gateway")
+#
+#         # Get transaction status from Gateway response
+#         tx_status = get_transaction_status_from_response(result)
+#
+#         # Extract gas fee from Gateway response
+#         data = result.get("data", {})
+#         gas_fee = data.get("fee")
+#         gas_token = "SOL" if chain == "solana" else "ETH" if chain == "ethereum" else None
+#
+#         # Store REMOVE_LIQUIDITY event in database
+#         try:
+#             async with db_manager.get_session_context() as session:
+#                 clmm_repo = GatewayCLMMRepository(session)
+#
+#                 # Get position to link event
+#                 position = await clmm_repo.get_position_by_address(request.position_address)
+#                 if position:
+#                     event_data = {
+#                         "position_id": position.id,
+#                         "transaction_hash": transaction_hash,
+#                         "event_type": "REMOVE_LIQUIDITY",
+#                         "percentage": float(request.percentage),
+#                         "gas_fee": float(gas_fee) if gas_fee else None,
+#                         "gas_token": gas_token,
+#                         "status": tx_status
+#                     }
+#                     await clmm_repo.create_event(event_data)
+#                     logger.info(f"Recorded CLMM REMOVE_LIQUIDITY event: {transaction_hash} (status: {tx_status}, gas: {gas_fee} {gas_token})")
+#         except Exception as db_error:
+#             logger.error(f"Error recording REMOVE_LIQUIDITY event: {db_error}", exc_info=True)
+#
+#         return {
+#             "transaction_hash": transaction_hash,
+#             "position_address": request.position_address,
+#             "percentage": float(request.percentage),
+#             "status": "submitted"
+#         }
+#
+#     except HTTPException:
+#         raise
+#     except ValueError as e:
+#         raise HTTPException(status_code=400, detail=str(e))
+#     except Exception as e:
+#         logger.error(f"Error removing liquidity from CLMM position: {e}", exc_info=True)
+#         raise HTTPException(status_code=500, detail=f"Error removing liquidity from CLMM position: {str(e)}")
+#
 
 @router.post("/clmm/close")
 async def close_clmm_position(
