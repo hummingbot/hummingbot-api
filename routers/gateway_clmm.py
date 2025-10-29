@@ -183,6 +183,9 @@ async def get_clmm_pool_info(
             pool_address=pool_address
         )
 
+        if result is None:
+            raise HTTPException(status_code=503, detail="Failed to get pool info from Gateway")
+
         # Parse the camelCase Gateway response into snake_case Pydantic model
         # The model's aliases will handle the conversion
         return CLMMPoolInfoResponse(**result)
