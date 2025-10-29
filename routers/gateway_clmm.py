@@ -24,7 +24,6 @@ from models import (
     CLMMPositionsOwnedRequest,
     CLMMPositionInfo,
     CLMMPoolInfoResponse,
-    CLMMPoolBin,
     CLMMPoolListItem,
     CLMMPoolListResponse,
 )
