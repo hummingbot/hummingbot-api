@@ -24,6 +24,8 @@ class GatewayService:
 
     def __init__(self):
         self.SOURCE_PATH = os.getcwd()
+        # Use BOTS_PATH if set (for Docker), otherwise use SOURCE_PATH (for local)
+        self.BOTS_PATH = os.environ.get('BOTS_PATH', self.SOURCE_PATH)
         try:
             self.client = docker.from_env()
         except DockerException as e:
@@ -32,7 +34,9 @@ class GatewayService:
 
     def _ensure_gateway_directories(self):
         """Create necessary directories for Gateway if they don't exist"""
-        gateway_base = os.path.join(self.SOURCE_PATH, self.GATEWAY_DIR)
+        # Gateway files are at root level, same as bots directory
+        gateway_base = os.path.join(self.BOTS_PATH, self.GATEWAY_DIR)
+
         conf_dir = os.path.join(gateway_base, "conf")
         logs_dir = os.path.join(gateway_base, "logs")
 
@@ -105,10 +109,10 @@ class GatewayService:
         # Ensure directories exist
         dirs = self._ensure_gateway_directories()
 
-        # Set up volumes
+        # Set up volumes - use BOTS_PATH which contains the HOST path
         volumes = {
-            os.path.abspath(dirs["conf"]): {'bind': '/home/gateway/conf', 'mode': 'rw'},
-            os.path.abspath(dirs["logs"]): {'bind': '/home/gateway/logs', 'mode': 'rw'},
+            os.path.join(self.BOTS_PATH, self.GATEWAY_DIR, "conf"): {'bind': '/home/gateway/conf', 'mode': 'rw'},
+            os.path.join(self.BOTS_PATH, self.GATEWAY_DIR, "logs"): {'bind': '/home/gateway/logs', 'mode': 'rw'},
         }
 
         # Set up environment variables
@@ -131,6 +135,26 @@ class GatewayService:
             }
         )
 
+        # Connect to the same Docker network as the API if it exists
+        # This allows the API container to communicate with Gateway using container name
+        # Try multiple network names (docker-compose prefixes with project name)
+        possible_networks = ["hummingbot-api_emqx-bridge", "emqx-bridge"]
+        network_name = None
+
+        for net in possible_networks:
+            try:
+                # Check if the network exists
+                self.client.networks.get(net)
+                network_name = net
+                logger.info(f"Will connect Gateway to existing network: {network_name}")
+                break
+            except docker.errors.NotFound:
+                continue
+
+        if not network_name:
+            # Network doesn't exist, likely running outside Docker
+            logger.info("Docker network 'emqx-bridge' not found, Gateway will use default networking")
+
         try:
             container = self.client.containers.run(
                 image=config.image,
@@ -142,6 +166,15 @@ class GatewayService:
                 restart_policy={"Name": "always"},
                 log_config=log_config,
             )
+
+            # Connect to the emqx-bridge network if it exists
+            if network_name:
+                try:
+                    network = self.client.networks.get(network_name)
+                    network.connect(container)
+                    logger.info(f"Connected Gateway container to {network_name} network")
+                except Exception as e:
+                    logger.warning(f"Failed to connect Gateway to {network_name} network: {e}")
 
             logger.info(f"Gateway container started successfully: {container.id}")
             return {
