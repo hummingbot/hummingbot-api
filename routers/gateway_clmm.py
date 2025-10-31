@@ -559,6 +559,8 @@ async def open_clmm_position(
             slippage_pct=float(request.slippage_pct) if request.slippage_pct else 1.0,
             extra_params=request.extra_params
         )
+        if not result:
+            raise HTTPException(status_code=404, detail=f"Failed to open CLMM position: {trading_pair}")
 
         transaction_hash = result.get("signature") or result.get("txHash") or result.get("hash")
 
