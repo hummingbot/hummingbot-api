@@ -1,5 +1,6 @@
 import logging
 import os
+import platform
 import shutil
 from typing import Optional, Dict
 
@@ -74,11 +75,17 @@ class GatewayService:
 
         # Extract port from container configuration
         port = None
-        if container.attrs.get("NetworkSettings", {}).get("Ports"):
-            ports = container.attrs["NetworkSettings"]["Ports"]
-            # Gateway typically uses 15888
-            if "15888/tcp" in ports and ports["15888/tcp"]:
-                port = int(ports["15888/tcp"][0]["HostPort"])
+        if container.status == "running":
+            # Check if using host networking
+            network_mode = container.attrs.get("HostConfig", {}).get("NetworkMode", "")
+            if network_mode == "host":
+                # Host networking: Gateway uses port 15888 directly
+                port = 15888
+            else:
+                # Bridge networking: Extract from port mappings
+                ports = container.attrs.get("NetworkSettings", {}).get("Ports", {})
+                if "15888/tcp" in ports and ports["15888/tcp"]:
+                    port = int(ports["15888/tcp"][0]["HostPort"])
 
         return GatewayStatus(
             running=container.status == "running",
@@ -121,11 +128,6 @@ class GatewayService:
             "DEV": str(config.dev_mode).lower(),
         }
 
-        # Set up port mapping
-        ports = {
-            '15888/tcp': config.port
-        }
-
         # Configure logging
         log_config = LogConfig(
             type="json-file",
@@ -135,46 +137,54 @@ class GatewayService:
             }
         )
 
-        # Connect to the same Docker network as the API if it exists
-        # This allows the API container to communicate with Gateway using container name
-        # Try multiple network names (docker-compose prefixes with project name)
-        possible_networks = ["hummingbot-api_emqx-bridge", "emqx-bridge"]
-        network_name = None
+        # Detect platform and configure networking
+        # Native Linux: Use host networking (works natively)
+        # Docker Desktop (macOS/Windows) or containerized: Use bridge networking
+        system_platform = platform.system()
 
-        for net in possible_networks:
-            try:
-                # Check if the network exists
-                self.client.networks.get(net)
-                network_name = net
-                logger.info(f"Will connect Gateway to existing network: {network_name}")
-                break
-            except docker.errors.NotFound:
-                continue
+        # Check if running inside Docker container (Docker Desktop or containerized API)
+        in_container = os.path.exists('/.dockerenv') or os.path.exists('/run/.containerenv')
 
-        if not network_name:
-            # Network doesn't exist, likely running outside Docker
-            logger.info("Docker network 'emqx-bridge' not found, Gateway will use default networking")
+        # Only use host networking on native Linux (not inside a container)
+        use_host_network = system_platform == "Linux" and not in_container
+
+        if use_host_network:
+            logger.info("Detected native Linux - using host network mode for Gateway")
+        else:
+            logger.info(f"Detected {system_platform} (in_container={in_container}) - using bridge networking for Gateway")
 
         try:
-            container = self.client.containers.run(
-                image=config.image,
-                name=self.GATEWAY_CONTAINER_NAME,
-                volumes=volumes,
-                environment=environment,
-                ports=ports,
-                detach=True,
-                restart_policy={"Name": "always"},
-                log_config=log_config,
-            )
+            # Build container configuration
+            container_config = {
+                "image": config.image,
+                "name": self.GATEWAY_CONTAINER_NAME,
+                "volumes": volumes,
+                "environment": environment,
+                "detach": True,
+                "restart_policy": {"Name": "always"},
+                "log_config": log_config,
+            }
 
-            # Connect to the emqx-bridge network if it exists
-            if network_name:
-                try:
-                    network = self.client.networks.get(network_name)
-                    network.connect(container)
-                    logger.info(f"Connected Gateway container to {network_name} network")
-                except Exception as e:
-                    logger.warning(f"Failed to connect Gateway to {network_name} network: {e}")
+            if use_host_network:
+                # Linux: Use host networking
+                container_config["network_mode"] = "host"
+            else:
+                # macOS/Windows: Use bridge networking with port mapping
+                container_config["ports"] = {'15888/tcp': config.port}
+
+            container = self.client.containers.run(**container_config)
+
+            # On macOS/Windows, connect to emqx-bridge network if it exists
+            if not use_host_network:
+                possible_networks = ["hummingbot-api_emqx-bridge", "emqx-bridge"]
+                for net in possible_networks:
+                    try:
+                        network = self.client.networks.get(net)
+                        network.connect(container)
+                        logger.info(f"Connected Gateway to {net} network")
+                        break
+                    except docker.errors.NotFound:
+                        continue
 
             logger.info(f"Gateway container started successfully: {container.id}")
             return {

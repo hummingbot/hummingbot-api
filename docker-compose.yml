@@ -14,6 +14,11 @@ services:
       - BROKER_HOST=emqx
       - DATABASE_URL=postgresql+asyncpg://hbot:hummingbot-api@postgres:5432/hummingbot_api
       - GATEWAY_URL=http://host.docker.internal:15888
+    extra_hosts:
+      # Map host.docker.internal to host gateway for Linux compatibility
+      # On macOS/Windows, Docker Desktop provides this automatically
+      # On Linux, this maps to the docker bridge gateway IP
+      - "host.docker.internal:host-gateway"
     networks:
       - emqx-bridge
     depends_on:
