@@ -267,6 +267,16 @@ class PoolInfo(BaseModel):
 # CLMM Pool Listing Models
 # ============================================
 
+class TimeBasedMetrics(BaseModel):
+    """Time-based metrics (volume, fees, fee-to-TVL ratio) for different time periods"""
+    min_30: Optional[Decimal] = Field(default=None, description="30 minute metric")
+    hour_1: Optional[Decimal] = Field(default=None, description="1 hour metric")
+    hour_2: Optional[Decimal] = Field(default=None, description="2 hour metric")
+    hour_4: Optional[Decimal] = Field(default=None, description="4 hour metric")
+    hour_12: Optional[Decimal] = Field(default=None, description="12 hour metric")
+    hour_24: Optional[Decimal] = Field(default=None, description="24 hour metric")
+
+
 class CLMMPoolListItem(BaseModel):
     """Individual pool item in CLMM pool listing"""
     address: str = Field(description="Pool address")
@@ -279,11 +289,42 @@ class CLMMPoolListItem(BaseModel):
     liquidity: str = Field(description="Total liquidity in pool")
     reserve_x: str = Field(description="Base token reserves")
     reserve_y: str = Field(description="Quote token reserves")
+    reserve_x_amount: Optional[Decimal] = Field(default=None, description="Base token reserves as decimal amount")
+    reserve_y_amount: Optional[Decimal] = Field(default=None, description="Quote token reserves as decimal amount")
+
+    # Fee structure
+    base_fee_percentage: Optional[str] = Field(default=None, description="Base fee percentage")
+    max_fee_percentage: Optional[str] = Field(default=None, description="Maximum fee percentage")
+    protocol_fee_percentage: Optional[str] = Field(default=None, description="Protocol fee percentage")
+
+    # APR/APY
     apr: Optional[Decimal] = Field(default=None, description="Annual percentage rate")
     apy: Optional[Decimal] = Field(default=None, description="Annual percentage yield")
+    farm_apr: Optional[Decimal] = Field(default=None, description="Farming annual percentage rate")
+    farm_apy: Optional[Decimal] = Field(default=None, description="Farming annual percentage yield")
+
+    # Volume and fees
     volume_24h: Optional[Decimal] = Field(default=None, description="24h trading volume")
     fees_24h: Optional[Decimal] = Field(default=None, description="24h fees collected")
+    today_fees: Optional[Decimal] = Field(default=None, description="Today's fees collected")
+    cumulative_trade_volume: Optional[str] = Field(default=None, description="Cumulative trade volume")
+    cumulative_fee_volume: Optional[str] = Field(default=None, description="Cumulative fee volume")
+
+    # Time-based metrics
+    volume: Optional[TimeBasedMetrics] = Field(default=None, description="Volume across different time periods")
+    fees: Optional[TimeBasedMetrics] = Field(default=None, description="Fees across different time periods")
+    fee_tvl_ratio: Optional[TimeBasedMetrics] = Field(default=None, description="Fee-to-TVL ratio across different time periods")
+
+    # Rewards
+    reward_mint_x: Optional[str] = Field(default=None, description="Base token reward mint address")
+    reward_mint_y: Optional[str] = Field(default=None, description="Quote token reward mint address")
+
+    # Metadata
+    tags: Optional[List[str]] = Field(default=None, description="Pool tags")
     is_verified: bool = Field(default=False, description="Whether tokens are verified")
+    is_blacklisted: Optional[bool] = Field(default=None, description="Whether pool is blacklisted")
+    hide: Optional[bool] = Field(default=None, description="Whether pool should be hidden")
+    launchpad: Optional[str] = Field(default=None, description="Associated launchpad")
 
 
 class CLMMPoolListResponse(BaseModel):

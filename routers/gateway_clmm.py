@@ -26,6 +26,7 @@ from models import (
     CLMMPoolInfoResponse,
     CLMMPoolListItem,
     CLMMPoolListResponse,
+    TimeBasedMetrics,
 )
 
 logger = logging.getLogger(__name__)
@@ -459,6 +460,19 @@ async def get_clmm_pools(
                 name = pair.get("name", "")
                 trading_pair = name if name else f"{pair.get('mint_x', '')[:8]}-{pair.get('mint_y', '')[:8]}"
 
+                # Helper function to safely convert dict metrics to TimeBasedMetrics
+                def to_time_metrics(data):
+                    if not data:
+                        return None
+                    return TimeBasedMetrics(
+                        min_30=Decimal(str(data.get("min_30"))) if data.get("min_30") is not None else None,
+                        hour_1=Decimal(str(data.get("hour_1"))) if data.get("hour_1") is not None else None,
+                        hour_2=Decimal(str(data.get("hour_2"))) if data.get("hour_2") is not None else None,
+                        hour_4=Decimal(str(data.get("hour_4"))) if data.get("hour_4") is not None else None,
+                        hour_12=Decimal(str(data.get("hour_12"))) if data.get("hour_12") is not None else None,
+                        hour_24=Decimal(str(data.get("hour_24"))) if data.get("hour_24") is not None else None
+                    )
+
                 pools.append(CLMMPoolListItem(
                     address=pair.get("address", ""),
                     name=name,
@@ -470,11 +484,42 @@ async def get_clmm_pools(
                     liquidity=pair.get("liquidity", "0"),
                     reserve_x=pair.get("reserve_x", "0"),
                     reserve_y=pair.get("reserve_y", "0"),
-                    apr=Decimal(str(pair.get("apr", 0))) if pair.get("apr") else None,
-                    apy=Decimal(str(pair.get("apy", 0))) if pair.get("apy") else None,
-                    volume_24h=Decimal(str(pair.get("trade_volume_24h", 0))) if pair.get("trade_volume_24h") else None,
-                    fees_24h=Decimal(str(pair.get("fees_24h", 0))) if pair.get("fees_24h") else None,
-                    is_verified=pair.get("is_verified", False)
+                    reserve_x_amount=Decimal(str(pair.get("reserve_x_amount"))) if pair.get("reserve_x_amount") is not None else None,
+                    reserve_y_amount=Decimal(str(pair.get("reserve_y_amount"))) if pair.get("reserve_y_amount") is not None else None,
+
+                    # Fee structure
+                    base_fee_percentage=pair.get("base_fee_percentage"),
+                    max_fee_percentage=pair.get("max_fee_percentage"),
+                    protocol_fee_percentage=pair.get("protocol_fee_percentage"),
+
+                    # APR/APY
+                    apr=Decimal(str(pair.get("apr", 0))) if pair.get("apr") is not None else None,
+                    apy=Decimal(str(pair.get("apy", 0))) if pair.get("apy") is not None else None,
+                    farm_apr=Decimal(str(pair.get("farm_apr"))) if pair.get("farm_apr") is not None else None,
+                    farm_apy=Decimal(str(pair.get("farm_apy"))) if pair.get("farm_apy") is not None else None,
+
+                    # Volume and fees
+                    volume_24h=Decimal(str(pair.get("trade_volume_24h", 0))) if pair.get("trade_volume_24h") is not None else None,
+                    fees_24h=Decimal(str(pair.get("fees_24h", 0))) if pair.get("fees_24h") is not None else None,
+                    today_fees=Decimal(str(pair.get("today_fees"))) if pair.get("today_fees") is not None else None,
+                    cumulative_trade_volume=pair.get("cumulative_trade_volume"),
+                    cumulative_fee_volume=pair.get("cumulative_fee_volume"),
+
+                    # Time-based metrics
+                    volume=to_time_metrics(pair.get("volume")),
+                    fees=to_time_metrics(pair.get("fees")),
+                    fee_tvl_ratio=to_time_metrics(pair.get("fee_tvl_ratio")),
+
+                    # Rewards
+                    reward_mint_x=pair.get("reward_mint_x"),
+                    reward_mint_y=pair.get("reward_mint_y"),
+
+                    # Metadata
+                    tags=pair.get("tags"),
+                    is_verified=pair.get("is_verified", False),
+                    is_blacklisted=pair.get("is_blacklisted"),
+                    hide=pair.get("hide"),
+                    launchpad=pair.get("launchpad")
                 ))
 
         total = meteora_data.get("total", len(pools))
