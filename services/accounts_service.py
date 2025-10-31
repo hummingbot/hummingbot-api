@@ -80,7 +80,7 @@ class AccountsService:
             db_manager=self.db_manager,
             gateway_client=self.gateway_client,
             poll_interval=10,  # Poll every 10 seconds for transactions
-            position_poll_interval=300,  # Poll every 5 minutes for positions
+            position_poll_interval=60,  # Poll every 1 minute for positions
             max_retry_age=3600  # Stop retrying after 1 hour
         )
         self._gateway_poller_started = False
