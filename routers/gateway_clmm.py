@@ -889,14 +889,14 @@ async def open_clmm_position(
 #         raise HTTPException(status_code=500, detail=f"Error removing liquidity from CLMM position: {str(e)}")
 #
 
-@router.post("/clmm/close")
+@router.post("/clmm/close", response_model=CLMMCollectFeesResponse)
 async def close_clmm_position(
     request: CLMMClosePositionRequest,
     accounts_service: AccountsService = Depends(get_accounts_service),
     db_manager: AsyncDatabaseManager = Depends(get_database_manager)
 ):
     """
-    CLOSE a CLMM position completely (removes all liquidity).
+    CLOSE a CLMM position completely (removes all liquidity and collects pending fees).
 
     Example:
         connector: 'meteora'
@@ -905,7 +905,7 @@ async def close_clmm_position(
         wallet_address: (optional)
 
     Returns:
-        Transaction hash
+        Transaction hash and collected fee amounts
     """
     try:
         if not await accounts_service.gateway_client.ping():
@@ -914,11 +914,55 @@ async def close_clmm_position(
         # Parse network_id
         chain, network = accounts_service.gateway_client.parse_network_id(request.network)
 
-        # Get wallet address
-        wallet_address = await accounts_service.gateway_client.get_wallet_address_or_default(
-            chain=chain,
-            wallet_address=request.wallet_address
-        )
+        # Get pool_address and wallet_address from database
+        pool_address = None
+        wallet_address = None
+
+        async with db_manager.get_session_context() as session:
+            clmm_repo = GatewayCLMMRepository(session)
+            db_position = await clmm_repo.get_position_by_address(request.position_address)
+            if db_position:
+                pool_address = db_position.pool_address
+                wallet_address = db_position.wallet_address
+
+        # If not in database, use default wallet
+        if not wallet_address:
+            wallet_address = await accounts_service.gateway_client.get_wallet_address_or_default(
+                chain=chain,
+                wallet_address=request.wallet_address
+            )
+
+        # If no pool_address from database, we can't query Gateway
+        if not pool_address:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Position {request.position_address} not found in database. Pool address is required."
+            )
+
+        # Fetch pending fees BEFORE closing (Gateway doesn't always return collected amounts in response)
+        base_fee_to_collect = Decimal("0")
+        quote_fee_to_collect = Decimal("0")
+
+        try:
+            positions_list = await accounts_service.gateway_client.clmm_positions_owned(
+                connector=request.connector,
+                network=network,
+                wallet_address=wallet_address,
+                pool_address=pool_address
+            )
+
+            # Find our specific position and get pending fees
+            if positions_list and isinstance(positions_list, list):
+                for pos in positions_list:
+                    if pos and pos.get("address") == request.position_address:
+                        base_fee_to_collect = Decimal(str(pos.get("baseFeeAmount", 0)))
+                        quote_fee_to_collect = Decimal(str(pos.get("quoteFeeAmount", 0)))
+                        logger.info(f"Pending fees before closing: base={base_fee_to_collect}, quote={quote_fee_to_collect}")
+                        break
+            else:
+                logger.warning(f"Could not find position {request.position_address} in positions_owned response")
+        except Exception as e:
+            logger.warning(f"Could not fetch pending fees before closing: {e}", exc_info=True)
 
         # Close position
         result = await accounts_service.gateway_client.clmm_close_position(
@@ -938,9 +982,19 @@ async def close_clmm_position(
         # Extract gas fee from Gateway response
         data = result.get("data", {})
         gas_fee = data.get("fee")
-        gas_token = "SOL" if chain == "solana" else "ETH" if chain == "ethereum" else None
+        gas_token = get_native_gas_token(chain)
 
-        # Store CLOSE event in database
+        # Try to extract collected amounts from Gateway response, fallback to pre-fetched amounts
+        base_fee_from_response = data.get("baseFeeAmountCollected")
+        quote_fee_from_response = data.get("quoteFeeAmountCollected")
+
+        # Use response values if available, otherwise use pre-fetched values
+        base_fee_collected = Decimal(str(base_fee_from_response)) if base_fee_from_response is not None else base_fee_to_collect
+        quote_fee_collected = Decimal(str(quote_fee_from_response)) if quote_fee_from_response is not None else quote_fee_to_collect
+
+        logger.info(f"Collected fees on close: base={base_fee_collected}, quote={quote_fee_collected}")
+
+        # Store CLOSE event in database and update position
         try:
             async with db_manager.get_session_context() as session:
                 clmm_repo = GatewayCLMMRepository(session)
@@ -948,24 +1002,45 @@ async def close_clmm_position(
                 # Get position to link event
                 position = await clmm_repo.get_position_by_address(request.position_address)
                 if position:
+                    # Create event record
                     event_data = {
                         "position_id": position.id,
                         "transaction_hash": transaction_hash,
                         "event_type": "CLOSE",
+                        "base_fee_collected": float(base_fee_collected) if base_fee_collected else None,
+                        "quote_fee_collected": float(quote_fee_collected) if quote_fee_collected else None,
                         "gas_fee": float(gas_fee) if gas_fee else None,
                         "gas_token": gas_token,
                         "status": tx_status
                     }
                     await clmm_repo.create_event(event_data)
                     logger.info(f"Recorded CLMM CLOSE event: {transaction_hash} (status: {tx_status}, gas: {gas_fee} {gas_token})")
+
+                    # Update position: add to collected, reset pending to 0, mark as CLOSED
+                    new_base_collected = Decimal(str(position.base_fee_collected)) + base_fee_collected
+                    new_quote_collected = Decimal(str(position.quote_fee_collected)) + quote_fee_collected
+
+                    await clmm_repo.update_position_fees(
+                        position_address=request.position_address,
+                        base_fee_collected=new_base_collected,
+                        quote_fee_collected=new_quote_collected,
+                        base_fee_pending=Decimal("0"),
+                        quote_fee_pending=Decimal("0")
+                    )
+
+                    # Mark position as CLOSED
+                    await clmm_repo.close_position(request.position_address)
+                    logger.info(f"Updated position {request.position_address}: collected fees updated, pending fees reset to 0, status set to CLOSED")
         except Exception as db_error:
             logger.error(f"Error recording CLOSE event: {db_error}", exc_info=True)
 
-        return {
-            "transaction_hash": transaction_hash,
-            "position_address": request.position_address,
-            "status": "submitted"
-        }
+        return CLMMCollectFeesResponse(
+            transaction_hash=transaction_hash,
+            position_address=request.position_address,
+            base_fee_collected=Decimal(str(base_fee_collected)) if base_fee_collected else None,
+            quote_fee_collected=Decimal(str(quote_fee_collected)) if quote_fee_collected else None,
+            status="submitted"
+        )
 
     except HTTPException:
         raise
