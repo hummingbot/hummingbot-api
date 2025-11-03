@@ -1,7 +1,7 @@
 from typing import Dict, List, Optional
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Query
 
 from models.trading import (
     PortfolioStateFilterRequest,
@@ -327,5 +327,5 @@ async def get_accounts_distribution(
             account_data["percentage"] = (account_data.get("total_value", 0) / total_value) * 100
     
     filtered_distribution["account_count"] = len(filtered_distribution["accounts"])
-    
+
     return filtered_distribution

@@ -643,7 +643,9 @@ async def deploy_v2_controllers(
         # Generate unique script config filename with timestamp
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         script_config_filename = f"{deployment.instance_name}-{timestamp}.yml"
-        
+        # Use the same name with timestamp for the instance to ensure uniqueness
+        unique_instance_name = f"{deployment.instance_name}-{timestamp}"
+
         # Ensure controller config names have .yml extension
         controllers_with_extension = []
         for controller in deployment.controllers_config:
@@ -651,7 +653,7 @@ async def deploy_v2_controllers(
                 controllers_with_extension.append(f"{controller}.yml")
             else:
                 controllers_with_extension.append(controller)
-        
+
         # Create the script config content
         script_config_content = {
             "script_file_name": "v2_with_controllers.py",
@@ -659,24 +661,24 @@ async def deploy_v2_controllers(
             "markets": {},
             "controllers_config": controllers_with_extension,
         }
-        
+
         # Add optional drawdown parameters if provided
         if deployment.max_global_drawdown_quote is not None:
             script_config_content["max_global_drawdown_quote"] = deployment.max_global_drawdown_quote
         if deployment.max_controller_drawdown_quote is not None:
             script_config_content["max_controller_drawdown_quote"] = deployment.max_controller_drawdown_quote
-        
+
         # Save the script config to the scripts directory
         scripts_dir = os.path.join("conf", "scripts")
 
         script_config_path = os.path.join(scripts_dir, script_config_filename)
         fs_util.dump_dict_to_yaml(script_config_path, script_config_content)
-        
+
         logging.info(f"Generated script config: {script_config_filename} with content: {script_config_content}")
-        
+
         # Create the V2ScriptDeployment with the generated script config
         instance_config = V2ScriptDeployment(
-            instance_name=deployment.instance_name,
+            instance_name=unique_instance_name,
             credentials_profile=deployment.credentials_profile,
             image=deployment.image,
             script="v2_with_controllers.py",
@@ -689,14 +691,15 @@ async def deploy_v2_controllers(
         if response.get("success"):
             response["script_config_generated"] = script_config_filename
             response["controllers_deployed"] = deployment.controllers_config
-            
+            response["unique_instance_name"] = unique_instance_name
+
             # Track bot run if deployment was successful
             try:
                 async with db_manager.get_session_context() as session:
                     bot_run_repo = BotRunRepository(session)
                     await bot_run_repo.create_bot_run(
-                        bot_name=deployment.instance_name,
-                        instance_name=deployment.instance_name,
+                        bot_name=unique_instance_name,
+                        instance_name=unique_instance_name,
                         strategy_type="controller",
                         strategy_name="v2_with_controllers",
                         account_name=deployment.credentials_profile,
@@ -704,11 +707,11 @@ async def deploy_v2_controllers(
                         image_version=deployment.image,
                         deployment_config=deployment.dict()
                     )
-                    logger.info(f"Created bot run record for controller deployment {deployment.instance_name}")
+                    logger.info(f"Created bot run record for controller deployment {unique_instance_name}")
             except Exception as e:
                 logger.error(f"Failed to create bot run record: {e}")
                 # Don't fail the deployment if bot run creation fails
-            
+
         return response
         
     except Exception as e:

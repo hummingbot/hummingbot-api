@@ -177,35 +177,175 @@ class FundingPayment(Base):
 
 class BotRun(Base):
     __tablename__ = "bot_runs"
-    
+
     id = Column(Integer, primary_key=True, index=True)
-    
+
     # Bot identification
     bot_name = Column(String, nullable=False, index=True)
     instance_name = Column(String, nullable=False, index=True)
-    
+
     # Deployment info
     deployed_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False, index=True)
     strategy_type = Column(String, nullable=False, index=True)  # 'script' or 'controller'
     strategy_name = Column(String, nullable=False, index=True)
     config_name = Column(String, nullable=True, index=True)
-    
+
     # Runtime tracking
     stopped_at = Column(TIMESTAMP(timezone=True), nullable=True, index=True)
-    
+
     # Status tracking
     deployment_status = Column(String, nullable=False, default="DEPLOYED", index=True)  # DEPLOYED, FAILED, ARCHIVED
     run_status = Column(String, nullable=False, default="CREATED", index=True)  # CREATED, RUNNING, STOPPED, ERROR
-    
+
     # Configuration and final state
     deployment_config = Column(Text, nullable=True)  # JSON of full deployment config
     final_status = Column(Text, nullable=True)  # JSON of final bot state, performance, etc.
-    
+
     # Account info
     account_name = Column(String, nullable=False, index=True)
-    
+
     # Metadata
     image_version = Column(String, nullable=True, index=True)
     error_message = Column(Text, nullable=True)
+
+
+class GatewaySwap(Base):
+    __tablename__ = "gateway_swaps"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    # Transaction identification
+    transaction_hash = Column(String, nullable=False, unique=True, index=True)
+
+    # Timestamps
+    timestamp = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False, index=True)
+
+    # Network and connector info (unified format)
+    network = Column(String, nullable=False, index=True)  # chain-network format: solana-mainnet-beta, ethereum-mainnet
+    connector = Column(String, nullable=False, index=True)  # jupiter, 0x, etc.
+    wallet_address = Column(String, nullable=False, index=True)
+
+    # Swap details
+    trading_pair = Column(String, nullable=False, index=True)
+    base_token = Column(String, nullable=False, index=True)
+    quote_token = Column(String, nullable=False, index=True)
+    side = Column(String, nullable=False)  # BUY, SELL
+
+    # Amounts
+    input_amount = Column(Numeric(precision=30, scale=18), nullable=False)
+    output_amount = Column(Numeric(precision=30, scale=18), nullable=False)
+    price = Column(Numeric(precision=30, scale=18), nullable=False)
+
+    # Slippage and fees
+    slippage_pct = Column(Numeric(precision=10, scale=6), nullable=True)
+    gas_fee = Column(Numeric(precision=30, scale=18), nullable=True)
+    gas_token = Column(String, nullable=True)  # SOL, ETH, etc.
+
+    # Status
+    status = Column(String, nullable=False, default="SUBMITTED", index=True)  # SUBMITTED, CONFIRMED, FAILED
+
+    # Pool information (optional)
+    pool_address = Column(String, nullable=True, index=True)
+
+    # Additional metadata
+    quote_id = Column(String, nullable=True)  # If swap was from a quote
+    error_message = Column(Text, nullable=True)
+
+
+class GatewayCLMMPosition(Base):
+    __tablename__ = "gateway_clmm_positions"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    # Position identification
+    position_address = Column(String, nullable=False, unique=True, index=True)  # CLMM position NFT address
+    pool_address = Column(String, nullable=False, index=True)
+
+    # Network and connector info (unified format)
+    network = Column(String, nullable=False, index=True)  # chain-network format: solana-mainnet-beta, ethereum-mainnet
+    connector = Column(String, nullable=False, index=True)  # meteora, raydium, uniswap
+    wallet_address = Column(String, nullable=False, index=True)
+
+    # Position pair
+    trading_pair = Column(String, nullable=False, index=True)
+    base_token = Column(String, nullable=False, index=True)
+    quote_token = Column(String, nullable=False, index=True)
+
+    # Timestamps
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False, index=True)
+    closed_at = Column(TIMESTAMP(timezone=True), nullable=True, index=True)
+
+    # Status
+    status = Column(String, nullable=False, default="OPEN", index=True)  # OPEN, CLOSED
+
+    # Price range (CLMM)
+    lower_price = Column(Numeric(precision=30, scale=18), nullable=False)
+    upper_price = Column(Numeric(precision=30, scale=18), nullable=False)
+    lower_bin_id = Column(Integer, nullable=True)  # For bin-based CLMM (Meteora)
+    upper_bin_id = Column(Integer, nullable=True)
+
+    # Initial deposit amounts (for PnL calculation)
+    initial_base_token_amount = Column(Numeric(precision=30, scale=18), nullable=True)
+    initial_quote_token_amount = Column(Numeric(precision=30, scale=18), nullable=True)
+
+    # Position rent (SOL locked for position NFT, returned on close)
+    position_rent = Column(Numeric(precision=30, scale=18), nullable=True)
+
+    # Current liquidity amounts
+    base_token_amount = Column(Numeric(precision=30, scale=18), nullable=False, default=0)
+    quote_token_amount = Column(Numeric(precision=30, scale=18), nullable=False, default=0)
+
+    # In range status
+    in_range = Column(String, nullable=False, default="UNKNOWN")  # IN_RANGE, OUT_OF_RANGE, UNKNOWN
+
+    # Price range percentage: (upper_price - lower_price) / lower_price
+    percentage = Column(Numeric(precision=10, scale=6), nullable=True)
+
+    # Accumulated fees (CLMM)
+    base_fee_collected = Column(Numeric(precision=30, scale=18), nullable=False, default=0)
+    quote_fee_collected = Column(Numeric(precision=30, scale=18), nullable=False, default=0)
+    base_fee_pending = Column(Numeric(precision=30, scale=18), nullable=False, default=0)
+    quote_fee_pending = Column(Numeric(precision=30, scale=18), nullable=False, default=0)
+
+    # Last update timestamp
+    last_updated = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    # Relationships
+    events = relationship("GatewayCLMMEvent", back_populates="position", cascade="all, delete-orphan")
+
+
+class GatewayCLMMEvent(Base):
+    __tablename__ = "gateway_clmm_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    position_id = Column(Integer, ForeignKey("gateway_clmm_positions.id"), nullable=False)
+
+    # Event identification
+    transaction_hash = Column(String, nullable=False, index=True)
+
+    # Timestamps
+    timestamp = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False, index=True)
+
+    # Event type
+    event_type = Column(String, nullable=False, index=True)  # OPEN, ADD_LIQUIDITY, REMOVE_LIQUIDITY, COLLECT_FEES, CLOSE
+
+    # Event amounts
+    base_token_amount = Column(Numeric(precision=30, scale=18), nullable=True)
+    quote_token_amount = Column(Numeric(precision=30, scale=18), nullable=True)
+
+    # For fee collection
+    base_fee_collected = Column(Numeric(precision=30, scale=18), nullable=True)
+    quote_fee_collected = Column(Numeric(precision=30, scale=18), nullable=True)
+
+    # Gas fee
+    gas_fee = Column(Numeric(precision=30, scale=18), nullable=True)
+    gas_token = Column(String, nullable=True)
+
+    # Status
+    status = Column(String, nullable=False, default="SUBMITTED", index=True)  # SUBMITTED, CONFIRMED, FAILED
+    error_message = Column(Text, nullable=True)
+
+    # Relationship
+    position = relationship("GatewayCLMMPosition", back_populates="events")
 
 

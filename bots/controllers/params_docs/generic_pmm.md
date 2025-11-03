@@ -38,9 +38,11 @@ The PMM (Pure Market Making) controller implements a sophisticated market making
 - **Description**: The trading pair to make markets on
 
 #### Value Impact Analysis:
-- Major pairs (BTC-USDT, ETH-USDT) typically have tighter spreads and higher competition
+- **FDUSD pairs on Binance** (BTC-FDUSD, ETH-FDUSD): **RECOMMENDED** - Zero maker/taker fees, ideal for market making
+- Major pairs (BTC-USDT, ETH-USDT) typically have tighter spreads and higher competition but incur trading fees
 - Altcoin pairs may offer wider spreads but higher volatility risk
 - Stablecoin pairs (USDC-USDT) have minimal directional risk but tiny spreads
+- **Fee Consideration**: On Binance, FDUSD pairs have 0% fees, making them significantly more profitable for high-frequency market making
 
 ### `portfolio_allocation`
 - **Type**: `Decimal`
@@ -111,7 +113,7 @@ The PMM (Pure Market Making) controller implements a sophisticated market making
 
 #### Example Configurations:
 ```yaml
-# Liquid market (BTC-USDT)
+# Liquid market (BTC-FDUSD on Binance - zero fees)
 buy_spreads: [0.0001, 0.0002, 0.0005, 0.0007]
 sell_spreads: [0.0002, 0.0004, 0.0006, 0.0008]
 
@@ -261,7 +263,7 @@ buy_amounts_pct: [1, 1, 2, 3]
 controller_name: pmm
 controller_type: generic
 connector_name: binance
-trading_pair: BTC-USDT
+trading_pair: BTC-FDUSD  # Zero fees on Binance
 portfolio_allocation: 0.025  # Only 2.5% allocation
 total_amount_quote: 1000
 
@@ -294,8 +296,8 @@ global_stop_loss: 0.03
 ```yaml
 controller_name: pmm
 controller_type: generic
-connector_name: binance_perpetual
-trading_pair: ETH-USDT
+connector_name: binance
+trading_pair: ETH-FDUSD  # Zero fees on Binance spot
 portfolio_allocation: 0.05
 total_amount_quote: 5000
 
@@ -468,23 +470,25 @@ global_stop_loss: 0.15
 
 ## Best Practices
 
-1. **Start Small**: Begin with 1-2% portfolio allocation and low/no leverage
-2. **Paper Trade First**: Test configurations without real capital
+1. **Start Small**: Begin with 1-2% portfolio allocation and low/no leverage on real funds
+2. **Use FDUSD Pairs on Binance**: Take advantage of zero-fee trading for BTC-FDUSD, ETH-FDUSD, and other FDUSD pairs
 3. **Monitor Actively**: Watch performance for first 24-48 hours of new config
 4. **Gradual Scaling**: Increase allocation/leverage gradually as confidence builds
 5. **Risk Limits**: Always set global stop loss and take profit levels
 6. **Market Research**: Understand the specific dynamics of your chosen trading pair
 7. **Regular Reviews**: Analyze performance weekly and adjust parameters
 8. **Diversification**: Consider running multiple instances on different pairs
-9. **Fee Awareness**: Account for trading fees in spread calculations
+9. **Fee Optimization**: Use zero-fee pairs (FDUSD on Binance) or exchanges with maker rebates
 10. **Backup Plans**: Have exit strategy if market conditions change dramatically
 
 ## Additional Notes
 
+- **FDUSD Advantage**: Binance offers 0% maker and taker fees on FDUSD pairs, making them ideal for PMM strategies
 - PMM works best in liquid markets with consistent two-way flow
 - Avoid during major news events unless specifically configured for volatility
 - Consider time-of-day effects (Asian/European/US sessions)
-- Some exchanges have special maker fee rebates that improve profitability
+- Some exchanges have special maker fee rebates that improve profitability (but FDUSD pairs are already free on Binance)
 - Always ensure sufficient balance for potential position accumulation
 - The controller automatically handles position sizing based on available balance
 - Monitor the skew visualization in status to understand rebalancing behavior
+- Start with real funds but small amounts - real market dynamics differ from simulations

@@ -6,7 +6,7 @@ from starlette import status
 
 from services.accounts_service import AccountsService
 from deps import get_accounts_service
-from models import PaginatedResponse
+from models import PaginatedResponse, GatewayWalletCredential, GatewayWalletInfo
 
 router = APIRouter(tags=["Accounts"], prefix="/accounts")
 
@@ -117,15 +117,15 @@ async def delete_credential(account_name: str, connector_name: str, accounts_ser
 async def add_credential(account_name: str, connector_name: str, credentials: Dict, accounts_service: AccountsService = Depends(get_accounts_service)):
     """
     Add or update connector credentials (API keys) for a specific account and connector.
-    
+
     Args:
         account_name: Name of the account
         connector_name: Name of the connector
         credentials: Dictionary containing the connector credentials
-        
+
     Returns:
         Success message when credentials are added
-        
+
     Raises:
         HTTPException: 400 if there's an error adding the credentials
     """
@@ -135,3 +135,87 @@ async def add_credential(account_name: str, connector_name: str, credentials: Di
     except Exception as e:
         await accounts_service.delete_credentials(account_name, connector_name)
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# ============================================
+# Gateway Wallet Management Endpoints
+# ============================================
+
+@router.get("/gateway/wallets")
+async def list_gateway_wallets(accounts_service: AccountsService = Depends(get_accounts_service)):
+    """
+    List all wallets managed by Gateway.
+    Gateway manages its own encrypted wallet storage.
+
+    Returns:
+        List of wallet information from Gateway
+
+    Raises:
+        HTTPException: 503 if Gateway unavailable
+    """
+    try:
+        wallets = await accounts_service.get_gateway_wallets()
+        return wallets
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/gateway/add-wallet", status_code=status.HTTP_201_CREATED)
+async def add_gateway_wallet(
+    wallet_credential: GatewayWalletCredential,
+    accounts_service: AccountsService = Depends(get_accounts_service)
+):
+    """
+    Add a wallet to Gateway. Gateway handles encryption and storage internally.
+
+    Args:
+        wallet_credential: Wallet credentials (chain and private_key)
+
+    Returns:
+        Wallet information from Gateway including address
+
+    Raises:
+        HTTPException: 503 if Gateway unavailable, 400 on validation error
+    """
+    try:
+        result = await accounts_service.add_gateway_wallet(
+            chain=wallet_credential.chain,
+            private_key=wallet_credential.private_key
+        )
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/gateway/{chain}/{address}")
+async def remove_gateway_wallet(
+    chain: str,
+    address: str,
+    accounts_service: AccountsService = Depends(get_accounts_service)
+):
+    """
+    Remove a wallet from Gateway.
+
+    Args:
+        chain: Blockchain chain (e.g., 'solana', 'ethereum')
+        address: Wallet address to remove
+
+    Returns:
+        Success message
+
+    Raises:
+        HTTPException: 503 if Gateway unavailable
+    """
+    try:
+        result = await accounts_service.remove_gateway_wallet(chain, address)
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+

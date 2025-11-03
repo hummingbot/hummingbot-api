@@ -56,12 +56,23 @@ class SecuritySettings(BaseSettings):
 
 class AWSSettings(BaseSettings):
     """AWS configuration for S3 archiving."""
-    
+
     api_key: str = Field(default="", description="AWS API key")
     secret_key: str = Field(default="", description="AWS secret key")
     s3_default_bucket_name: str = Field(default="", description="Default S3 bucket for archiving")
 
     model_config = SettingsConfigDict(env_prefix="AWS_", extra="ignore")
+
+
+class GatewaySettings(BaseSettings):
+    """Gateway service configuration."""
+
+    url: str = Field(
+        default="http://localhost:15888",
+        description="Gateway service URL (use 'http://gateway:15888' when running in Docker)"
+    )
+
+    model_config = SettingsConfigDict(env_prefix="GATEWAY_", extra="ignore")
 
 
 class AppSettings(BaseSettings):
@@ -94,12 +105,13 @@ class AppSettings(BaseSettings):
 
 class Settings(BaseSettings):
     """Combined application settings."""
-    
+
     broker: BrokerSettings = Field(default_factory=BrokerSettings)
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     market_data: MarketDataSettings = Field(default_factory=MarketDataSettings)
     security: SecuritySettings = Field(default_factory=SecuritySettings)
     aws: AWSSettings = Field(default_factory=AWSSettings)
+    gateway: GatewaySettings = Field(default_factory=GatewaySettings)
     app: AppSettings = Field(default_factory=AppSettings)
     
     # Direct banned_tokens field to handle env parsing

@@ -2,6 +2,7 @@ from fastapi import Request
 from services.bots_orchestrator import BotsOrchestrator
 from services.accounts_service import AccountsService
 from services.docker_service import DockerService
+from services.gateway_service import GatewayService
 from services.market_data_feed_manager import MarketDataFeedManager
 from utils.bot_archiver import BotArchiver
 from database import AsyncDatabaseManager
@@ -20,6 +21,11 @@ def get_accounts_service(request: Request) -> AccountsService:
 def get_docker_service(request: Request) -> DockerService:
     """Get DockerService from app state."""
     return request.app.state.docker_service
+
+
+def get_gateway_service(request: Request) -> GatewayService:
+    """Get GatewayService from app state."""
+    return request.app.state.gateway_service
 
 
 def get_market_data_feed_manager(request: Request) -> MarketDataFeedManager:
