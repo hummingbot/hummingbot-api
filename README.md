@@ -133,6 +133,83 @@ Choose the method that best fits your workflow:
 
 Whether you're building a trading dashboard, implementing algorithmic strategies, or creating a comprehensive trading platform, the Hummingbot API provides all the tools you need.
 
+## 🔌 Setting Up MCP with Claude Code
+
+If you're using Claude Code (the CLI tool), you can connect to the Hummingbot MCP server directly from your development environment.
+
+### Quick Setup
+
+1. **Enable MCP during setup** (if not already done):
+   ```bash
+   ./setup.sh  # Answer "y" to "Enable MCP server for AI assistant usage?"
+   ```
+
+2. **Add the MCP server to Claude Code**:
+   ```bash
+   claude mcp add --transport stdio hummingbot -- docker exec -i hummingbot-mcp mcp
+   ```
+
+   This configures Claude Code to communicate with the Hummingbot MCP server running in Docker.
+
+3. **Start using Hummingbot in Claude Code**:
+   - Open your terminal with Claude Code
+   - Use natural language commands to interact with your trading operations:
+     ```
+     "What are my current portfolio balances?"
+     "Show me active trading bots"
+     "Create a new market making strategy for ETH-USDT"
+     ```
+
+### Configuration File
+
+The command above automatically creates/updates `.mcp.json` in your project root:
+
+```json
+{
+  "mcpServers": {
+    "hummingbot": {
+      "command": "docker",
+      "args": ["exec", "-i", "hummingbot-mcp", "mcp"]
+    }
+  }
+}
+```
+
+### Managing the Connection
+
+**List configured MCP servers:**
+```bash
+claude mcp list
+```
+
+**View server details:**
+```bash
+claude mcp get hummingbot
+```
+
+**Remove the server:**
+```bash
+claude mcp remove hummingbot
+```
+
+### Prerequisites
+
+- Claude Code CLI installed (see [Claude Code documentation](https://docs.claude.com/en/docs/claude-code))
+- MCP service enabled during Hummingbot API setup
+- Docker running with `hummingbot-mcp` container active
+
+### Verify Setup
+
+Check that the MCP container is running:
+```bash
+docker ps | grep hummingbot-mcp
+```
+
+If the container isn't running, re-run setup with MCP enabled:
+```bash
+./setup.sh  # Answer "y" to MCP prompt
+```
+
 ## 🌐 Gateway Setup (For DEX Trading)
 
 Gateway is required for decentralized exchange (DEX) trading. The Hummingbot API can manage Gateway containers for you - no separate installation needed!

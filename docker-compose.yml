@@ -12,7 +12,7 @@ services:
   #       - BACKEND_API_USERNAME=${USERNAME}
   #       - BACKEND_API_PASSWORD=${PASSWORD}
   #   volumes:
-  #     - ./credentials.yml:/home/dashboard/credentials.yml
+  #     - ./dashboard-credentials.yml:/home/dashboard/credentials.yml
   #     - ./pages:/home/dashboard/pages
   #   networks:
   #       - emqx-bridge

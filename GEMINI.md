@@ -1,0 +1,164 @@
+# Using Hummingbot API with Gemini
+
+This guide shows you how to interact with the Hummingbot API using Google Gemini.
+
+## 🤖 Method 1: MCP Server (Recommended)
+
+The Hummingbot MCP server provides natural language access to all API functionality through Gemini.
+
+### Setup via Gemini CLI
+
+1. **Enable MCP during Hummingbot API setup**:
+   ```bash
+   ./setup.sh  # Answer "y" to "Enable MCP server for AI assistant usage?"
+   ```
+
+2. **Add the MCP server using Gemini CLI**:
+   ```bash
+   gemini mcp add hummingbot \
+     --command "docker" \
+     --args "exec" "-i" "hummingbot-mcp" "mcp" \
+     --protocol stdio
+   ```
+
+3. **Verify the server was added**:
+   ```bash
+   gemini mcp list
+   ```
+
+4. **Start using natural language**:
+   - "What are my current portfolio balances?"
+   - "Show me active trading bots"
+   - "Create a new market making strategy for SOL-USDT"
+   - "What's the performance of my bots today?"
+
+### Manual Configuration (Alternative)
+
+#### For Gemini CLI (Global Configuration)
+
+Create or edit `~/.gemini/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "hummingbot": {
+      "command": "docker",
+      "args": ["exec", "-i", "hummingbot-mcp", "mcp"],
+      "protocol": "stdio"
+    }
+  }
+}
+```
+
+#### For Project-Specific Configuration
+
+Create `.gemini/settings.json` in your project root:
+
+```json
+{
+  "mcpServers": {
+    "hummingbot": {
+      "command": "docker",
+      "args": ["exec", "-i", "hummingbot-mcp", "mcp"],
+      "protocol": "stdio"
+    }
+  }
+}
+```
+
+#### For IDE Integration
+
+Create `mcp.json` in your IDE's configuration directory:
+
+```json
+{
+  "mcpServers": {
+    "hummingbot": {
+      "command": "docker",
+      "args": ["exec", "-i", "hummingbot-mcp", "mcp"],
+      "protocol": "stdio"
+    }
+  }
+}
+```
+
+### Managing the Connection
+
+```bash
+# List all configured MCP servers
+gemini mcp list
+
+# View details of the Hummingbot server
+gemini mcp get hummingbot
+
+# Remove the server
+gemini mcp remove hummingbot
+```
+
+## 🔧 Method 2: Direct API Access (Fallback)
+
+If MCP is unavailable, you can interact with the API directly using HTTP requests.
+
+### API Endpoints
+
+The API is accessible at `http://localhost:8000` with interactive Swagger docs at `http://localhost:8000/docs`.
+
+See @API_REFERENCE.md for the complete endpoint reference.
+
+### Authentication
+
+All endpoints require HTTP Basic Authentication:
+
+```bash
+curl -u username:password http://localhost:8000/endpoint
+```
+
+### Example API Calls
+
+**Get Portfolio State**:
+```bash
+curl -u admin:admin -X POST http://localhost:8000/portfolio/state \
+  -H "Content-Type: application/json" \
+  -d '{"account_names": ["master_account"]}'
+```
+
+**List Active Bots**:
+```bash
+curl -u admin:admin http://localhost:8000/bot-orchestration/status
+```
+
+**Get Market Prices**:
+```bash
+curl -u admin:admin -X POST http://localhost:8000/market-data/prices \
+  -H "Content-Type: application/json" \
+  -d '{
+    "connector_name": "binance",
+    "trading_pairs": ["BTC-USDT", "ETH-USDT"]
+  }'
+```
+
+## 📚 Additional Resources
+
+- **API Reference**: See @API_REFERENCE.md for all available endpoints
+- **README**: See @README.md for complete setup instructions
+- **Swagger UI**: http://localhost:8000/docs (interactive API documentation)
+
+## 🆘 Troubleshooting
+
+**MCP server not responding**:
+```bash
+# Check if MCP container is running
+docker ps | grep hummingbot-mcp
+
+# If not, re-enable during setup
+./setup.sh  # Answer "y" to MCP prompt
+```
+
+**Configuration not loading**:
+- Verify the JSON syntax in your configuration file
+- Ensure Docker is running
+- Check that the hummingbot-mcp container exists
+
+**Authentication errors**:
+- Verify username and password in `.env` file
+- Ensure the API is running: `docker ps | grep hummingbot-api`
