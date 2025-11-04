@@ -313,7 +313,7 @@ if [[ "$ENABLE_MCP" =~ ^[Yy]$ ]]; then
     echo '        "mcpServers": {'
     echo '          "hummingbot": {'
     echo '            "command": "docker",'
-    echo '            "args": ["exec", "-i", "hummingbot-mcp", "mcp"]'
+    echo '            "args": ["exec", "-i", "hummingbot-mcp", "/app/.venv/bin/python main.py"]'
     echo '          }'
     echo '        }'
     echo '      }'

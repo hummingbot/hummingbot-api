@@ -65,7 +65,7 @@ If you enabled MCP, follow these steps:
      "mcpServers": {
        "hummingbot": {
          "command": "docker",
-         "args": ["exec", "-i", "hummingbot-mcp", "mcp"]
+         "args": ["exec", "-i", "hummingbot-mcp", "/app/.venv/bin/python main.py"]
        }
      }
    }
@@ -169,7 +169,7 @@ The command above automatically creates/updates `.mcp.json` in your project root
   "mcpServers": {
     "hummingbot": {
       "command": "docker",
-      "args": ["exec", "-i", "hummingbot-mcp", "mcp"]
+      "args": ["exec", "-i", "hummingbot-mcp", "/app/.venv/bin/python main.py"]
     }
   }
 }
@@ -427,7 +427,7 @@ This runs the API in a Docker container - simple and isolated.
      "mcpServers": {
        "hummingbot": {
          "command": "docker",
-         "args": ["exec", "-i", "hummingbot-mcp", "mcp"]
+         "args": ["exec", "-i", "hummingbot-mcp", "/app/.venv/bin/python main.py"]
        }
      }
    }
@@ -453,7 +453,7 @@ This runs the API in a Docker container - simple and isolated.
      "mcpServers": {
        "hummingbot": {
          "command": "docker",
-         "args": ["exec", "-i", "hummingbot-mcp", "mcp"]
+         "args": ["exec", "-i", "hummingbot-mcp", "/app/.venv/bin/python main.py"]
        }
      }
    }

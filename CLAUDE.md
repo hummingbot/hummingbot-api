@@ -23,7 +23,7 @@ The Hummingbot MCP server provides natural language access to all API functional
      "mcpServers": {
        "hummingbot": {
          "command": "docker",
-         "args": ["exec", "-i", "hummingbot-mcp", "mcp"]
+         "args": ["exec", "-i", "hummingbot-mcp", "/app/.venv/bin/python main.py"]
        }
      }
    }
@@ -41,7 +41,7 @@ The Hummingbot MCP server provides natural language access to all API functional
 
 1. **Add the MCP server**:
    ```bash
-   claude mcp add --transport stdio hummingbot -- docker exec -i hummingbot-mcp mcp
+   claude mcp add --transport stdio hummingbot -- docker exec -i hummingbot-mcp /app/.venv/bin/python main.py
    ```
 
 2. **Use in your terminal**:

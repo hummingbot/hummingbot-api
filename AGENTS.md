@@ -22,7 +22,7 @@ If OpenAI releases an MCP-compatible desktop client, you can configure it simila
      "mcpServers": {
        "hummingbot": {
          "command": "docker",
-         "args": ["exec", "-i", "hummingbot-mcp", "mcp"]
+         "args": ["exec", "-i", "hummingbot-mcp", "/app/.venv/bin/python main.py"]
        }
      }
    }
@@ -45,7 +45,7 @@ import json
 
 # Start the MCP server process
 process = subprocess.Popen([
-    "docker", "exec", "-i", "hummingbot-mcp", "mcp"
+    "docker", "exec", "-i", "hummingbot-mcp", "/app/.venv/bin/python main.py"
 ],
     stdin=subprocess.PIPE,
     stdout=subprocess.PIPE,
@@ -72,7 +72,7 @@ print(json.loads(response))
 const { spawn } = require('child_process');
 
 // Start MCP server
-const mcp = spawn('docker', ['exec', '-i', 'hummingbot-mcp', 'mcp']);
+const mcp = spawn('docker', ['exec', '-i', 'hummingbot-mcp', '/app/.venv/bin/python main.py']);
 
 // Send request
 const request = {
