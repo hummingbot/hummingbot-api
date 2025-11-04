@@ -137,11 +137,11 @@ echo ""
 if [[ "$ENABLE_MCP" =~ ^[Yy]$ ]]; then
     echo -e "${GREEN}🤖 Enabling MCP server in docker-compose.yml...${NC}"
 
-    # Uncomment the MCP service in docker-compose.yml
-    sed -i.bak '/^  # Uncomment to enable MCP server/,/^  #     - hummingbot-api$/s/^  # /  /' docker-compose.yml
+    # Remove the comment line first
+    sed -i.bak '/^  # Uncomment to enable MCP server for AI assistant integration/d' docker-compose.yml
 
-    # Remove the initial comment line
-    sed -i.bak '/^  # Uncomment to enable MCP server/d' docker-compose.yml
+    # Uncomment the MCP service lines
+    sed -i.bak '/^  # hummingbot-mcp:/,/^  #     - hummingbot-api$/s/^  # /  /' docker-compose.yml
 
     # Remove backup file
     rm -f docker-compose.yml.bak
@@ -154,11 +154,11 @@ fi
 if [[ "$ENABLE_DASHBOARD" =~ ^[Yy]$ ]]; then
     echo -e "${GREEN}📊 Enabling Dashboard in docker-compose.yml...${NC}"
 
-    # Uncomment the dashboard service in docker-compose.yml
-    sed -i.bak '/^  # Uncomment to enable Dashboard/,/^  #       - emqx-bridge$/s/^  # /  /' docker-compose.yml
+    # Remove the comment line first
+    sed -i.bak '/^  # Uncomment to enable Dashboard (optional web interface)/d' docker-compose.yml
 
-    # Remove the initial comment line
-    sed -i.bak '/^  # Uncomment to enable Dashboard/d' docker-compose.yml
+    # Uncomment the dashboard service lines
+    sed -i.bak '/^  # dashboard:/,/^  #       - emqx-bridge$/s/^  # /  /' docker-compose.yml
 
     # Remove backup file
     rm -f docker-compose.yml.bak
