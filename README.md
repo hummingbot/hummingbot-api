@@ -24,7 +24,6 @@ The script will prompt you for:
    - API username and password
 
 2. **Optional Services**:
-   - **MCP server**: For AI assistant integration (Claude, ChatGPT, Gemini)
    - **Dashboard**: For web-based visual interface
 
 3. **Gateway**: Optional passphrase for DEX trading
@@ -37,9 +36,10 @@ The script will prompt you for:
 - ✅ **EMQX** - Message broker for real-time communication
 - ✅ **Swagger UI** (port 8000/docs) - API documentation
 
-**Optional services** (enable during setup):
-- 🤖 **MCP Server** - For AI assistant integration
+**Optional service** (enable during setup):
 - 📊 **Dashboard** (port 8501) - Web interface
+
+**Note**: MCP (AI assistant integration) is configured separately - see below
 
 ### After Setup
 
@@ -50,9 +50,9 @@ The API documentation is immediately available:
 - Use the username/password you configured
 - Test all API endpoints directly
 
-**2. Connect AI Assistant (If MCP Enabled)**
+**2. Connect AI Assistant (Optional)**
 
-If you enabled MCP, follow these steps:
+To connect an AI assistant via MCP:
 
 **Claude Desktop:**
 1. Install from [https://claude.ai/download](https://claude.ai/download)
@@ -65,7 +65,7 @@ If you enabled MCP, follow these steps:
      "mcpServers": {
        "hummingbot": {
          "command": "docker",
-         "args": ["exec", "-i", "hummingbot-mcp", "/app/.venv/bin/python main.py"]
+         "args": ["run", "--rm", "-i", "-e", "HUMMINGBOT_API_URL=http://host.docker.internal:8000", "-v", "/var/run/docker.sock:/var/run/docker.sock", "hummingbot/hummingbot-mcp:latest"]
        }
      }
    }
@@ -169,7 +169,7 @@ The command above automatically creates/updates `.mcp.json` in your project root
   "mcpServers": {
     "hummingbot": {
       "command": "docker",
-      "args": ["exec", "-i", "hummingbot-mcp", "/app/.venv/bin/python main.py"]
+      "args": ["run", "--rm", "-i", "-e", "HUMMINGBOT_API_URL=http://host.docker.internal:8000", "-v", "/var/run/docker.sock:/var/run/docker.sock", "hummingbot/hummingbot-mcp:latest"]
     }
   }
 }
@@ -427,7 +427,7 @@ This runs the API in a Docker container - simple and isolated.
      "mcpServers": {
        "hummingbot": {
          "command": "docker",
-         "args": ["exec", "-i", "hummingbot-mcp", "/app/.venv/bin/python main.py"]
+         "args": ["run", "--rm", "-i", "-e", "HUMMINGBOT_API_URL=http://host.docker.internal:8000", "-v", "/var/run/docker.sock:/var/run/docker.sock", "hummingbot/hummingbot-mcp:latest"]
        }
      }
    }
@@ -453,7 +453,7 @@ This runs the API in a Docker container - simple and isolated.
      "mcpServers": {
        "hummingbot": {
          "command": "docker",
-         "args": ["exec", "-i", "hummingbot-mcp", "/app/.venv/bin/python main.py"]
+         "args": ["run", "--rm", "-i", "-e", "HUMMINGBOT_API_URL=http://host.docker.internal:8000", "-v", "/var/run/docker.sock:/var/run/docker.sock", "hummingbot/hummingbot-mcp:latest"]
        }
      }
    }

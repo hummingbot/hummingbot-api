@@ -41,7 +41,7 @@ The Hummingbot MCP server provides natural language access to all API functional
 
 1. **Add the MCP server**:
    ```bash
-   claude mcp add --transport stdio hummingbot -- docker exec -i hummingbot-mcp /app/.venv/bin/python main.py
+   claude mcp add --transport stdio hummingbot -- run --rm -i -e HUMMINGBOT_API_URL=http://host.docker.internal:8000 -v /var/run/docker.sock:/var/run/docker.sock hummingbot/hummingbot-mcp:latest
    ```
 
 2. **Use in your terminal**:

@@ -133,22 +133,6 @@ EOF
 echo -e "${GREEN}✅ .env file created successfully!${NC}"
 echo ""
 
-# Enable MCP if requested
-if [[ "$ENABLE_MCP" =~ ^[Yy]$ ]]; then
-    echo -e "${GREEN}🤖 Enabling MCP server in docker-compose.yml...${NC}"
-
-    # Remove the comment line first
-    sed -i.bak '/^  # Uncomment to enable MCP server for AI assistant integration/d' docker-compose.yml
-
-    # Uncomment the MCP service lines
-    sed -i.bak '/^  # hummingbot-mcp:/,/^  #     - hummingbot-api$/s/^  # /  /' docker-compose.yml
-
-    # Remove backup file
-    rm -f docker-compose.yml.bak
-
-    echo -e "${GREEN}✅ MCP server enabled!${NC}"
-    echo ""
-fi
 
 # Enable Dashboard if requested
 if [[ "$ENABLE_DASHBOARD" =~ ^[Yy]$ ]]; then
@@ -313,7 +297,7 @@ if [[ "$ENABLE_MCP" =~ ^[Yy]$ ]]; then
     echo '        "mcpServers": {'
     echo '          "hummingbot": {'
     echo '            "command": "docker",'
-    echo '            "args": ["exec", "-i", "hummingbot-mcp", "/app/.venv/bin/python main.py"]'
+    echo '            "args": ["run", "--rm", "-i", "-e", "HUMMINGBOT_API_URL=http://host.docker.internal:8000", "-v", "/var/run/docker.sock:/var/run/docker.sock", "hummingbot/hummingbot-mcp:latest"]'
     echo '          }'
     echo '        }'
     echo '      }'

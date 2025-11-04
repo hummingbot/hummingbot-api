@@ -45,7 +45,7 @@ import json
 
 # Start the MCP server process
 process = subprocess.Popen([
-    "docker", "exec", "-i", "hummingbot-mcp", "/app/.venv/bin/python main.py"
+    "docker", "run", "--rm", "-i", "-e", "HUMMINGBOT_API_URL=http://host.docker.internal:8000", "-v", "/var/run/docker.sock:/var/run/docker.sock", "hummingbot/hummingbot-mcp:latest"
 ],
     stdin=subprocess.PIPE,
     stdout=subprocess.PIPE,
