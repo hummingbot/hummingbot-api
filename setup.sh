@@ -231,8 +231,8 @@ if [ "$DB_READY" = true ]; then
     else
         echo -e "${YELLOW}⚠️  Database initialization may be incomplete. Running manual initialization...${NC}"
 
-        # Run the init script manually
-        docker exec -i hummingbot-postgres psql -U hbot < init-db.sql
+        # Run the init script manually (connect to postgres database as hbot user)
+        docker exec -i hummingbot-postgres psql -U hbot -d postgres < init-db.sql
 
         if [ $? -eq 0 ]; then
             echo -e "${GREEN}✅ Database manually initialized successfully!${NC}"

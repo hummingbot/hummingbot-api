@@ -709,6 +709,43 @@ docker exec -it hummingbot-postgres psql -U hbot -d hummingbot_api
 docker exec -it hummingbot-postgres psql -U hbot -d postgres -c "\du"
 ```
 
+#### "database 'hbot' does not exist" During Setup
+
+If you see this error during `./setup.sh`:
+
+```
+⚠️  Database initialization may be incomplete. Running manual initialization...
+psql: error: connection to server on socket "/var/run/postgresql/.s.PGSQL.5432" failed: FATAL:  database "hbot" does not exist
+❌ Failed to initialize database.
+```
+
+**Cause**: The setup script tried to connect to a database named `hbot` (the username) instead of `hummingbot_api` (the actual database name). This was a bug in older versions of setup.sh.
+
+**Solution**:
+
+1. **Update setup.sh**: Pull the latest version with the fix:
+   ```bash
+   git pull origin main
+   ```
+
+2. **Or manually fix the database**:
+   ```bash
+   # The database already exists, just verify it
+   docker exec hummingbot-postgres psql -U hbot -d postgres -c "\l"
+
+   # You should see 'hummingbot_api' in the list
+   # Test connection
+   docker exec hummingbot-postgres psql -U hbot -d hummingbot_api -c "SELECT version();"
+   ```
+
+3. **If database doesn't exist**, run the fix script:
+   ```bash
+   chmod +x fix-database.sh
+   ./fix-database.sh
+   ```
+
+**Prevention**: This issue is fixed in the latest version of setup.sh. The script now correctly specifies `-d postgres` when running manual initialization.
+
 #### Complete Database Reset
 
 If you need to start fresh (⚠️ this will delete all data):
