@@ -22,7 +22,7 @@ If OpenAI releases an MCP-compatible desktop client, you can configure it simila
      "mcpServers": {
        "hummingbot": {
          "command": "docker",
-         "args": ["exec", "-i", "hummingbot-mcp", "/app/.venv/bin/python main.py"]
+         "args": ["run", "--rm", "-i", "-e", "HUMMINGBOT_API_URL=http://host.docker.internal:8000", "-v", "hummingbot_mcp:/root/.hummingbot_mcp", "hummingbot/hummingbot-mcp:latest"]
        }
      }
    }
@@ -45,7 +45,7 @@ import json
 
 # Start the MCP server process
 process = subprocess.Popen([
-    "docker", "run", "--rm", "-i", "-e", "HUMMINGBOT_API_URL=http://host.docker.internal:8000", "-v", "/var/run/docker.sock:/var/run/docker.sock", "hummingbot/hummingbot-mcp:latest"
+    "docker", "run", "--rm", "-i", "-e", "HUMMINGBOT_API_URL=http://host.docker.internal:8000", "-v", "hummingbot_mcp:/root/.hummingbot_mcp", "hummingbot/hummingbot-mcp:latest"
 ],
     stdin=subprocess.PIPE,
     stdout=subprocess.PIPE,
@@ -72,7 +72,7 @@ print(json.loads(response))
 const { spawn } = require('child_process');
 
 // Start MCP server
-const mcp = spawn('docker', ['exec', '-i', 'hummingbot-mcp', '/app/.venv/bin/python main.py']);
+const mcp = spawn('docker', ['run', '--rm', '-i', '-e', 'HUMMINGBOT_API_URL=http://host.docker.internal:8000', '-v', 'hummingbot_mcp:/root/.hummingbot_mcp', 'hummingbot/hummingbot-mcp:latest']);
 
 // Send request
 const request = {

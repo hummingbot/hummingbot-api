@@ -65,7 +65,7 @@ To connect an AI assistant via MCP:
      "mcpServers": {
        "hummingbot": {
          "command": "docker",
-         "args": ["run", "--rm", "-i", "-e", "HUMMINGBOT_API_URL=http://host.docker.internal:8000", "-v", "/var/run/docker.sock:/var/run/docker.sock", "hummingbot/hummingbot-mcp:latest"]
+         "args": ["run", "--rm", "-i", "-e", "HUMMINGBOT_API_URL=http://host.docker.internal:8000", "-v", "hummingbot_mcp:/root/.hummingbot_mcp", "hummingbot/hummingbot-mcp:latest"]
        }
      }
    }
@@ -169,7 +169,7 @@ The command above automatically creates/updates `.mcp.json` in your project root
   "mcpServers": {
     "hummingbot": {
       "command": "docker",
-      "args": ["run", "--rm", "-i", "-e", "HUMMINGBOT_API_URL=http://host.docker.internal:8000", "-v", "/var/run/docker.sock:/var/run/docker.sock", "hummingbot/hummingbot-mcp:latest"]
+      "args": ["run", "--rm", "-i", "-e", "HUMMINGBOT_API_URL=http://host.docker.internal:8000", "-v", "hummingbot_mcp:/root/.hummingbot_mcp", "hummingbot/hummingbot-mcp:latest"]
     }
   }
 }
@@ -427,7 +427,7 @@ This runs the API in a Docker container - simple and isolated.
      "mcpServers": {
        "hummingbot": {
          "command": "docker",
-         "args": ["run", "--rm", "-i", "-e", "HUMMINGBOT_API_URL=http://host.docker.internal:8000", "-v", "/var/run/docker.sock:/var/run/docker.sock", "hummingbot/hummingbot-mcp:latest"]
+         "args": ["run", "--rm", "-i", "-e", "HUMMINGBOT_API_URL=http://host.docker.internal:8000", "-v", "hummingbot_mcp:/root/.hummingbot_mcp", "hummingbot/hummingbot-mcp:latest"]
        }
      }
    }
@@ -453,7 +453,7 @@ This runs the API in a Docker container - simple and isolated.
      "mcpServers": {
        "hummingbot": {
          "command": "docker",
-         "args": ["run", "--rm", "-i", "-e", "HUMMINGBOT_API_URL=http://host.docker.internal:8000", "-v", "/var/run/docker.sock:/var/run/docker.sock", "hummingbot/hummingbot-mcp:latest"]
+         "args": ["run", "--rm", "-i", "-e", "HUMMINGBOT_API_URL=http://host.docker.internal:8000", "-v", "hummingbot_mcp:/root/.hummingbot_mcp", "hummingbot/hummingbot-mcp:latest"]
        }
      }
    }

@@ -297,7 +297,7 @@ if [[ "$ENABLE_MCP" =~ ^[Yy]$ ]]; then
     echo '        "mcpServers": {'
     echo '          "hummingbot": {'
     echo '            "command": "docker",'
-    echo '            "args": ["run", "--rm", "-i", "-e", "HUMMINGBOT_API_URL=http://host.docker.internal:8000", "-v", "/var/run/docker.sock:/var/run/docker.sock", "hummingbot/hummingbot-mcp:latest"]'
+    echo '            "args": ["run", "--rm", "-i", "-e", "HUMMINGBOT_API_URL=http://host.docker.internal:8000", "-v", "hummingbot_mcp:/root/.hummingbot_mcp", "hummingbot/hummingbot-mcp:latest"]'
     echo '          }'
     echo '        }'
     echo '      }'

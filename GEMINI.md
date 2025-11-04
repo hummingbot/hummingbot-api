@@ -17,7 +17,7 @@ The Hummingbot MCP server provides natural language access to all API functional
    ```bash
    gemini mcp add hummingbot \
      --command "docker" \
-     --args "exec" "-i" "hummingbot-mcp" "/app/.venv/bin/python main.py" \
+     --args "run" "--rm" "-i" "-e" "HUMMINGBOT_API_URL=http://host.docker.internal:8000" "-v" "hummingbot_mcp:/root/.hummingbot_mcp" "hummingbot/hummingbot-mcp:latest" \
      --protocol stdio
    ```
 
@@ -43,7 +43,7 @@ Create or edit `~/.gemini/settings.json`:
   "mcpServers": {
     "hummingbot": {
       "command": "docker",
-      "args": ["run", "--rm", "-i", "-e", "HUMMINGBOT_API_URL=http://host.docker.internal:8000", "-v", "/var/run/docker.sock:/var/run/docker.sock", "hummingbot/hummingbot-mcp:latest"],
+      "args": ["run", "--rm", "-i", "-e", "HUMMINGBOT_API_URL=http://host.docker.internal:8000", "-v", "hummingbot_mcp:/root/.hummingbot_mcp", "hummingbot/hummingbot-mcp:latest"],
       "protocol": "stdio"
     }
   }
@@ -59,7 +59,7 @@ Create `.gemini/settings.json` in your project root:
   "mcpServers": {
     "hummingbot": {
       "command": "docker",
-      "args": ["run", "--rm", "-i", "-e", "HUMMINGBOT_API_URL=http://host.docker.internal:8000", "-v", "/var/run/docker.sock:/var/run/docker.sock", "hummingbot/hummingbot-mcp:latest"],
+      "args": ["run", "--rm", "-i", "-e", "HUMMINGBOT_API_URL=http://host.docker.internal:8000", "-v", "hummingbot_mcp:/root/.hummingbot_mcp", "hummingbot/hummingbot-mcp:latest"],
       "protocol": "stdio"
     }
   }
@@ -75,7 +75,7 @@ Create `mcp.json` in your IDE's configuration directory:
   "mcpServers": {
     "hummingbot": {
       "command": "docker",
-      "args": ["run", "--rm", "-i", "-e", "HUMMINGBOT_API_URL=http://host.docker.internal:8000", "-v", "/var/run/docker.sock:/var/run/docker.sock", "hummingbot/hummingbot-mcp:latest"],
+      "args": ["run", "--rm", "-i", "-e", "HUMMINGBOT_API_URL=http://host.docker.internal:8000", "-v", "hummingbot_mcp:/root/.hummingbot_mcp", "hummingbot/hummingbot-mcp:latest"],
       "protocol": "stdio"
     }
   }
