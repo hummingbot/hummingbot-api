@@ -841,84 +841,189 @@ GET    /archived-bots/{db_path}/executors            # Executor data
 
 ---
 
-### ⛓️ Chain-Specific Endpoints (Blockchain Direct Access)
+### 🌐 Gateway Endpoints (DEX & Blockchain Operations)
 
-**Use for:** Balance checks, gas estimation, transaction polling on blockchains.
+**MCP tools exist** for most Gateway operations. Use direct API only for specific needs.
 
-#### Solana Chain (`/chains/solana`)
-
-**Note:** These are Gateway endpoints accessed through the main API when Gateway is running.
+#### Gateway Lifecycle (`/gateway`)
 
 ```
-POST   /chains/solana/balances
+GET    /gateway/status              # Get Gateway status
+POST   /gateway/start               # Start Gateway container
+POST   /gateway/stop                # Stop Gateway container
+POST   /gateway/restart             # Restart Gateway container
+GET    /gateway/logs                # Get Gateway logs
+```
+
+**Note:** Use `manage_gateway_container` MCP tool instead of these endpoints.
+
+---
+
+#### Gateway Configuration (`/gateway`)
+
+```
+GET    /gateway/chains              # List supported blockchain chains
+GET    /gateway/connectors          # List available DEX connectors
+GET    /gateway/connectors/{connector_name}
+       # Get specific connector configuration
+POST   /gateway/connectors/{connector_name}
+       # Update connector configuration
+
+GET    /gateway/networks            # List all networks
+GET    /gateway/networks/{network_id}
+       # Get specific network config (e.g., "solana-mainnet-beta")
+POST   /gateway/networks/{network_id}
+       # Update network configuration
+
+GET    /gateway/networks/{network_id}/tokens
+       # List tokens available on network
+POST   /gateway/networks/{network_id}/tokens
+       # Add custom token to network
+       Body: {
+         "token_address": "token_contract_address",
+         "token_symbol": "SYMBOL",
+         "token_decimals": 18,
+         "token_name": "Token Name"
+       }
+DELETE /gateway/networks/{network_id}/tokens/{token_address}
+       # Remove token from network
+
+GET    /gateway/pools               # List liquidity pools
+POST   /gateway/pools               # Add custom pool
+```
+
+**Note:** Use `manage_gateway_config` MCP tool for easier configuration management.
+
+---
+
+### 💱 Gateway Swaps (`/gateway/swap`)
+
+**MCP tool exists:** Use `manage_gateway_swaps()` for DEX trading.
+
+```
+POST   /gateway/swap/quote
+       # Get swap quote with pricing and gas estimates
        Body: {
          "chain": "solana",
          "network": "mainnet-beta",
-         "address": "wallet_address",
-         "tokenSymbols": ["SOL", "USDC"]  # Optional
+         "connector": "jupiter",
+         "base": "SOL",
+         "quote": "USDC",
+         "amount": "1.0",
+         "side": "BUY",
+         "allowedSlippage": "1.0"
        }
-       # Returns SOL and SPL token balances
 
-GET    /chains/solana/status
-       # Network status and connection info
-
-GET    /chains/solana/estimate-gas
-       # Estimate transaction fees
-
-POST   /chains/solana/poll
+POST   /gateway/swap/execute
+       # Execute the swap transaction
        Body: {
          "chain": "solana",
          "network": "mainnet-beta",
-         "txHash": "transaction_signature"
+         "connector": "jupiter",
+         "address": "wallet_address",
+         "base": "SOL",
+         "quote": "USDC",
+         "amount": "1.0",
+         "side": "BUY",
+         "allowedSlippage": "1.0"
        }
-       # Poll transaction status
+
+GET    /gateway/swaps/{transaction_hash}/status
+       # Check transaction status
+
+POST   /gateway/swaps/search
+       # Search swap transaction history
+       Body: {
+         "chain": "solana",
+         "network": "mainnet-beta",
+         "connector": "jupiter",
+         "address": "wallet_address",
+         "status": "CONFIRMED",  # SUBMITTED, CONFIRMED, FAILED
+         "start_time": 1609459200,
+         "end_time": 1609545600,
+         "limit": 50
+       }
+
+GET    /gateway/swaps/summary
+       # Get aggregated swap statistics
 ```
 
-#### Ethereum Chain (`/chains/ethereum`)
+---
+
+### 🏊 Gateway CLMM (`/gateway/clmm`)
+
+**MCP tools exist:**
+- `explore_gateway_clmm_pools()` - Pool discovery
+- `manage_gateway_clmm_positions()` - Position management
 
 ```
-POST   /chains/ethereum/balances
+GET    /gateway/clmm/pools
+       # List CLMM pools with filtering and sorting
+       Query params: connector, page, limit, search, sort_key, order_by
+
+GET    /gateway/clmm/pool-info
+       # Get detailed info for specific pool
+       Query params: chain, network, connector, token0, token1, fee
+
+POST   /gateway/clmm/open
+       # Open new concentrated liquidity position
        Body: {
-         "chain": "ethereum",
-         "network": "mainnet",
+         "chain": "solana",
+         "network": "mainnet-beta",
+         "connector": "meteora",
          "address": "wallet_address",
-         "tokenSymbols": ["ETH", "USDC", "WETH"]
+         "pool_address": "pool_address",
+         "lower_price": "150.0",
+         "upper_price": "250.0",
+         "base_token_amount": "1.0",
+         "quote_token_amount": "200.0",
+         "slippage": "1.0"
        }
-       # Returns ETH and ERC-20 balances
 
-GET    /chains/ethereum/status
-GET    /chains/ethereum/estimate-gas
-
-POST   /chains/ethereum/poll
-       # Poll transaction receipt
-
-POST   /chains/ethereum/allowances
+POST   /gateway/clmm/close
+       # Close CLMM position (remove all liquidity)
        Body: {
-         "chain": "ethereum",
-         "network": "mainnet",
+         "chain": "solana",
+         "network": "mainnet-beta",
+         "connector": "meteora",
          "address": "wallet_address",
-         "spender": "contract_address",
-         "tokenSymbols": ["USDC"]
+         "position_address": "position_nft_address"
        }
-       # Check token allowances
 
-POST   /chains/ethereum/approve
+POST   /gateway/clmm/collect-fees
+       # Collect accumulated fees from position
        Body: {
-         "chain": "ethereum",
-         "network": "mainnet",
+         "chain": "solana",
+         "network": "mainnet-beta",
+         "connector": "meteora",
          "address": "wallet_address",
-         "spender": "contract_address",
-         "token": "USDC",
-         "amount": "1000"  # Optional, max if not specified
+         "position_address": "position_nft_address"
        }
-       # Approve token spending
 
-POST   /chains/ethereum/wrap
-       Body: {"chain": "ethereum", "network": "mainnet", "address": "wallet", "amount": "1.0"}
-       # Wrap ETH to WETH
+POST   /gateway/clmm/positions_owned
+       # Get all positions owned by wallet in specific pool
+       Body: {
+         "chain": "solana",
+         "network": "mainnet-beta",
+         "connector": "meteora",
+         "address": "wallet_address",
+         "pool_address": "pool_address"
+       }
 
-POST   /chains/ethereum/unwrap
-       # Unwrap WETH to ETH
+GET    /gateway/clmm/positions/{position_address}/events
+       # Get event history for specific position
+
+POST   /gateway/clmm/positions/search
+       # Search CLMM positions with filters
+       Body: {
+         "chain": "solana",
+         "network": "mainnet-beta",
+         "connector": "meteora",
+         "address": "wallet_address",
+         "status": "OPEN",  # OPEN, CLOSED
+         "start_time": 1609459200,
+         "end_time": 1609545600
+       }
 ```
 
 ---
