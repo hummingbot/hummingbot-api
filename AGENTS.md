@@ -15,18 +15,27 @@ If OpenAI releases an MCP-compatible desktop client, you can configure it simila
    ./setup.sh  # Answer "y" to "Enable MCP server for AI assistant usage?"
    ```
 
-2. **Configure the MCP server**:
+2. **Configure the MCP server** (no credentials needed):
    Add to your ChatGPT configuration file (location may vary):
    ```json
    {
      "mcpServers": {
        "hummingbot": {
          "command": "docker",
-         "args": ["exec", "-i", "hummingbot-mcp", "mcp"]
+         "args": [
+           "run",
+           "--rm",
+           "-i",
+           "--network", "host",
+           "-v", "hummingbot-api_hummingbot-mcp-data:/root/.hummingbot_mcp",
+           "hummingbot/hummingbot-mcp:latest"
+         ]
        }
      }
    }
    ```
+
+   **Note**: Credentials are stored in the Docker volume and configured on first use via the MCP server.
 
 3. **Start using natural language**:
    - "Show me my portfolio across all exchanges"
@@ -38,14 +47,19 @@ If OpenAI releases an MCP-compatible desktop client, you can configure it simila
 
 For custom implementations, connect to the MCP server using stdio transport:
 
-**Python Example**:
+**Python Example** (no credentials needed in code):
 ```python
 import subprocess
 import json
 
 # Start the MCP server process
-process = subprocess.Popen(
-    ["docker", "exec", "-i", "hummingbot-mcp", "mcp"],
+# Credentials are stored in the Docker volume
+process = subprocess.Popen([
+    "docker", "run", "--rm", "-i",
+    "--network", "host",
+    "-v", "hummingbot-api_hummingbot-mcp-data:/root/.hummingbot_mcp",
+    "hummingbot/hummingbot-mcp:latest"
+],
     stdin=subprocess.PIPE,
     stdout=subprocess.PIPE,
     text=True
@@ -70,7 +84,13 @@ print(json.loads(response))
 ```javascript
 const { spawn } = require('child_process');
 
-const mcp = spawn('docker', ['exec', '-i', 'hummingbot-mcp', 'mcp']);
+// Start MCP server (credentials stored in Docker volume)
+const mcp = spawn('docker', [
+  'run', '--rm', '-i',
+  '--network', 'host',
+  '-v', 'hummingbot-api_hummingbot-mcp-data:/root/.hummingbot_mcp',
+  'hummingbot/hummingbot-mcp:latest'
+]);
 
 // Send request
 const request = {
@@ -87,6 +107,8 @@ mcp.stdout.on('data', (data) => {
   console.log(JSON.parse(data.toString()));
 });
 ```
+
+**Note**: Credentials are automatically stored in the Docker volume `hummingbot-api_hummingbot-mcp-data` and configured on first use.
 
 ### Available MCP Tools
 

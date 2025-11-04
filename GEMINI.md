@@ -13,13 +13,15 @@ The Hummingbot MCP server provides natural language access to all API functional
    ./setup.sh  # Answer "y" to "Enable MCP server for AI assistant usage?"
    ```
 
-2. **Add the MCP server using Gemini CLI**:
+2. **Add the MCP server using Gemini CLI** (no credentials needed):
    ```bash
    gemini mcp add hummingbot \
      --command "docker" \
-     --args "exec" "-i" "hummingbot-mcp" "mcp" \
+     --args "run" "--rm" "-i" "--network" "host" "-v" "hummingbot-api_hummingbot-mcp-data:/root/.hummingbot_mcp" "hummingbot/hummingbot-mcp:latest" \
      --protocol stdio
    ```
+
+   **Note**: Credentials are stored in the Docker volume and configured on first use via the MCP server.
 
 3. **Verify the server was added**:
    ```bash
@@ -36,14 +38,21 @@ The Hummingbot MCP server provides natural language access to all API functional
 
 #### For Gemini CLI (Global Configuration)
 
-Create or edit `~/.gemini/settings.json`:
+Create or edit `~/.gemini/settings.json` (no credentials needed):
 
 ```json
 {
   "mcpServers": {
     "hummingbot": {
       "command": "docker",
-      "args": ["exec", "-i", "hummingbot-mcp", "mcp"],
+      "args": [
+        "run",
+        "--rm",
+        "-i",
+        "--network", "host",
+        "-v", "hummingbot-api_hummingbot-mcp-data:/root/.hummingbot_mcp",
+        "hummingbot/hummingbot-mcp:latest"
+      ],
       "protocol": "stdio"
     }
   }
@@ -59,7 +68,14 @@ Create `.gemini/settings.json` in your project root:
   "mcpServers": {
     "hummingbot": {
       "command": "docker",
-      "args": ["exec", "-i", "hummingbot-mcp", "mcp"],
+      "args": [
+        "run",
+        "--rm",
+        "-i",
+        "--network", "host",
+        "-v", "hummingbot-api_hummingbot-mcp-data:/root/.hummingbot_mcp",
+        "hummingbot/hummingbot-mcp:latest"
+      ],
       "protocol": "stdio"
     }
   }
@@ -75,12 +91,21 @@ Create `mcp.json` in your IDE's configuration directory:
   "mcpServers": {
     "hummingbot": {
       "command": "docker",
-      "args": ["exec", "-i", "hummingbot-mcp", "mcp"],
+      "args": [
+        "run",
+        "--rm",
+        "-i",
+        "--network", "host",
+        "-v", "hummingbot-api_hummingbot-mcp-data:/root/.hummingbot_mcp",
+        "hummingbot/hummingbot-mcp:latest"
+      ],
       "protocol": "stdio"
     }
   }
 }
 ```
+
+**Note**: Credentials are automatically stored in the Docker volume `hummingbot-api_hummingbot-mcp-data` and configured on first use.
 
 ### Managing the Connection
 
