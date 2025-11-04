@@ -1,694 +1,975 @@
-# Hummingbot API Reference
+# Hummingbot API Reference for AI Assistants
 
-This document provides a comprehensive reference for all API endpoints available in the Hummingbot API. The API is running at `http://localhost:8000` with interactive documentation at `http://localhost:8000/docs`.
+**Quick Start:** This API is accessible at `http://localhost:8000` with interactive docs at `http://localhost:8000/docs`.
 
-## Authentication
+## 🤖 MCP Tools (Recommended - Use These First!)
 
-All endpoints require HTTP Basic Authentication. Use the username and password configured during setup.
+**For AI Assistants:** Before making direct API calls, check if an MCP tool exists for your task. MCP tools provide simplified, high-level access to common operations.
 
-Example:
+### Essential Setup & Connection
+
+#### `configure_api_servers` - **ALWAYS RUN FIRST**
+Configure connection to the Hummingbot API. Run this before using any other MCP tool.
+
+```python
+configure_api_servers(
+    action="add",
+    name="local",
+    host="localhost",
+    port=8000,
+    username="admin",
+    password="admin"
+)
+configure_api_servers(action="set_default", name="local")
+```
+
+**When to use:**
+- Before any other MCP tool
+- When you get connection errors
+- After MCP server restarts
+
+---
+
+### Portfolio & Trading
+
+#### `get_portfolio_overview` - **Unified Portfolio View**
+Get complete portfolio across CEX, DEX, LP positions, and orders in one call.
+
+```python
+get_portfolio_overview(
+    account_names=["master_account"],  # Optional filter
+    connector_names=["binance", "solana-mainnet-beta"],  # Optional filter
+    include_balances=True,
+    include_perp_positions=True,
+    include_lp_positions=True,
+    include_active_orders=True,
+    as_distribution=False  # Set True for percentage breakdown
+)
+```
+
+**Use instead of:**
+- `POST /portfolio/state`
+- `POST /portfolio/distribution`
+- `POST /trading/positions`
+- `POST /trading/orders/active`
+
+**When to use:**
+- "Show me my portfolio"
+- "What are my balances?"
+- "Do I have any open positions?"
+
+---
+
+#### `place_order` - Place Exchange Orders
+Execute buy/sell orders on CEX exchanges.
+
+```python
+place_order(
+    connector_name="binance",
+    trading_pair="BTC-USDT",
+    trade_type="BUY",  # or "SELL"
+    amount="$100",  # Use $ prefix for USD value, or specify base amount "0.001"
+    order_type="MARKET",  # or "LIMIT"
+    price="50000",  # Required for LIMIT orders
+    account_name="master_account"
+)
+```
+
+**Use instead of:** `POST /trading/orders`
+
+---
+
+#### `search_history` - Search Trading History
+Search orders, perpetual positions, or CLMM positions.
+
+```python
+search_history(
+    data_type="orders",  # or "perp_positions", "clmm_positions"
+    account_names=["master_account"],
+    connector_names=["binance"],
+    trading_pairs=["BTC-USDT"],
+    status="FILLED",  # Optional: OPEN, CLOSED, FILLED, CANCELED
+    start_time=1609459200,  # Unix timestamp
+    end_time=1609545600,
+    limit=50
+)
+```
+
+**Use instead of:**
+- `POST /trading/orders/search`
+- `POST /trading/positions`
+- `POST /gateway/clmm/positions/search`
+
+---
+
+#### `set_account_position_mode_and_leverage` - Configure Perpetuals
+Set position mode and leverage for perpetual trading.
+
+```python
+set_account_position_mode_and_leverage(
+    account_name="master_account",
+    connector_name="binance_perpetual",
+    trading_pair="BTC-USDT",  # Required for leverage
+    position_mode="HEDGE",  # or "ONE-WAY"
+    leverage=10  # Optional
+)
+```
+
+**Use instead of:**
+- `POST /trading/{account_name}/{connector_name}/position-mode`
+- `POST /trading/{account_name}/{connector_name}/leverage`
+
+---
+
+### Exchange Credentials & Setup
+
+#### `setup_connector` - Add Exchange Credentials
+Progressive setup flow for adding exchange API keys.
+
+```python
+# Step 1: List available exchanges
+setup_connector()
+
+# Step 2: Get required fields for specific exchange
+setup_connector(connector="binance")
+
+# Step 3: Select account (if needed)
+# Step 4: Add credentials
+setup_connector(
+    connector="binance",
+    credentials={
+        "binance_api_key": "your_key",
+        "binance_api_secret": "your_secret"
+    },
+    account="master_account"
+)
+```
+
+**Use instead of:**
+- `GET /connectors/`
+- `GET /connectors/{connector_name}/config-map`
+- `POST /accounts/add-credential/{account_name}/{connector_name}`
+
+---
+
+### Market Data
+
+#### `get_prices` - Latest Market Prices
+Get current prices for multiple trading pairs.
+
+```python
+get_prices(
+    connector_name="binance",
+    trading_pairs=["BTC-USDT", "ETH-USDT", "SOL-USDT"]
+)
+```
+
+**Use instead of:** `POST /market-data/prices`
+
+---
+
+#### `get_candles` - Price History (OHLCV)
+Get candlestick data for technical analysis.
+
+```python
+get_candles(
+    connector_name="binance",
+    trading_pair="BTC-USDT",
+    interval="1h",  # "1m", "5m", "15m", "30m", "1h", "4h", "1d"
+    days=30  # Days of history
+)
+```
+
+**Use instead of:** `POST /market-data/historical-candles`
+
+---
+
+#### `get_funding_rate` - Perpetual Funding Rates
+Get funding rates for perpetual contracts.
+
+```python
+get_funding_rate(
+    connector_name="binance_perpetual",
+    trading_pair="BTC-USDT"
+)
+```
+
+**Use instead of:** `POST /market-data/funding-info`
+
+---
+
+#### `get_order_book` - Order Book Analysis
+Get order book data with advanced queries.
+
+```python
+get_order_book(
+    connector_name="binance",
+    trading_pair="BTC-USDT",
+    query_type="snapshot",  # "volume_for_price", "price_for_volume", etc.
+    query_value=50000,  # Required for non-snapshot queries
+    is_buy=True  # Required for non-snapshot queries
+)
+```
+
+**Use instead of:**
+- `POST /market-data/order-book`
+- `POST /market-data/order-book/price-for-volume`
+- `POST /market-data/order-book/volume-for-price`
+- `POST /market-data/order-book/vwap-for-volume`
+
+---
+
+### Gateway (DEX Trading)
+
+#### `manage_gateway_container` - Gateway Lifecycle
+Start, stop, or check Gateway container status.
+
+```python
+# Start Gateway
+manage_gateway_container(
+    action="start",
+    config={
+        "passphrase": "admin",
+        "image": "hummingbot/gateway:latest",
+        "port": 15888
+    }
+)
+
+# Check status
+manage_gateway_container(action="get_status")
+
+# View logs
+manage_gateway_container(action="get_logs", tail=100)
+
+# Restart
+manage_gateway_container(action="restart")
+
+# Stop
+manage_gateway_container(action="stop")
+```
+
+**Use instead of:**
+- `POST /gateway/start`
+- `GET /gateway/status`
+- `POST /gateway/stop`
+- `POST /gateway/restart`
+- `GET /gateway/logs`
+
+---
+
+#### `manage_gateway_config` - Configure DEX Resources
+Manage chains, networks, tokens, connectors, pools, and wallets.
+
+```python
+# List supported chains
+manage_gateway_config(resource_type="chains", action="list")
+
+# List networks
+manage_gateway_config(resource_type="networks", action="list")
+
+# Get specific network
+manage_gateway_config(
+    resource_type="networks",
+    action="get",
+    network_id="solana-mainnet-beta"
+)
+
+# List tokens on network
+manage_gateway_config(
+    resource_type="tokens",
+    action="list",
+    network_id="solana-mainnet-beta",
+    search="USDC"  # Optional search filter
+)
+
+# Add token
+manage_gateway_config(
+    resource_type="tokens",
+    action="add",
+    network_id="solana-mainnet-beta",
+    token_address="EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    token_symbol="USDC",
+    token_decimals=6,
+    token_name="USD Coin"
+)
+
+# Add wallet
+manage_gateway_config(
+    resource_type="wallets",
+    action="add",
+    chain="solana",
+    private_key="your_private_key"
+)
+
+# List DEX connectors
+manage_gateway_config(resource_type="connectors", action="list")
+
+# List pools
+manage_gateway_config(
+    resource_type="pools",
+    action="list",
+    connector_name="meteora",
+    network="mainnet-beta"
+)
+```
+
+**Use instead of:**
+- `GET /gateway/chains`
+- `GET /gateway/networks`
+- `GET /gateway/networks/{network_id}`
+- `GET /gateway/networks/{network_id}/tokens`
+- `POST /gateway/networks/{network_id}/tokens`
+- `POST /accounts/gateway/add-wallet`
+- `GET /gateway/connectors`
+- `GET /gateway/pools`
+
+---
+
+#### `manage_gateway_swaps` - DEX Swaps
+Quote and execute swaps on DEX routers (Jupiter, 0x).
+
+```python
+# Get quote
+manage_gateway_swaps(
+    action="quote",
+    connector="jupiter",
+    network="solana-mainnet-beta",
+    trading_pair="SOL-USDC",
+    side="BUY",  # or "SELL"
+    amount="1.0",  # Amount of base token
+    slippage_pct="1.0"
+)
+
+# Execute swap
+manage_gateway_swaps(
+    action="execute",
+    connector="jupiter",
+    network="solana-mainnet-beta",
+    trading_pair="SOL-USDC",
+    side="BUY",
+    amount="1.0",
+    slippage_pct="1.0",
+    wallet_address="your_wallet_address"  # Optional
+)
+
+# Search swap history
+manage_gateway_swaps(
+    action="search",
+    search_connector="jupiter",
+    search_network="solana-mainnet-beta",
+    status="CONFIRMED",  # SUBMITTED, CONFIRMED, FAILED
+    limit=50
+)
+
+# Check transaction status
+manage_gateway_swaps(
+    action="get_status",
+    transaction_hash="your_tx_hash"
+)
+```
+
+**Use instead of:**
+- `POST /gateway/swap/quote`
+- `POST /gateway/swap/execute`
+- `POST /gateway/swaps/search`
+- `GET /gateway/swaps/{transaction_hash}/status`
+
+---
+
+#### `explore_gateway_clmm_pools` - Discover CLMM Pools
+Browse concentrated liquidity pools.
+
+```python
+# List pools
+explore_gateway_clmm_pools(
+    action="list_pools",
+    connector="meteora",
+    page=0,
+    limit=50,
+    search_term="SOL",  # Optional filter
+    sort_key="volume",  # volume, tvl, feetvlratio
+    order_by="desc",
+    include_unknown=True,
+    detailed=False  # Set True for more columns
+)
+
+# Get specific pool info
+explore_gateway_clmm_pools(
+    action="get_pool_info",
+    connector="meteora",
+    network="solana-mainnet-beta",
+    pool_address="pool_address_here"
+)
+```
+
+**Use instead of:**
+- `GET /gateway/clmm/pools`
+- `GET /gateway/clmm/pool-info`
+
+---
+
+#### `manage_gateway_clmm_positions` - CLMM Liquidity Positions
+Open, close, collect fees from concentrated liquidity positions.
+
+```python
+# Open position
+manage_gateway_clmm_positions(
+    action="open_position",
+    connector="meteora",
+    network="solana-mainnet-beta",
+    pool_address="pool_address",
+    lower_price="150",
+    upper_price="250",
+    base_token_amount="1.0",  # Optional
+    quote_token_amount="200",  # Optional
+    slippage_pct="1.0",
+    wallet_address="your_wallet",  # Optional
+    extra_params={"strategyType": 0}  # Connector-specific
+)
+
+# Get positions for wallet/pool
+manage_gateway_clmm_positions(
+    action="get_positions",
+    connector="meteora",
+    network="solana-mainnet-beta",
+    pool_address="pool_address",
+    wallet_address="your_wallet"
+)
+
+# Collect fees
+manage_gateway_clmm_positions(
+    action="collect_fees",
+    connector="meteora",
+    network="solana-mainnet-beta",
+    position_address="position_nft_address",
+    wallet_address="your_wallet"
+)
+
+# Close position
+manage_gateway_clmm_positions(
+    action="close_position",
+    connector="meteora",
+    network="solana-mainnet-beta",
+    position_address="position_nft_address",
+    wallet_address="your_wallet"
+)
+```
+
+**Use instead of:**
+- `POST /gateway/clmm/open`
+- `POST /gateway/clmm/positions_owned`
+- `POST /gateway/clmm/collect-fees`
+- `POST /gateway/clmm/close`
+
+---
+
+### Bot Management
+
+#### `explore_controllers` - Discover Trading Strategies
+List and understand available trading controllers (strategies).
+
+```python
+# List all controllers
+explore_controllers(action="list")
+
+# List by type
+explore_controllers(
+    action="list",
+    controller_type="directional_trading"  # or "market_making", "generic"
+)
+
+# Describe specific controller
+explore_controllers(
+    action="describe",
+    controller_name="macd_bb_v1"
+)
+
+# Describe specific config
+explore_controllers(
+    action="describe",
+    config_name="my_strategy_config"
+)
+```
+
+**Use instead of:**
+- `GET /controllers/`
+- `GET /controllers/{controller_type}/{controller_name}`
+- `GET /controllers/configs/`
+
+---
+
+#### `modify_controllers` - Create/Update Strategies
+Create, update, or delete controller templates and configs.
+
+```python
+# Create controller config
+modify_controllers(
+    action="upsert",
+    target="config",
+    config_name="my_pmm_strategy",
+    config_data={
+        "controller_name": "macd_bb_v1",
+        "controller_type": "directional_trading",
+        # ... other config parameters
+    }
+)
+
+# Update bot-specific config
+modify_controllers(
+    action="upsert",
+    target="config",
+    config_name="my_pmm_strategy",
+    config_data={...},
+    bot_name="my_bot",
+    confirm_override=True
+)
+
+# Delete config
+modify_controllers(
+    action="delete",
+    target="config",
+    config_name="old_strategy"
+)
+```
+
+**Use instead of:**
+- `POST /controllers/configs/{config_name}`
+- `PUT /controllers/configs/{config_name}`
+- `DELETE /controllers/configs/{config_name}`
+- `POST /controllers/{controller_type}/{controller_name}`
+
+---
+
+#### `deploy_bot_with_controllers` - Deploy Trading Bot
+Deploy a bot with controller configurations.
+
+```python
+deploy_bot_with_controllers(
+    bot_name="my_trading_bot",
+    controllers_config=["strategy_config_1", "strategy_config_2"],
+    account_name="master_account",
+    max_global_drawdown_quote=1000,  # Optional stop-loss
+    max_controller_drawdown_quote=500,  # Optional per-strategy stop
+    image="hummingbot/hummingbot:latest"
+)
+```
+
+**Use instead of:** `POST /bot-orchestration/deploy-v2-controllers`
+
+---
+
+#### `get_active_bots_status` - Monitor Running Bots
+Get status of all active trading bots.
+
+```python
+get_active_bots_status()
+```
+
+**Returns:** Bot status, PnL, volume, latest logs, errors
+
+**Use instead of:** `GET /bot-orchestration/status`
+
+---
+
+#### `get_bot_logs` - Detailed Bot Logs
+Search and filter bot logs.
+
+```python
+get_bot_logs(
+    bot_name="my_trading_bot",
+    log_type="error",  # "error", "general", "all"
+    limit=50,
+    search_term="connection"  # Optional filter
+)
+```
+
+**Use instead of:** `GET /bot-orchestration/{bot_name}/status` (for logs)
+
+---
+
+#### `manage_bot_execution` - Start/Stop Bots
+Control bot and controller execution.
+
+```python
+# Stop entire bot permanently
+manage_bot_execution(
+    bot_name="my_trading_bot",
+    action="stop_bot"
+)
+
+# Stop specific controllers
+manage_bot_execution(
+    bot_name="my_trading_bot",
+    action="stop_controllers",
+    controller_names=["strategy_1", "strategy_2"]
+)
+
+# Start/resume controllers
+manage_bot_execution(
+    bot_name="my_trading_bot",
+    action="start_controllers",
+    controller_names=["strategy_1"]
+)
+```
+
+**Use instead of:**
+- `POST /bot-orchestration/stop-bot`
+- `POST /bot-orchestration/stop-and-archive-bot/{bot_name}`
+
+---
+
+## 📋 Direct API Endpoints (Use When MCP Tools Don't Exist)
+
+**Authentication:** All endpoints require HTTP Basic Auth.
+
 ```bash
 curl -u username:password http://localhost:8000/endpoint
 ```
 
-## Common Response Patterns
-
-### Paginated Responses
-Many endpoints return paginated data with this structure:
-```json
-{
-  "data": [...],
-  "next_cursor": "string or null",
-  "total": 100
-}
-```
-
-### Error Responses
-```json
-{
-  "detail": "Error message"
-}
-```
-
-## API Endpoints by Category
+---
 
 ### 🐳 Docker Management (`/docker`)
 
-#### Check Docker Status
 ```
-GET /docker/running
+GET    /docker/running
+GET    /docker/available-images/
+GET    /docker/active-containers
+GET    /docker/exited-containers
+POST   /docker/pull-image/
+GET    /docker/pull-status/
+POST   /docker/clean-exited-containers
+POST   /docker/start-container/{container_name}
+POST   /docker/stop-container/{container_name}
+POST   /docker/remove-container/{container_name}
 ```
-Returns whether Docker daemon is running.
 
-#### List Available Images
-```
-GET /docker/available-images
-```
-Returns list of available Docker images.
+**Use Cases:**
+- Check if Docker daemon is running
+- Pull latest Hummingbot images
+- Manage container lifecycle
+- Clean up exited containers
 
-#### Container Management
-```
-GET /docker/active-containers
-GET /docker/exited-containers
-POST /docker/clean-exited-containers
-POST /docker/pull-image
-POST /docker/containers/{container_name}/start
-POST /docker/containers/{container_name}/stop
-DELETE /docker/containers/{container_name}
-GET /docker/containers/{container_name}/logs
-POST /docker/archive-container/{container_name}
-```
+---
 
 ### 💳 Account Management (`/accounts`)
 
-#### List Accounts
-```
-GET /accounts/
-```
-Returns list of all account names.
+**MCP tools exist** for most operations. Use direct API only for:
 
-#### Account Operations
 ```
-POST /accounts/add-account
-Body: {"account_name": "string"}
-
-POST /accounts/delete-account
-Body: {"account_name": "string"}
+GET    /accounts/                              # List all accounts
+POST   /accounts/add-account                    # Create new account
+POST   /accounts/delete-account                 # Remove account
+GET    /accounts/{account_name}/credentials     # List credentials
 ```
 
-#### Credential Management
-```
-GET /accounts/{account_name}/credentials
-Returns list of configured connectors for account.
+**Note:** Use `setup_connector` MCP tool for adding credentials instead of:
+- `POST /accounts/add-credential/{account_name}/{connector_name}`
+- `POST /accounts/delete-credential/{account_name}/{connector_name}`
 
-POST /accounts/add-credential/{account_name}/{connector_name}
-Body: {"api_key": "string", "api_secret": "string", ...}
-
-POST /accounts/delete-credential/{account_name}/{connector_name}
-```
+---
 
 ### 🔌 Connector Information (`/connectors`)
 
-#### List Connectors
+**MCP tool exists:** Use `setup_connector()` for progressive flow.
+
+Direct API endpoints:
 ```
-GET /connectors/
+GET    /connectors/                                    # List all exchanges
+GET    /connectors/{connector_name}/config-map         # Get required credentials
+GET    /connectors/{connector_name}/order-types        # Supported order types
+GET    /connectors/{connector_name}/trading-rules      # Min/max amounts, tick sizes
 ```
 
-#### Connector Details
+**Example:**
+```bash
+# Get Binance trading rules
+curl -u admin:admin "http://localhost:8000/connectors/binance/trading-rules?trading_pairs=BTC-USDT,ETH-USDT"
 ```
-GET /connectors/{connector_name}/config-map
-GET /connectors/{connector_name}/trading-rules?trading_pairs=BTC-USDT,ETH-USDT
-GET /connectors/{connector_name}/order-types
-```
+
+---
 
 ### 📊 Portfolio Management (`/portfolio`)
 
-#### Current Portfolio State
+**MCP tool exists:** Use `get_portfolio_overview()` instead of these:
+
 ```
-POST /portfolio/state
-Body: {
-  "account_names": ["account1", "account2"],  // optional
-  "connectors": ["binance", "coinbase"]       // optional
-}
+POST   /portfolio/state                    # Current balances (use MCP tool!)
+POST   /portfolio/distribution             # Token breakdown (use MCP tool!)
+POST   /portfolio/accounts-distribution    # Account allocation (use MCP tool!)
+POST   /portfolio/history                  # Historical portfolio values
 ```
 
-#### Portfolio History
-```
-POST /portfolio/history
-Body: {
-  "account_names": ["account1"],
-  "connectors": ["binance"],
-  "limit": 100,
-  "cursor": "previous_cursor"
-}
-```
+**When to use direct API:**
+- Need cursor-based pagination for portfolio history
+- Building custom portfolio analytics
 
-#### Portfolio Analytics
-```
-POST /portfolio/distribution
-Body: Same as state/history filters
-
-POST /portfolio/accounts-distribution
-Body: Same as state/history filters
-```
+---
 
 ### 💹 Trading Operations (`/trading`)
 
-#### Place Order
+**MCP tools exist** for most operations:
+- `place_order()` for placing orders
+- `search_history()` for order/trade history
+- `get_portfolio_overview()` for active orders and positions
+- `set_account_position_mode_and_leverage()` for perpetual settings
+
+**Direct API only needed for:**
+
 ```
-POST /trading/orders
-Body: {
-  "account_name": "string",
-  "connector_name": "binance",
-  "trading_pair": "BTC-USDT",
-  "order_type": "limit",
-  "trade_type": "buy",
-  "price": 50000,
-  "amount": 0.001,
-  "client_order_id": "optional_custom_id"
-}
+GET    /trading/{account_name}/{connector_name}/position-mode
+       # Get current position mode (HEDGE/ONEWAY)
 ```
 
-#### Cancel Order
-```
-POST /trading/{account_name}/{connector_name}/orders/{client_order_id}/cancel
-```
-
-#### Query Positions (Perpetuals)
-```
-POST /trading/positions
-Body: {
-  "account_names": ["account1"],
-  "connectors": ["binance_perpetual"],
-  "trading_pairs": ["BTC-USDT"],
-  "limit": 50,
-  "cursor": "previous_cursor"
-}
-```
-
-#### Active Orders
-```
-POST /trading/orders/active
-Body: {
-  "account_names": ["account1"],
-  "connectors": ["binance"],
-  "trading_pairs": ["BTC-USDT", "ETH-USDT"],
-  "limit": 100,
-  "cursor": "previous_cursor"
-}
-```
-
-#### Order History
-```
-POST /trading/orders/search
-Body: {
-  "account_names": ["account1"],
-  "connectors": ["binance"],
-  "trading_pairs": ["BTC-USDT"],
-  "start_time": 1609459200,  // Unix timestamp
-  "end_time": 1609545600,
-  "limit": 100,
-  "cursor": "previous_cursor"
-}
-```
-
-#### Trade History
-```
-POST /trading/trades
-Body: Same structure as orders/search
-```
-
-#### Funding Payments (Perpetuals)
-```
-POST /trading/funding-payments
-Body: Same structure as orders/search
-```
-
-#### Position Mode Management
-```
-GET /trading/{account_name}/{connector_name}/position-mode
-Returns: {"position_mode": "ONEWAY" or "HEDGE"}
-
-POST /trading/{account_name}/{connector_name}/position-mode
-Body: {"position_mode": "ONEWAY" or "HEDGE"}
-```
-
-#### Leverage Management
-```
-POST /trading/{account_name}/{connector_name}/leverage
-Body: {
-  "trading_pair": "BTC-USDT",
-  "leverage": 10
-}
-```
+---
 
 ### 🤖 Bot Orchestration (`/bot-orchestration`)
 
-#### Bot Status
+**MCP tools exist:**
+- `deploy_bot_with_controllers()` - Deploy bots
+- `get_active_bots_status()` - Monitor bots
+- `get_bot_logs()` - View logs
+- `manage_bot_execution()` - Start/stop
+
+**Direct API for advanced use:**
+
 ```
-GET /bot-orchestration/status
-Returns status of all active bots.
-
-GET /bot-orchestration/{bot_name}/status
-Returns specific bot status.
-
-GET /bot-orchestration/mqtt
-Returns MQTT connection status and discovered bots.
-```
-
-#### Bot History
-```
-GET /bot-orchestration/{bot_name}/history?start_time=1609459200&end_time=1609545600
-```
-
-#### Bot Lifecycle
-```
-POST /bot-orchestration/start-bot
-Body: {
-  "bot_name": "my_bot",
-  "script": "pure_market_making_simple_dca_bollinger",
-  "config_params": {...}
-}
-
-POST /bot-orchestration/stop-bot
-Body: {"bot_name": "my_bot"}
-
-POST /bot-orchestration/stop-and-archive-bot/{bot_name}
+GET    /bot-orchestration/bot-runs                     # Bot run history
+GET    /bot-orchestration/bot-runs/stats               # Aggregate stats
+GET    /bot-orchestration/bot-runs/{bot_run_id}        # Specific run details
+POST   /bot-orchestration/deploy-v2-script             # Deploy V2 scripts
+POST   /bot-orchestration/start-bot                    # Start V1 bots
+GET    /bot-orchestration/mqtt                         # MQTT status
+GET    /bot-orchestration/{bot_name}/history           # Bot performance history
 ```
 
-#### Deploy V2 Strategies
-```
-POST /bot-orchestration/deploy-v2-script
-Body: {
-  "bot_name": "my_v2_bot",
-  "script": "v2_directional_rsi",
-  "config": {...}
-}
-
-POST /bot-orchestration/deploy-v2-controllers
-Body: {
-  "bot_name": "my_controller_bot",
-  "controller_type": "directional_trading",
-  "controller_name": "macd_bb_v1",
-  "config": [...controller configs...]
-}
-```
-
-### 📊 Market Data (`/market-data`)
-
-#### Real-time Candles
-```
-POST /market-data/candles
-Body: {
-  "connector_name": "binance",
-  "trading_pairs": ["BTC-USDT", "ETH-USDT"],
-  "intervals": ["1m", "5m", "1h"],
-  "max_records": 1000
-}
-```
-
-#### Historical Candles
-```
-POST /market-data/historical-candles
-Body: {
-  "connector_name": "binance",
-  "trading_pairs": ["BTC-USDT"],
-  "intervals": ["1h"],
-  "start_time": 1609459200,
-  "end_time": 1609545600
-}
-```
-
-#### Price Data
-```
-POST /market-data/prices
-Body: {
-  "connector_name": "binance",
-  "trading_pairs": ["BTC-USDT", "ETH-USDT"]
-}
-```
-
-#### Funding Info (Perpetuals)
-```
-POST /market-data/funding-info
-Body: {
-  "connector_name": "binance_perpetual",
-  "trading_pairs": ["BTC-USDT"]
-}
-```
-
-#### Order Book
-```
-POST /market-data/order-book
-Body: {
-  "connector_name": "binance",
-  "trading_pair": "BTC-USDT",
-  "depth": 50
-}
-```
-
-#### Order Book Analytics
-```
-POST /market-data/order-book/price-for-volume
-Body: {
-  "connector_name": "binance",
-  "trading_pair": "BTC-USDT",
-  "volume": 10,
-  "side": "buy"  // or "sell"
-}
-
-POST /market-data/order-book/volume-for-price
-Body: {
-  "connector_name": "binance",
-  "trading_pair": "BTC-USDT",
-  "price": 50000,
-  "side": "buy"
-}
-
-POST /market-data/order-book/vwap-for-volume
-Body: {
-  "connector_name": "binance",
-  "trading_pair": "BTC-USDT",
-  "volume": 10,
-  "side": "buy"
-}
-```
-
-#### Active Feeds
-```
-GET /market-data/active-feeds
-```
+---
 
 ### 📋 Strategy Management
 
 #### Controllers (`/controllers`)
+
+**MCP tools:** `explore_controllers()`, `modify_controllers()`
+
+**Direct API for:**
 ```
-GET /controllers/?controller_type=directional_trading
-GET /controllers/configs/
-GET /controllers/configs/{config_id}
-POST /controllers/configs/
-PUT /controllers/configs/{config_id}
-DELETE /controllers/configs/{config_id}
-GET /controllers/{controller_type}/{controller_name}/config-template
+GET    /controllers/{controller_type}/{controller_name}/config/template
+       # Get JSON template for config
+POST   /controllers/{controller_type}/{controller_name}/config/validate
+       # Validate config before deploying
 ```
 
 #### Scripts (`/scripts`)
+
 ```
-GET /scripts/
-GET /scripts/configs/
-GET /scripts/configs/{config_id}
-POST /scripts/configs/
-PUT /scripts/configs/{config_id}
-DELETE /scripts/configs/{config_id}
-GET /scripts/{script_name}/config-template
+GET    /scripts/                                    # List available scripts
+GET    /scripts/{script_name}                       # Get script code
+POST   /scripts/{script_name}                       # Upload custom script
+DELETE /scripts/{script_name}                       # Remove script
+GET    /scripts/{script_name}/config/template       # Get config template
+GET    /scripts/configs/                            # List script configs
+POST   /scripts/configs/{config_name}               # Create config
+DELETE /scripts/configs/{config_name}               # Delete config
 ```
+
+---
+
+### 📊 Market Data (`/market-data`)
+
+**MCP tools exist:**
+- `get_prices()` - Current prices
+- `get_candles()` - OHLCV data
+- `get_funding_rate()` - Funding rates
+- `get_order_book()` - Order book analysis
+
+**Direct API for real-time feeds:**
+
+```
+POST   /market-data/candles
+       # Start persistent candle feed (WebSocket-like)
+       Body: {
+         "connector_name": "binance",
+         "trading_pairs": ["BTC-USDT"],
+         "intervals": ["1m", "5m"],
+         "max_records": 1000
+       }
+
+GET    /market-data/active-feeds
+       # List active real-time feeds
+
+GET    /market-data/settings
+       # Get market data configuration
+```
+
+---
 
 ### 🔄 Backtesting (`/backtesting`)
 
+**No MCP tool.** Use direct API:
+
 ```
-POST /backtesting/run-backtesting
-Body: {
-  "config": {
-    "controller_name": "directional_trading.macd_bb_v1",
-    "controller_type": "directional_trading",
-    "controller_config": [...],
-    "start_time": 1609459200,
-    "end_time": 1609545600,
-    "backtesting_resolution": "1m",
-    "trade_cost": 0.0006
-  }
-}
+POST   /backtesting/run-backtesting
+       Body: {
+         "config": {
+           "controller_name": "directional_trading.macd_bb_v1",
+           "controller_type": "directional_trading",
+           "controller_config": [...],
+           "start_time": 1609459200,
+           "end_time": 1609545600,
+           "backtesting_resolution": "1m",
+           "trade_cost": 0.0006
+         }
+       }
 ```
+
+---
 
 ### 📈 Archived Bot Analytics (`/archived-bots`)
 
-```
-GET /archived-bots/
-GET /archived-bots/{db_path}/status
-GET /archived-bots/{db_path}/summary
-GET /archived-bots/{db_path}/performance
-GET /archived-bots/{db_path}/trades
-GET /archived-bots/{db_path}/executors-config
-GET /archived-bots/{db_path}/executors
-GET /archived-bots/{db_path}/general-data/{table_name}
-```
-
-### 🌐 Gateway Management (`/gateway`)
-
-Gateway provides access to decentralized exchanges (DEX) and blockchain operations.
-
-#### Gateway Lifecycle
+**No MCP tool.** Use direct API for analyzing stopped bots:
 
 ```
-POST /gateway/start
-Body: {
-  "passphrase": "your-secure-passphrase",
-  "dev_mode": true  // Set to false for production
-}
-
-GET /gateway/status
-Returns current Gateway status and connection info.
-
-POST /gateway/stop
-Stops the Gateway service.
-
-POST /gateway/restart
-Restarts the Gateway service.
-
-GET /gateway/logs
-Returns recent Gateway logs.
+GET    /archived-bots/                               # List archived databases
+GET    /archived-bots/{db_path}/status               # Bot configuration
+GET    /archived-bots/{db_path}/summary              # Performance summary
+GET    /archived-bots/{db_path}/performance          # Detailed metrics
+GET    /archived-bots/{db_path}/orders               # Historical orders
+GET    /archived-bots/{db_path}/trades               # Trade history
+GET    /archived-bots/{db_path}/positions            # Position history
+GET    /archived-bots/{db_path}/controllers          # Controller configs
+GET    /archived-bots/{db_path}/executors            # Executor data
 ```
 
-#### Gateway Configuration
+---
 
-```
-GET /gateway/connectors
-Returns list of available DEX connectors.
+### ⛓️ Chain-Specific Endpoints (Blockchain Direct Access)
 
-GET /gateway/connectors/{connector_name}
-Returns details for a specific connector.
-
-GET /gateway/chains
-Returns list of supported blockchain chains.
-
-GET /gateway/networks
-Returns list of available networks.
-
-GET /gateway/networks/{network_id}
-Returns details for a specific network.
-
-GET /gateway/networks/{network_id}/tokens
-Returns available tokens on a network.
-
-GET /gateway/networks/{network_id}/tokens/{token_address}
-Returns details for a specific token.
-```
-
-#### Wallet Management
-
-```
-POST /accounts/gateway/add-wallet
-Body: {
-  "chain": "ethereum",
-  "network": "mainnet",
-  "private_key": "your_private_key"
-}
-
-GET /accounts/gateway/wallets
-Returns list of configured Gateway wallets.
-
-GET /accounts/gateway/{chain}/{address}
-Returns details for a specific wallet.
-```
-
-#### Swap Operations
-
-```
-POST /gateway/swap/quote
-Body: {
-  "chain": "ethereum",
-  "network": "mainnet",
-  "connector": "uniswap",
-  "base": "WETH",
-  "quote": "USDC",
-  "amount": "1.0",
-  "side": "BUY"
-}
-Returns swap quote including expected price and gas estimates.
-
-POST /gateway/swap/execute
-Body: {
-  "chain": "ethereum",
-  "network": "mainnet",
-  "connector": "uniswap",
-  "address": "wallet_address",
-  "base": "WETH",
-  "quote": "USDC",
-  "amount": "1.0",
-  "side": "BUY",
-  "allowedSlippage": "1.0"
-}
-Executes the swap transaction.
-
-GET /gateway/swaps/search
-Returns history of swap transactions.
-
-GET /gateway/swaps/summary
-Returns swap transaction summary statistics.
-
-GET /gateway/swaps/{transaction_hash}/status
-Returns status of a specific swap transaction.
-```
-
-#### Liquidity Pool Management
-
-```
-GET /gateway/pools
-Returns available liquidity pools.
-
-GET /gateway/clmm/pools
-Returns CLMM (Concentrated Liquidity Market Maker) pools.
-
-POST /gateway/clmm/pool-info
-Body: {
-  "chain": "ethereum",
-  "network": "mainnet",
-  "connector": "uniswap",
-  "token0": "WETH",
-  "token1": "USDC",
-  "fee": "MEDIUM"
-}
-Returns detailed pool information.
-```
-
-#### CLMM Position Management
-
-```
-POST /gateway/clmm/open
-Body: {
-  "chain": "ethereum",
-  "network": "mainnet",
-  "connector": "uniswap",
-  "address": "wallet_address",
-  "token0": "WETH",
-  "token1": "USDC",
-  "fee": "MEDIUM",
-  "lowerPrice": "1800",
-  "upperPrice": "2200",
-  "amount0": "1.0",
-  "amount1": "2000"
-}
-Opens a new CLMM position.
-
-POST /gateway/clmm/close
-Body: {
-  "chain": "ethereum",
-  "network": "mainnet",
-  "connector": "uniswap",
-  "address": "wallet_address",
-  "position_id": "position_nft_id"
-}
-Closes an existing CLMM position.
-
-POST /gateway/clmm/collect-fees
-Body: {
-  "chain": "ethereum",
-  "network": "mainnet",
-  "connector": "uniswap",
-  "address": "wallet_address",
-  "position_id": "position_nft_id"
-}
-Collects accumulated fees from a position.
-
-GET /gateway/clmm/positions_owned
-Returns all CLMM positions owned by the wallet.
-
-POST /gateway/clmm/positions/search
-Body: {
-  "chain": "ethereum",
-  "network": "mainnet",
-  "connector": "uniswap",
-  "address": "wallet_address"
-}
-Searches for CLMM positions with filters.
-
-GET /gateway/clmm/positions/{position_address}/events
-Returns events history for a specific position.
-```
-
-### ⛓️ Chain-Specific Endpoints
-
-Gateway provides direct blockchain access for balance checking, gas estimation, and transaction polling.
+**Use for:** Balance checks, gas estimation, transaction polling on blockchains.
 
 #### Solana Chain (`/chains/solana`)
 
+**Note:** These are Gateway endpoints accessed through the main API when Gateway is running.
+
 ```
-GET /chains/solana/status
-Returns Solana network status and connection info.
+POST   /chains/solana/balances
+       Body: {
+         "chain": "solana",
+         "network": "mainnet-beta",
+         "address": "wallet_address",
+         "tokenSymbols": ["SOL", "USDC"]  # Optional
+       }
+       # Returns SOL and SPL token balances
 
-GET /chains/solana/estimate-gas
-Returns estimated gas/fees for Solana transactions.
+GET    /chains/solana/status
+       # Network status and connection info
 
-POST /chains/solana/balances
-Body: {
-  "chain": "solana",
-  "network": "mainnet-beta",
-  "address": "wallet_address",
-  "tokenSymbols": ["SOL", "USDC"]  // optional, returns all if empty
-}
-Returns SOL and SPL token balances for the wallet.
+GET    /chains/solana/estimate-gas
+       # Estimate transaction fees
 
-POST /chains/solana/poll
-Body: {
-  "chain": "solana",
-  "network": "mainnet-beta",
-  "txHash": "transaction_signature"
-}
-Polls for transaction status and confirmation.
+POST   /chains/solana/poll
+       Body: {
+         "chain": "solana",
+         "network": "mainnet-beta",
+         "txHash": "transaction_signature"
+       }
+       # Poll transaction status
 ```
 
 #### Ethereum Chain (`/chains/ethereum`)
 
 ```
-GET /chains/ethereum/status
-Returns Ethereum network status and connection info.
+POST   /chains/ethereum/balances
+       Body: {
+         "chain": "ethereum",
+         "network": "mainnet",
+         "address": "wallet_address",
+         "tokenSymbols": ["ETH", "USDC", "WETH"]
+       }
+       # Returns ETH and ERC-20 balances
 
-GET /chains/ethereum/estimate-gas
-Returns estimated gas fees for Ethereum transactions.
+GET    /chains/ethereum/status
+GET    /chains/ethereum/estimate-gas
 
-POST /chains/ethereum/balances
-Body: {
-  "chain": "ethereum",
-  "network": "mainnet",
-  "address": "wallet_address",
-  "tokenSymbols": ["ETH", "USDC", "WETH"]  // optional
-}
-Returns ETH and ERC-20 token balances for the wallet.
+POST   /chains/ethereum/poll
+       # Poll transaction receipt
 
-POST /chains/ethereum/poll
-Body: {
-  "chain": "ethereum",
-  "network": "mainnet",
-  "txHash": "transaction_hash"
-}
-Polls for transaction status and receipt.
+POST   /chains/ethereum/allowances
+       Body: {
+         "chain": "ethereum",
+         "network": "mainnet",
+         "address": "wallet_address",
+         "spender": "contract_address",
+         "tokenSymbols": ["USDC"]
+       }
+       # Check token allowances
 
-POST /chains/ethereum/allowances
-Body: {
-  "chain": "ethereum",
-  "network": "mainnet",
-  "address": "wallet_address",
-  "spender": "spender_address",
-  "tokenSymbols": ["USDC", "WETH"]
-}
-Returns current token allowances for a spender.
+POST   /chains/ethereum/approve
+       Body: {
+         "chain": "ethereum",
+         "network": "mainnet",
+         "address": "wallet_address",
+         "spender": "contract_address",
+         "token": "USDC",
+         "amount": "1000"  # Optional, max if not specified
+       }
+       # Approve token spending
 
-POST /chains/ethereum/approve
-Body: {
-  "chain": "ethereum",
-  "network": "mainnet",
-  "address": "wallet_address",
-  "spender": "spender_address",
-  "token": "USDC",
-  "amount": "1000"  // optional, max if not specified
-}
-Approves token spending for a contract.
+POST   /chains/ethereum/wrap
+       Body: {"chain": "ethereum", "network": "mainnet", "address": "wallet", "amount": "1.0"}
+       # Wrap ETH to WETH
 
-POST /chains/ethereum/wrap
-Body: {
-  "chain": "ethereum",
-  "network": "mainnet",
-  "address": "wallet_address",
-  "amount": "1.0"
-}
-Wraps ETH to WETH.
-
-POST /chains/ethereum/unwrap
-Body: {
-  "chain": "ethereum",
-  "network": "mainnet",
-  "address": "wallet_address",
-  "amount": "1.0"
-}
-Unwraps WETH to ETH.
+POST   /chains/ethereum/unwrap
+       # Unwrap WETH to ETH
 ```
+
+---
+
+## 🆘 Common Error Handling
+
+### MCP Connection Lost
+
+**Error:**
+```
+Error executing tool: ❌ Failed to connect to Hummingbot API
+Connection failed after 3 attempts.
+```
+
+**Solution:** Reconnect immediately:
+```python
+configure_api_servers(action="add", name="local", host="localhost", port=8000, username="admin", password="admin")
+configure_api_servers(action="set_default", name="local")
+# Retry your operation
+```
+
+### Authentication Errors (401)
+
+Check credentials in `.env` file match what you're using.
+
+### Validation Errors (422)
+
+Read the error detail - usually missing required parameters or invalid values.
+
+### Resource Not Found (404)
+
+- Bot doesn't exist
+- Connector name misspelled
+- Database path incorrect
+
+---
+
+## 💡 AI Assistant Tips
+
+1. **Always use MCP tools first** - They handle complexity for you
+2. **Start with `configure_api_servers`** - Establishes connection
+3. **Use `get_portfolio_overview`** - Single call for complete portfolio
+4. **Progressive disclosure** - Tools like `setup_connector` guide you step-by-step
+5. **Check MCP tool errors** - Reconnect immediately if connection fails
+6. **Read error messages** - They usually tell you exactly what's wrong
+
+---
+
+## 📚 Additional Resources
+
+- **Interactive API Docs**: http://localhost:8000/docs (Swagger UI)
+- **Setup Guides**: See CLAUDE.md, AGENTS.md, GEMINI.md
+- **Architecture**: See README.md
+- **Troubleshooting**: See README.md Troubleshooting section
