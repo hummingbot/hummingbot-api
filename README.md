@@ -133,6 +133,80 @@ Choose the method that best fits your workflow:
 
 Whether you're building a trading dashboard, implementing algorithmic strategies, or creating a comprehensive trading platform, the Hummingbot API provides all the tools you need.
 
+## 🌐 Gateway Setup (For DEX Trading)
+
+Gateway is required for decentralized exchange (DEX) trading. The Hummingbot API can manage Gateway containers for you - no separate installation needed!
+
+### Option 1: Using Swagger UI (API)
+
+1. **Access Swagger UI**: http://localhost:8000/docs
+2. **Navigate to Gateway endpoints**: Look for `/manage-gateway` or similar endpoints
+3. **Start Gateway**:
+   ```json
+   POST /manage-gateway
+   {
+     "action": "start",
+     "passphrase": "your-secure-passphrase",
+     "dev_mode": true
+   }
+   ```
+
+The API automatically handles OS-specific networking:
+- **macOS/Windows**: Uses `host.docker.internal` to connect to the API
+- **Linux**: Uses appropriate network configuration
+
+### Option 2: Using MCP AI Assistant
+
+If you enabled MCP during setup, you can manage Gateway with natural language:
+
+**Example commands:**
+- "Start Gateway in development mode with passphrase 'admin'"
+- "Check Gateway status"
+- "Stop the Gateway container"
+- "Restart Gateway with a new passphrase"
+
+The `manage_gateway_container` MCP tool will:
+- Pull the Gateway Docker image if needed
+- Start the container with proper configuration
+- Configure networking based on your OS
+- Report Gateway status and connection info
+
+### Verify Gateway is Running
+
+**Check container status:**
+```bash
+docker ps | grep gateway
+```
+
+**View Gateway logs:**
+```bash
+docker logs gateway -f
+```
+
+**Test Gateway API** (dev mode only):
+```bash
+curl http://localhost:15888/
+```
+
+### Gateway Access
+
+Once running, Gateway will be available at:
+- **Development mode**: `http://localhost:15888`
+- **Production mode**: `https://localhost:15888` (requires certificates)
+- **API Documentation**: `http://localhost:15888/docs` (dev mode only)
+
+### Troubleshooting
+
+**Gateway won't start:**
+- Ensure Docker is running
+- Check if port 15888 is available
+- Review logs: `docker logs gateway`
+
+**Connection issues:**
+- Verify Gateway URL in your `.env` file
+- macOS/Windows users: Ensure `host.docker.internal` is accessible
+- Linux users: Check network configuration
+
 ## 🐳 Docker Compose Architecture
 
 The Hummingbot API uses Docker Compose to orchestrate multiple services into a complete trading platform:
