@@ -32,10 +32,6 @@ PASSWORD=${PASSWORD:-admin}
 
 echo ""
 echo -e "${YELLOW}Optional Services${NC}"
-echo -n "Enable MCP server for AI assistant usage? (y/n) [default: n]: "
-read ENABLE_MCP
-ENABLE_MCP=${ENABLE_MCP:-n}
-
 echo -n "Enable Dashboard web interface? (y/n) [default: n]: "
 read ENABLE_DASHBOARD
 ENABLE_DASHBOARD=${ENABLE_DASHBOARD:-n}
@@ -225,10 +221,10 @@ if [ "$DB_READY" = true ]; then
     echo -e "${YELLOW}🔍 Verifying database configuration...${NC}"
 
     # Check if hbot user exists
-    USER_EXISTS=$(docker exec hummingbot-postgres psql -U postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='hbot'" 2>/dev/null)
+    USER_EXISTS=$(docker exec hummingbot-postgres psql -U hbot -tAc "SELECT 1 FROM pg_roles WHERE rolname='hbot'" 2>/dev/null)
 
     # Check if database exists
-    DB_EXISTS=$(docker exec hummingbot-postgres psql -U postgres -tAc "SELECT 1 FROM pg_database WHERE datname='hummingbot_api'" 2>/dev/null)
+    DB_EXISTS=$(docker exec hummingbot-postgres psql -U hbot -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='hummingbot_api'" 2>/dev/null)
 
     if [ "$USER_EXISTS" = "1" ] && [ "$DB_EXISTS" = "1" ]; then
         echo -e "${GREEN}✅ Database 'hummingbot_api' and user 'hbot' verified successfully!${NC}"
@@ -236,7 +232,7 @@ if [ "$DB_READY" = true ]; then
         echo -e "${YELLOW}⚠️  Database initialization may be incomplete. Running manual initialization...${NC}"
 
         # Run the init script manually
-        docker exec -i hummingbot-postgres psql -U postgres < init-db.sql
+        docker exec -i hummingbot-postgres psql -U hbot < init-db.sql
 
         if [ $? -eq 0 ]; then
             echo -e "${GREEN}✅ Database manually initialized successfully!${NC}"
@@ -268,10 +264,6 @@ echo -e "  📚 ${GREEN}API Docs${NC}       - http://localhost:8000/docs (Swagge
 echo -e "  📡 ${GREEN}EMQX Broker${NC}    - localhost:1883"
 echo -e "  💾 ${GREEN}PostgreSQL${NC}     - localhost:5432"
 
-if [[ "$ENABLE_MCP" =~ ^[Yy]$ ]]; then
-    echo -e "  🤖 ${GREEN}MCP Server${NC}     - AI Assistant integration (connect Claude/ChatGPT/Gemini)"
-fi
-
 if [[ "$ENABLE_DASHBOARD" =~ ^[Yy]$ ]]; then
     echo -e "  📊 ${GREEN}Dashboard${NC}      - http://localhost:8501"
 fi
@@ -283,21 +275,19 @@ echo ""
 echo "1. ${CYAN}Access the API:${NC}"
 echo "   • Swagger UI: http://localhost:8000/docs (full REST API documentation)"
 
-if [[ "$ENABLE_MCP" =~ ^[Yy]$ ]]; then
-    echo ""
-    echo "2. ${CYAN}Connect an AI Assistant (MCP enabled):${NC}"
-    echo ""
-    echo "   ${GREEN}Claude Code (CLI) Setup:${NC}"
-    echo "   Add the MCP server with one command:"
-    echo ""
-    echo -e "   ${BLUE}claude mcp add --transport stdio hummingbot -- docker run --rm -i -e HUMMINGBOT_API_URL=http://host.docker.internal:8000 -v hummingbot_mcp:/root/.hummingbot_mcp hummingbot/hummingbot-mcp:latest${NC}"
-    echo ""
-    echo "   Then use natural language in your terminal:"
-    echo '      - "Show me my portfolio balances"'
-    echo '      - "Create a market making strategy for ETH-USDT on Binance"'
-    echo ""
-    echo "   ${PURPLE}Other AI assistants:${NC} See CLAUDE.md, GEMINI.md, or AGENTS.md for setup"
-fi
+echo ""
+echo "2. ${CYAN}Connect an AI Assistant:${NC}"
+echo ""
+echo "   ${GREEN}Claude Code (CLI) Setup:${NC}"
+echo "   Add the MCP server with one command:"
+echo ""
+echo -e "   ${BLUE}claude mcp add --transport stdio hummingbot -- docker run --rm -i -e HUMMINGBOT_API_URL=http://host.docker.internal:8000 -v hummingbot_mcp:/root/.hummingbot_mcp hummingbot/hummingbot-mcp:latest${NC}"
+echo ""
+echo "   Then use natural language in your terminal:"
+echo '      - "Show me my portfolio balances"'
+echo '      - "Create a market making strategy for ETH-USDT on Binance"'
+echo ""
+echo "   ${PURPLE}Other AI assistants:${NC} See CLAUDE.md, GEMINI.md, or AGENTS.md for setup"
 
 if [[ "$ENABLE_DASHBOARD" =~ ^[Yy]$ ]]; then
     echo ""
@@ -308,12 +298,7 @@ fi
 echo ""
 echo -e "${CYAN}Available Access Methods:${NC}"
 echo "  ✅ Swagger UI (http://localhost:8000/docs) - Full REST API"
-
-if [[ "$ENABLE_MCP" =~ ^[Yy]$ ]]; then
-    echo "  ✅ MCP - AI Assistant integration (Claude, ChatGPT, Gemini)"
-else
-    echo "  ⚪ MCP - Run setup.sh again to enable AI assistant"
-fi
+echo "  ✅ MCP - AI Assistant integration (Claude, ChatGPT, Gemini)"
 
 if [[ "$ENABLE_DASHBOARD" =~ ^[Yy]$ ]]; then
     echo "  ✅ Dashboard (http://localhost:8501) - Web interface"

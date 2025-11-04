@@ -31,7 +31,7 @@ WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'hummingbot_api')\gexe
 GRANT ALL PRIVILEGES ON DATABASE hummingbot_api TO hbot;
 
 -- Connect to the database and grant schema privileges
-\c hummingbot_api
+\c hummingbot_api hbot
 
 -- Grant privileges on the public schema
 GRANT ALL ON SCHEMA public TO hbot;

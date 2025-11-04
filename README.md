@@ -663,6 +663,34 @@ This script will:
 3. Automatically fix any missing configuration
 4. Test the connection to ensure everything works
 
+#### "role 'postgres' does not exist" Error
+
+If you see errors like `FATAL: role "postgres" does not exist` in the PostgreSQL logs:
+
+**Cause**: The PostgreSQL container is configured to create only the `hbot` user (via `POSTGRES_USER=hbot`). The default `postgres` superuser is NOT created. This error occurs when something tries to connect using the default `postgres` username.
+
+**Solutions**:
+
+1. **Always specify the correct user** when connecting:
+   ```bash
+   # Correct - use hbot user
+   docker exec -it hummingbot-postgres psql -U hbot -d hummingbot_api
+
+   # Incorrect - tries to use 'postgres' user (doesn't exist)
+   docker exec -it hummingbot-postgres psql
+   ```
+
+2. **If you need the postgres superuser** (not recommended), you can create it:
+   ```bash
+   docker exec -it hummingbot-postgres psql -U hbot -d postgres -c "CREATE ROLE postgres WITH SUPERUSER LOGIN PASSWORD 'your-password';"
+   ```
+
+3. **Complete database reset** (⚠️ deletes all data):
+   ```bash
+   docker compose down -v
+   ./setup.sh
+   ```
+
 #### Manual Database Verification
 
 If you prefer to check manually:
@@ -674,11 +702,11 @@ docker ps | grep -E "hummingbot-postgres|hummingbot-broker"
 # Check PostgreSQL logs
 docker logs hummingbot-postgres
 
-# Verify database connection
+# Verify database connection (use hbot user, not postgres)
 docker exec -it hummingbot-postgres psql -U hbot -d hummingbot_api
 
-# If connection fails, run the initialization script
-docker exec -i hummingbot-postgres psql -U postgres < init-db.sql
+# List all database users
+docker exec -it hummingbot-postgres psql -U hbot -d postgres -c "\du"
 ```
 
 #### Complete Database Reset
