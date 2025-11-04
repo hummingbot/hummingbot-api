@@ -294,7 +294,6 @@ The Hummingbot API uses Docker Compose to orchestrate multiple services into a c
 services:
   # dashboard:      # Optional - Web UI (enable during setup or uncomment manually)
   hummingbot-api:   # Core FastAPI backend (port 8000) - Always installed
-  # hummingbot-mcp: # Optional - AI assistant server (enable during setup or uncomment manually)
   emqx:            # MQTT message broker (port 1883) - Always installed
   postgres:        # PostgreSQL database (port 5432) - Always installed
 ```
@@ -304,7 +303,6 @@ services:
 All services communicate via the `emqx-bridge` Docker network:
 - **Internal communication**: Services reference each other by container name (e.g., `hummingbot-api:8000`)
 - **External access**: Exposed ports allow access from your host machine
-- **MCP integration**: The MCP server connects to `http://hummingbot-api:8000` internally
 
 ### Environment Variables
 
@@ -316,11 +314,6 @@ USERNAME=admin                    # API authentication username
 PASSWORD=admin                    # API authentication password
 CONFIG_PASSWORD=admin             # Bot credentials encryption key
 
-# MCP Server (auto-configured)
-HUMMINGBOT_API_URL=http://hummingbot-api:8000
-HUMMINGBOT_USERNAME=${USERNAME}
-HUMMINGBOT_PASSWORD=${PASSWORD}
-
 # Services (auto-configured)
 BROKER_HOST=emqx
 DATABASE_URL=postgresql+asyncpg://hbot:hummingbot-api@postgres:5432/hummingbot_api
@@ -331,7 +324,6 @@ DATABASE_URL=postgresql+asyncpg://hbot:hummingbot-api@postgres:5432/hummingbot_a
 Docker volumes ensure data persistence:
 - `postgres-data`: Trading data and bot performance
 - `emqx-data`, `emqx-log`, `emqx-etc`: Message broker state
-- `~/.hummingbot_mcp`: MCP server configuration (on host machine)
 
 ## System Dependencies
 
@@ -351,12 +343,6 @@ Enables real-time communication with trading bots:
 - Receives live updates from running bots
 - Sends commands to control bot execution
 - Handles real-time data streaming
-
-### 3. MCP Server
-Provides AI assistant integration:
-- Connects to Hummingbot API via Docker network
-- Exposes tools for natural language trading commands
-- Manages Gateway containers and DEX operations
 
 ## Installation & Setup
 

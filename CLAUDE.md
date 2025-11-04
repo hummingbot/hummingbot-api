@@ -17,26 +17,17 @@ The Hummingbot MCP server provides natural language access to all API functional
    - Open (or create) `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)
    - Or `%APPDATA%\Claude\claude_desktop_config.json` (Windows)
 
-   Add this configuration (no credentials needed - stored in volume):
+   Add this configuration:
    ```json
    {
      "mcpServers": {
        "hummingbot": {
          "command": "docker",
-         "args": [
-           "run",
-           "--rm",
-           "-i",
-           "--network", "host",
-           "-v", "hummingbot-api_hummingbot-mcp-data:/root/.hummingbot_mcp",
-           "hummingbot/hummingbot-mcp:latest"
-         ]
+         "args": ["exec", "-i", "hummingbot-mcp", "mcp"]
        }
      }
    }
    ```
-
-   **Note**: Credentials are stored in the Docker volume and configured on first use via the MCP server.
 
 3. **Restart Claude Desktop**
 
@@ -48,12 +39,10 @@ The Hummingbot MCP server provides natural language access to all API functional
 
 ### Claude Code (CLI) Setup
 
-1. **Add the MCP server** (no credentials needed):
+1. **Add the MCP server**:
    ```bash
-   claude mcp add --transport stdio hummingbot -- docker run --rm -i --network host -v hummingbot-api_hummingbot-mcp-data:/root/.hummingbot_mcp hummingbot/hummingbot-mcp:latest
+   claude mcp add --transport stdio hummingbot -- docker exec -i hummingbot-mcp mcp
    ```
-
-   **Note**: Credentials are stored in the Docker volume and configured on first use.
 
 2. **Use in your terminal**:
    ```bash

@@ -40,19 +40,6 @@ services:
       - emqx-bridge
     depends_on:
       - postgres
-  hummingbot-mcp:
-    container_name: hummingbot-mcp
-    image: hummingbot/hummingbot-mcp:latest
-    volumes:
-      - hummingbot-mcp-data:/root/.hummingbot_mcp
-    environment:
-      - HUMMINGBOT_API_URL=http://hummingbot-api:8000
-      - HUMMINGBOT_TIMEOUT=30.0
-      - HUMMINGBOT_LOG_LEVEL=INFO
-    networks:
-      - emqx-bridge
-    depends_on:
-      - hummingbot-api
   emqx:
     container_name: hummingbot-broker
     image: emqx:5
@@ -118,4 +105,3 @@ volumes:
   emqx-log: { }
   emqx-etc: { }
   postgres-data: { }
-  hummingbot-mcp-data: { }
