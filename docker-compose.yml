@@ -1,4 +1,21 @@
 services:
+  # Uncomment to enable Dashboard (optional web interface)
+  # dashboard:
+  #   container_name: dashboard
+  #   image: hummingbot/dashboard:latest
+  #   ports:
+  #     - "8501:8501"
+  #   environment:
+  #       - AUTH_SYSTEM_ENABLED=False
+  #       - BACKEND_API_HOST=hummingbot-api
+  #       - BACKEND_API_PORT=8000
+  #       - BACKEND_API_USERNAME=${USERNAME}
+  #       - BACKEND_API_PASSWORD=${PASSWORD}
+  #   volumes:
+  #     - ./credentials.yml:/home/dashboard/credentials.yml
+  #     - ./pages:/home/dashboard/pages
+  #   networks:
+  #       - emqx-bridge
   hummingbot-api:
     container_name: hummingbot-api
     image: hummingbot/hummingbot-api:latest
@@ -23,6 +40,22 @@ services:
       - emqx-bridge
     depends_on:
       - postgres
+  # Uncomment to enable MCP server for AI assistant integration (Claude, ChatGPT, Gemini)
+  # hummingbot-mcp:
+  #   container_name: hummingbot-mcp
+  #   image: hummingbot/hummingbot-mcp:latest
+  #   volumes:
+  #     - ~/.hummingbot_mcp:/root/.hummingbot_mcp
+  #   environment:
+  #     - HUMMINGBOT_API_URL=http://hummingbot-api:8000
+  #     - HUMMINGBOT_USERNAME=${USERNAME}
+  #     - HUMMINGBOT_PASSWORD=${PASSWORD}
+  #     - HUMMINGBOT_TIMEOUT=30.0
+  #     - HUMMINGBOT_LOG_LEVEL=INFO
+  #   networks:
+  #     - emqx-bridge
+  #   depends_on:
+  #     - hummingbot-api
   emqx:
     container_name: hummingbot-broker
     image: emqx:5

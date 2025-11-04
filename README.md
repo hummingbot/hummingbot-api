@@ -1,11 +1,89 @@
 # Hummingbot API
 
+**The central hub for running Hummingbot trading bots - now with AI assistant integration via MCP (Model Context Protocol).**
+
 A comprehensive RESTful API framework for managing trading operations across multiple exchanges. The Hummingbot API provides a centralized platform to aggregate all your trading functionalities, from basic account management to sophisticated automated trading strategies.
+
+## 🚀 Quick Start
+
+Run the setup script to deploy the Hummingbot API platform:
+
+```bash
+git clone https://github.com/hummingbot/hummingbot-api.git
+cd hummingbot-api
+chmod +x setup.sh
+./setup.sh
+```
+
+### Setup Process
+
+The script will prompt you for:
+
+1. **Credentials** (required):
+   - Config password (for encrypting bot credentials)
+   - API username and password
+
+2. **Optional Services**:
+   - **MCP server**: For AI assistant integration (Claude, ChatGPT, Gemini)
+   - **Dashboard**: For web-based visual interface
+
+3. **Gateway**: Optional passphrase for DEX trading
+
+### What Gets Installed
+
+**Core services** (always installed):
+- ✅ **Hummingbot API** (port 8000) - REST API backend
+- ✅ **PostgreSQL** - Database for trading data
+- ✅ **EMQX** - Message broker for real-time communication
+- ✅ **Swagger UI** (port 8000/docs) - API documentation
+
+**Optional services** (enable during setup):
+- 🤖 **MCP Server** - For AI assistant integration
+- 📊 **Dashboard** (port 8501) - Web interface
+
+### After Setup
+
+**1. Access Swagger UI (Default)**
+
+The API documentation is immediately available:
+- URL: http://localhost:8000/docs
+- Use the username/password you configured
+- Test all API endpoints directly
+
+**2. Connect AI Assistant (If MCP Enabled)**
+
+If you enabled MCP, follow these steps:
+
+**Claude Desktop:**
+1. Install from [https://claude.ai/download](https://claude.ai/download)
+2. Add to your config file:
+   - **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+   - **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+
+   ```json
+   {
+     "mcpServers": {
+       "hummingbot": {
+         "command": "docker",
+         "args": ["exec", "-i", "hummingbot-mcp", "mcp"]
+       }
+     }
+   }
+   ```
+3. Restart Claude Desktop
+4. Try: "Show me my portfolio balances"
+
+**3. Access Dashboard (If Enabled)**
+
+If you enabled Dashboard during setup:
+- URL: http://localhost:8501
+- Use the same username/password from setup
 
 ## What is Hummingbot API?
 
 The Hummingbot API is designed to be your central hub for trading operations, offering:
 
+- **🤖 AI Assistant Integration**: Control your trading with natural language via MCP (Claude, ChatGPT, Gemini)
 - **Multi-Exchange Account Management**: Create and manage multiple trading accounts across different exchanges
 - **Portfolio Monitoring**: Real-time balance tracking and portfolio distribution analysis
 - **Trade Execution**: Execute trades, manage orders, and monitor positions across all your accounts
@@ -13,11 +91,100 @@ The Hummingbot API is designed to be your central hub for trading operations, of
 - **Strategy Management**: Add, configure, and manage trading strategies in real-time
 - **Complete Flexibility**: Build any trading product on top of this robust API framework
 
+## 🎯 Ways to Interact with Hummingbot API
+
+Choose the method that best fits your workflow:
+
+### 1. 🔧 Swagger UI - API Documentation (Default)
+**Interactive REST API documentation and testing**
+
+- **Best for**: Developers and power users who want full control
+- **Advantages**:
+  - Complete API access - all endpoints available
+  - Direct endpoint testing
+  - Integration development
+  - No additional setup required
+- **Setup**: Automatically available after running setup
+- **Access**: http://localhost:8000/docs
+
+### 2. 🤖 MCP - AI Assistant (Optional)
+**Natural language trading commands through Claude, ChatGPT, or Gemini**
+
+- **Best for**: Users who prefer conversational interaction
+- **Advantages**:
+  - Natural language commands
+  - Full access to all API features
+  - Contextual help and explanations
+  - Complex multi-step operations made simple
+- **Setup**: Answer "y" when prompted during setup, then connect your AI assistant
+- **Example**: "Show me my best performing strategies this week"
+
+### 3. 📊 Dashboard - Web Interface (Optional)
+**Visual interface for common operations**
+
+- **Best for**: Users who prefer graphical interfaces
+- **Advantages**:
+  - Intuitive visual workflows
+  - Real-time charts and graphs
+  - Quick access to common tasks
+- **Limitations**: Not all API functions available (focused on core features)
+- **Setup**: Answer "y" when prompted during setup
+- **Access**: http://localhost:8501
+
 Whether you're building a trading dashboard, implementing algorithmic strategies, or creating a comprehensive trading platform, the Hummingbot API provides all the tools you need.
+
+## 🐳 Docker Compose Architecture
+
+The Hummingbot API uses Docker Compose to orchestrate multiple services into a complete trading platform:
+
+### Services Overview
+
+```yaml
+services:
+  # dashboard:      # Optional - Web UI (enable during setup or uncomment manually)
+  hummingbot-api:   # Core FastAPI backend (port 8000) - Always installed
+  # hummingbot-mcp: # Optional - AI assistant server (enable during setup or uncomment manually)
+  emqx:            # MQTT message broker (port 1883) - Always installed
+  postgres:        # PostgreSQL database (port 5432) - Always installed
+```
+
+### Network Configuration
+
+All services communicate via the `emqx-bridge` Docker network:
+- **Internal communication**: Services reference each other by container name (e.g., `hummingbot-api:8000`)
+- **External access**: Exposed ports allow access from your host machine
+- **MCP integration**: The MCP server connects to `http://hummingbot-api:8000` internally
+
+### Environment Variables
+
+The setup script creates a `.env` file with all necessary configuration:
+
+```bash
+# Security
+USERNAME=admin                    # API authentication username
+PASSWORD=admin                    # API authentication password
+CONFIG_PASSWORD=admin             # Bot credentials encryption key
+
+# MCP Server (auto-configured)
+HUMMINGBOT_API_URL=http://hummingbot-api:8000
+HUMMINGBOT_USERNAME=${USERNAME}
+HUMMINGBOT_PASSWORD=${PASSWORD}
+
+# Services (auto-configured)
+BROKER_HOST=emqx
+DATABASE_URL=postgresql+asyncpg://hbot:hummingbot-api@postgres:5432/hummingbot_api
+```
+
+### Persistent Storage
+
+Docker volumes ensure data persistence:
+- `postgres-data`: Trading data and bot performance
+- `emqx-data`, `emqx-log`, `emqx-etc`: Message broker state
+- `~/.hummingbot_mcp`: MCP server configuration (on host machine)
 
 ## System Dependencies
 
-The Hummingbot API requires two essential services to function properly:
+The platform includes these essential services:
 
 ### 1. PostgreSQL Database
 Stores all trading data including:
@@ -26,13 +193,19 @@ Stores all trading data including:
 - Positions and funding payments
 - Performance metrics
 
-**Note:** The database is automatically initialized using environment variables (`POSTGRES_USER`, `POSTGRES_DB`, `POSTGRES_PASSWORD`). The included `init-db.sql` script serves as a safety net for edge cases where automatic initialization doesn't complete properly.
+**Note:** The database is automatically initialized using environment variables. The included `init-db.sql` serves as a safety net.
 
 ### 2. EMQX Message Broker
 Enables real-time communication with trading bots:
 - Receives live updates from running bots
 - Sends commands to control bot execution
 - Handles real-time data streaming
+
+### 3. MCP Server
+Provides AI assistant integration:
+- Connects to Hummingbot API via Docker network
+- Exposes tools for natural language trading commands
+- Manages Gateway containers and DEX operations
 
 ## Installation & Setup
 
@@ -99,12 +272,85 @@ This runs the API in a Docker container - simple and isolated.
    ```
    This starts the API from source with hot-reloading enabled.
 
-## Getting Started
+## 🤖 MCP AI Assistant Integration
 
-Once the API is running, you can access it at `http://localhost:8000`
+### Claude Desktop (Recommended)
 
-### First Steps
-1. **Visit the API Documentation**: Go to `http://localhost:8000/docs` to explore the interactive Swagger documentation
+1. **Install Claude Desktop**
+   - Download from [https://claude.ai/download](https://claude.ai/download)
+
+2. **Configure the MCP Server**
+   - Open (or create) your Claude Desktop config file:
+     - **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+     - **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+
+3. **Add the Hummingbot MCP configuration:**
+   ```json
+   {
+     "mcpServers": {
+       "hummingbot": {
+         "command": "docker",
+         "args": ["exec", "-i", "hummingbot-mcp", "mcp"]
+       }
+     }
+   }
+   ```
+
+4. **Restart Claude Desktop**
+
+5. **Start using Hummingbot with natural language:**
+   - "What are my current portfolio balances across all exchanges?"
+   - "Show me my open orders on Binance"
+   - "Create a PMM strategy for SOL-USDT on Kraken"
+   - "What's the current spread for BTC-USDT on multiple exchanges?"
+   - "Start Gateway in development mode"
+
+### ChatGPT / OpenAI
+
+1. **Install the OpenAI CLI** (if available in your region)
+   - Follow OpenAI's official MCP setup guide
+
+2. **Configure the MCP server** similar to Claude Desktop:
+   ```json
+   {
+     "mcpServers": {
+       "hummingbot": {
+         "command": "docker",
+         "args": ["exec", "-i", "hummingbot-mcp", "mcp"]
+       }
+     }
+   }
+   ```
+
+### Google Gemini
+
+1. **Install Gemini CLI** (if available)
+   - Refer to Google's MCP integration documentation
+
+2. **Add Hummingbot MCP server** to your Gemini configuration
+
+### Available MCP Capabilities
+
+Once connected, your AI assistant can:
+- 📊 **Portfolio Management**: View balances, positions, and P&L across exchanges
+- 📈 **Market Data**: Get real-time prices, orderbook depth, and funding rates
+- 🤖 **Bot Control**: Create, start, stop, and monitor trading bots
+- 📋 **Order Management**: Place, cancel, and track orders
+- 🔍 **Performance Analytics**: Analyze trading performance and statistics
+- ⚙️ **Strategy Configuration**: Create and modify trading strategies
+- 🌐 **Gateway Management**: Start, stop, and configure the Gateway container for DEX trading
+
+## Getting Started (Alternative Methods)
+
+Once the API is running, you can also access it directly:
+
+### Option 1: Web Dashboard
+1. **Access the Dashboard**: Go to `http://localhost:8501`
+2. **Login**: Use the username and password you configured during setup
+3. **Explore**: Navigate through the visual interface
+
+### Option 2: Swagger UI (API Documentation)
+1. **Visit the API Documentation**: Go to `http://localhost:8000/docs`
 2. **Authenticate**: Use the username and password you configured during setup
 3. **Test endpoints**: Use the Swagger interface to test API functionality
 
