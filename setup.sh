@@ -287,25 +287,16 @@ if [[ "$ENABLE_MCP" =~ ^[Yy]$ ]]; then
     echo ""
     echo "2. ${CYAN}Connect an AI Assistant (MCP enabled):${NC}"
     echo ""
-    echo "   ${GREEN}Claude Desktop Setup:${NC}"
-    echo "   a. Install Claude Desktop from: ${BLUE}https://claude.ai/download${NC}"
-    echo "   b. Add this to your Claude config file:"
-    echo -e "      ${PURPLE}macOS:${NC} ~/Library/Application Support/Claude/claude_desktop_config.json"
-    echo -e "      ${PURPLE}Windows:${NC} %APPDATA%\\Claude\\claude_desktop_config.json"
+    echo "   ${GREEN}Claude Code (CLI) Setup:${NC}"
+    echo "   Add the MCP server with one command:"
     echo ""
-    echo '      {'
-    echo '        "mcpServers": {'
-    echo '          "hummingbot": {'
-    echo '            "command": "docker",'
-    echo '            "args": ["run", "--rm", "-i", "-e", "HUMMINGBOT_API_URL=http://host.docker.internal:8000", "-v", "hummingbot_mcp:/root/.hummingbot_mcp", "hummingbot/hummingbot-mcp:latest"]'
-    echo '          }'
-    echo '        }'
-    echo '      }'
+    echo -e "   ${BLUE}claude mcp add --transport stdio hummingbot -- docker run --rm -i -e HUMMINGBOT_API_URL=http://host.docker.internal:8000 -v hummingbot_mcp:/root/.hummingbot_mcp hummingbot/hummingbot-mcp:latest${NC}"
     echo ""
-    echo "   c. Restart Claude Desktop"
-    echo "   d. Try commands like:"
+    echo "   Then use natural language in your terminal:"
     echo '      - "Show me my portfolio balances"'
     echo '      - "Create a market making strategy for ETH-USDT on Binance"'
+    echo ""
+    echo "   ${PURPLE}Other AI assistants:${NC} See CLAUDE.md, GEMINI.md, or AGENTS.md for setup"
 fi
 
 if [[ "$ENABLE_DASHBOARD" =~ ^[Yy]$ ]]; then
