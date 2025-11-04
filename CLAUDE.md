@@ -636,6 +636,79 @@ If you're using Claude Code CLI, you can use natural language:
 - **Port**: Default is 15888, must be available on your system
 - Gateway URL will be: `http://localhost:15888` (dev) or `https://localhost:15888` (prod)
 
+## MCP Tools Best Practices
+
+### Using `configure_api_servers` for Connection Management
+
+**Before using any MCP tools**, always ensure the API server is properly configured:
+
+```python
+# Check if connection is working - if any MCP tool fails, reconnect:
+configure_api_servers(action="add", name="local", host="localhost", port=8000, username="admin", password="admin")
+configure_api_servers(action="set_default", name="local")
+```
+
+### Using `get_portfolio_overview` for Token Balances
+
+**Preferred method for checking balances**:
+- Use `get_portfolio_overview()` instead of direct API calls
+- Includes CEX balances, DEX balances, LP positions, and active orders in one call
+- Automatically handles all account types (Hyperliquid, Solana, Ethereum, etc.)
+
+```python
+# Get complete portfolio overview
+get_portfolio_overview(
+    include_balances=True,
+    include_perp_positions=False,
+    include_lp_positions=True,
+    include_active_orders=True,
+    as_distribution=False
+)
+```
+
+### Common MCP Connection Issue
+
+**Error**:
+```
+Error executing tool get_portfolio_overview: ❌ Failed to connect to Hummingbot API at http://docker.host.internal:8000
+
+Connection failed after 3 attempts.
+
+💡 Solutions:
+  1. Check if the API is running and accessible
+  2. Verify your credentials are correct
+  3. Use 'configure_api_servers' tool for setup
+
+Original error: Cannot connect to host docker.host.internal:8000 ssl:default [Name or service not known]
+```
+
+**Root Cause**: The MCP tool loses connection to the API server. This happens when:
+- MCP server reconnects/restarts
+- API credentials are not cached
+- Network configuration changes
+
+**Solution**: Reconfigure the API server connection before retrying:
+
+```python
+# Step 1: Add server configuration
+configure_api_servers(
+    action="add",
+    name="local",
+    host="localhost",
+    port=8000,
+    username="admin",
+    password="admin"
+)
+
+# Step 2: Set as default
+configure_api_servers(action="set_default", name="local")
+
+# Step 3: Retry the operation
+get_portfolio_overview(include_balances=True)
+```
+
+**Prevention**: Always check connection before using other MCP tools. If you see any connection error, immediately run `configure_api_servers` to restore the connection.
+
 ## Error Codes
 
 - `400`: Bad Request - Invalid parameters

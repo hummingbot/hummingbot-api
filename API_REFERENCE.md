@@ -595,3 +595,100 @@ Searches for CLMM positions with filters.
 GET /gateway/clmm/positions/{position_address}/events
 Returns events history for a specific position.
 ```
+
+### ⛓️ Chain-Specific Endpoints
+
+Gateway provides direct blockchain access for balance checking, gas estimation, and transaction polling.
+
+#### Solana Chain (`/chains/solana`)
+
+```
+GET /chains/solana/status
+Returns Solana network status and connection info.
+
+GET /chains/solana/estimate-gas
+Returns estimated gas/fees for Solana transactions.
+
+POST /chains/solana/balances
+Body: {
+  "chain": "solana",
+  "network": "mainnet-beta",
+  "address": "wallet_address",
+  "tokenSymbols": ["SOL", "USDC"]  // optional, returns all if empty
+}
+Returns SOL and SPL token balances for the wallet.
+
+POST /chains/solana/poll
+Body: {
+  "chain": "solana",
+  "network": "mainnet-beta",
+  "txHash": "transaction_signature"
+}
+Polls for transaction status and confirmation.
+```
+
+#### Ethereum Chain (`/chains/ethereum`)
+
+```
+GET /chains/ethereum/status
+Returns Ethereum network status and connection info.
+
+GET /chains/ethereum/estimate-gas
+Returns estimated gas fees for Ethereum transactions.
+
+POST /chains/ethereum/balances
+Body: {
+  "chain": "ethereum",
+  "network": "mainnet",
+  "address": "wallet_address",
+  "tokenSymbols": ["ETH", "USDC", "WETH"]  // optional
+}
+Returns ETH and ERC-20 token balances for the wallet.
+
+POST /chains/ethereum/poll
+Body: {
+  "chain": "ethereum",
+  "network": "mainnet",
+  "txHash": "transaction_hash"
+}
+Polls for transaction status and receipt.
+
+POST /chains/ethereum/allowances
+Body: {
+  "chain": "ethereum",
+  "network": "mainnet",
+  "address": "wallet_address",
+  "spender": "spender_address",
+  "tokenSymbols": ["USDC", "WETH"]
+}
+Returns current token allowances for a spender.
+
+POST /chains/ethereum/approve
+Body: {
+  "chain": "ethereum",
+  "network": "mainnet",
+  "address": "wallet_address",
+  "spender": "spender_address",
+  "token": "USDC",
+  "amount": "1000"  // optional, max if not specified
+}
+Approves token spending for a contract.
+
+POST /chains/ethereum/wrap
+Body: {
+  "chain": "ethereum",
+  "network": "mainnet",
+  "address": "wallet_address",
+  "amount": "1.0"
+}
+Wraps ETH to WETH.
+
+POST /chains/ethereum/unwrap
+Body: {
+  "chain": "ethereum",
+  "network": "mainnet",
+  "address": "wallet_address",
+  "amount": "1.0"
+}
+Unwraps WETH to ETH.
+```
