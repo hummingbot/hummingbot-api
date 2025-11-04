@@ -146,10 +146,10 @@ If you're using Claude Code (the CLI tool), you can connect to the Hummingbot MC
 
 2. **Add the MCP server to Claude Code**:
    ```bash
-   claude mcp add --transport stdio hummingbot -- docker exec -i hummingbot-mcp mcp
+   claude mcp add --transport stdio hummingbot -- docker run --rm -i -e HUMMINGBOT_API_URL=http://host.docker.internal:8000 -v hummingbot_mcp:/root/.hummingbot_mcp hummingbot/hummingbot-mcp:latest
    ```
 
-   This configures Claude Code to communicate with the Hummingbot MCP server running in Docker.
+   This configures Claude Code to communicate with the Hummingbot MCP server.
 
 3. **Start using Hummingbot in Claude Code**:
    - Open your terminal with Claude Code
