@@ -217,6 +217,217 @@ fetch(`${baseURL}/portfolio/state`, {
 .then(data => console.log(data));
 ```
 
+## 🌐 Common Workflows
+
+### Managing Gateway Container (For DEX Trading)
+
+Gateway is required for decentralized exchange (DEX) trading. The `manage_gateway_container` MCP tool provides full lifecycle management.
+
+#### Using Natural Language (MCP-Compatible Assistants)
+
+If you're using Claude, ChatGPT, or other MCP-compatible AI assistants, you can manage Gateway with simple commands:
+
+- **"Start Gateway in development mode with passphrase 'admin'"**
+- **"Check Gateway status"**
+- **"Restart the Gateway container"**
+- **"Stop Gateway"**
+
+#### Using MCP Tool Programmatically
+
+For custom integrations, call the `manage_gateway_container` tool via MCP:
+
+**Python Example**:
+```python
+import subprocess
+import json
+
+# Start MCP server
+process = subprocess.Popen([
+    "docker", "run", "--rm", "-i", "-e", "HUMMINGBOT_API_URL=http://host.docker.internal:8000",
+    "-v", "hummingbot_mcp:/root/.hummingbot_mcp", "hummingbot/hummingbot-mcp:latest"
+],
+    stdin=subprocess.PIPE,
+    stdout=subprocess.PIPE,
+    text=True
+)
+
+def send_request(req):
+    process.stdin.write(json.dumps(req) + "\n")
+    process.stdin.flush()
+    return json.loads(process.stdout.readline())
+
+# 1. Configure API connection (first time only)
+send_request({
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+        "name": "configure_api_servers",
+        "arguments": {
+            "api_url": "http://host.docker.internal:8000",
+            "username": "admin",
+            "password": "admin"
+        }
+    }
+})
+
+# 2. Start Gateway container
+gateway_response = send_request({
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "tools/call",
+    "params": {
+        "name": "manage_gateway_container",
+        "arguments": {
+            "action": "start",
+            "config": {
+                "passphrase": "admin",
+                "dev_mode": True,
+                "image": "hummingbot/gateway:latest",
+                "port": 15888
+            }
+        }
+    }
+})
+print(gateway_response)
+
+# 3. Check Gateway status
+status = send_request({
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "tools/call",
+    "params": {
+        "name": "manage_gateway_container",
+        "arguments": {
+            "action": "get_status"
+        }
+    }
+})
+print(status)
+
+# 4. Restart Gateway (if needed)
+send_request({
+    "jsonrpc": "2.0",
+    "id": 4,
+    "method": "tools/call",
+    "params": {
+        "name": "manage_gateway_container",
+        "arguments": {
+            "action": "restart"
+        }
+    }
+})
+
+# 5. Stop Gateway
+send_request({
+    "jsonrpc": "2.0",
+    "id": 5,
+    "method": "tools/call",
+    "params": {
+        "name": "manage_gateway_container",
+        "arguments": {
+            "action": "stop"
+        }
+    }
+})
+```
+
+**Node.js Example**:
+```javascript
+const { spawn } = require('child_process');
+
+// Start MCP server
+const mcp = spawn('docker', ['run', '--rm', '-i', '-e', 'HUMMINGBOT_API_URL=http://host.docker.internal:8000', '-v', 'hummingbot_mcp:/root/.hummingbot_mcp', 'hummingbot/hummingbot-mcp:latest']);
+
+let buffer = '';
+mcp.stdout.on('data', (data) => {
+  buffer += data.toString();
+  const lines = buffer.split('\n');
+  buffer = lines.pop();
+  lines.forEach(line => {
+    if (line.trim()) {
+      console.log(JSON.parse(line));
+    }
+  });
+});
+
+function sendRequest(req) {
+  mcp.stdin.write(JSON.stringify(req) + '\n');
+}
+
+// 1. Configure API connection
+sendRequest({
+  jsonrpc: '2.0',
+  id: 1,
+  method: 'tools/call',
+  params: {
+    name: 'configure_api_servers',
+    arguments: {
+      api_url: 'http://host.docker.internal:8000',
+      username: 'admin',
+      password: 'admin'
+    }
+  }
+});
+
+// 2. Start Gateway container
+sendRequest({
+  jsonrpc: '2.0',
+  id: 2,
+  method: 'tools/call',
+  params: {
+    name: 'manage_gateway_container',
+    arguments: {
+      action: 'start',
+      config: {
+        passphrase: 'admin',
+        dev_mode: true,
+        image: 'hummingbot/gateway:latest',
+        port: 15888
+      }
+    }
+  }
+});
+
+// 3. Check Gateway status
+sendRequest({
+  jsonrpc: '2.0',
+  id: 3,
+  method: 'tools/call',
+  params: {
+    name: 'manage_gateway_container',
+    arguments: {
+      action: 'get_status'
+    }
+  }
+});
+```
+
+#### Using Direct API Access (Alternative)
+
+If MCP is not available, you can manage Gateway through the API directly:
+
+```bash
+# Start Gateway (via Swagger UI or curl)
+curl -u admin:admin -X POST http://localhost:8000/manage-gateway \
+  -H "Content-Type: application/json" \
+  -d '{
+    "action": "start",
+    "passphrase": "admin",
+    "dev_mode": true
+  }'
+
+# Check Gateway status
+curl -u admin:admin http://localhost:8000/manage-gateway/status
+```
+
+#### Important Notes
+- **Development mode** (`dev_mode: true`): HTTP access on port 15888, Swagger UI at `http://localhost:15888/docs`
+- **Production mode** (`dev_mode: false`): HTTPS with certificates, more secure
+- **Passphrase**: Encrypts/decrypts DEX wallet keys - store securely
+- **Port**: Default is 15888, must be available on your system
+- **Gateway URL**: `http://localhost:15888` (dev) or `https://localhost:15888` (prod)
+
 ## 📚 API Reference
 
 For complete API documentation, see:

@@ -528,6 +528,114 @@ POST /bot-orchestration/stop-and-archive-bot/rsi_bot_btc
 # Returns: {"status": "stopped", "archive_path": "/bots/archived/rsi_bot_btc_20240704.tar.gz"}
 ```
 
+### 6. Managing Gateway Container (For DEX Trading)
+Gateway is required for decentralized exchange (DEX) trading. Use the `manage_gateway_container` MCP tool to control Gateway lifecycle.
+
+1. Configure API connection (one-time setup)
+2. Start Gateway with configuration
+3. Verify Gateway status
+4. Manage Gateway lifecycle (restart/stop as needed)
+
+Example workflow using MCP:
+```python
+# 1. Configure API connection (first time only)
+# Why: I need to authenticate with the Hummingbot API to manage Gateway
+send_request({
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+        "name": "configure_api_servers",
+        "arguments": {
+            "api_url": "http://host.docker.internal:8000",
+            "username": "admin",
+            "password": "admin"
+        }
+    }
+})
+# Returns: {"result": {"content": [{"type": "text", "text": "API configuration saved successfully"}]}}
+
+# 2. Start Gateway container
+# Why: I'm launching the Gateway service for DEX trading with your specified passphrase
+send_request({
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "tools/call",
+    "params": {
+        "name": "manage_gateway_container",
+        "arguments": {
+            "action": "start",
+            "config": {
+                "passphrase": "admin",
+                "dev_mode": true,
+                "image": "hummingbot/gateway:latest",
+                "port": 15888
+            }
+        }
+    }
+})
+# Returns: Gateway container started successfully at http://localhost:15888
+
+# 3. Check Gateway status
+# Why: I'm verifying that Gateway is running and accessible
+send_request({
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "tools/call",
+    "params": {
+        "name": "manage_gateway_container",
+        "arguments": {
+            "action": "get_status"
+        }
+    }
+})
+# Returns: {"status": "running", "container_id": "abc123...", "port": 15888, "dev_mode": true}
+
+# 4. Restart Gateway (if needed)
+# Why: If Gateway becomes unresponsive, I can restart it to restore functionality
+send_request({
+    "jsonrpc": "2.0",
+    "id": 4,
+    "method": "tools/call",
+    "params": {
+        "name": "manage_gateway_container",
+        "arguments": {
+            "action": "restart"
+        }
+    }
+})
+# Returns: Gateway container restarted successfully
+
+# 5. Stop Gateway (when done with DEX trading)
+# Why: I'm shutting down Gateway to free up resources when you're not using DEX features
+send_request({
+    "jsonrpc": "2.0",
+    "id": 5,
+    "method": "tools/call",
+    "params": {
+        "name": "manage_gateway_container",
+        "arguments": {
+            "action": "stop"
+        }
+    }
+})
+# Returns: Gateway container stopped successfully
+```
+
+#### Natural Language Examples (Claude Code)
+If you're using Claude Code CLI, you can use natural language:
+- "Start Gateway in development mode with passphrase 'admin'"
+- "Check if Gateway is running"
+- "Restart the Gateway container"
+- "Stop Gateway"
+
+#### Important Notes
+- **Development mode** (`dev_mode: true`): HTTP access on port 15888, Swagger UI available
+- **Production mode** (`dev_mode: false`): HTTPS with certificates required, more secure
+- **Passphrase**: Used to encrypt/decrypt DEX wallet keys, store it securely
+- **Port**: Default is 15888, must be available on your system
+- Gateway URL will be: `http://localhost:15888` (dev) or `https://localhost:15888` (prod)
+
 ## Error Codes
 
 - `400`: Bad Request - Invalid parameters

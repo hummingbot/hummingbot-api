@@ -137,6 +137,117 @@ curl -u admin:admin -X POST http://localhost:8000/market-data/prices \
   }'
 ```
 
+## 🌐 Common Workflows
+
+### Managing Gateway Container (For DEX Trading)
+
+Gateway is required for decentralized exchange (DEX) trading. Use the `manage_gateway_container` MCP tool through natural language commands.
+
+#### Using Natural Language (Recommended)
+
+Once you've configured Gemini with the Hummingbot MCP server, you can manage Gateway using simple commands:
+
+- **"Start Gateway in development mode with passphrase 'admin'"**
+  - Launches Gateway container for DEX trading
+  - Development mode enables HTTP access and Swagger UI
+
+- **"Check Gateway status"**
+  - Verifies if Gateway is running
+  - Shows container details, port, and mode
+
+- **"Restart the Gateway container"**
+  - Restarts Gateway if it becomes unresponsive
+  - Useful for applying configuration changes
+
+- **"Stop Gateway"**
+  - Shuts down Gateway when not needed
+  - Frees up system resources
+
+#### Using MCP Tool Directly
+
+If you're building custom integrations, you can call the `manage_gateway_container` tool directly:
+
+```python
+# 1. Configure API connection (first time only)
+send_request({
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+        "name": "configure_api_servers",
+        "arguments": {
+            "api_url": "http://host.docker.internal:8000",
+            "username": "admin",
+            "password": "admin"
+        }
+    }
+})
+
+# 2. Start Gateway container
+send_request({
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "tools/call",
+    "params": {
+        "name": "manage_gateway_container",
+        "arguments": {
+            "action": "start",
+            "config": {
+                "passphrase": "admin",
+                "dev_mode": true,
+                "image": "hummingbot/gateway:latest",
+                "port": 15888
+            }
+        }
+    }
+})
+
+# 3. Check Gateway status
+send_request({
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "tools/call",
+    "params": {
+        "name": "manage_gateway_container",
+        "arguments": {
+            "action": "get_status"
+        }
+    }
+})
+
+# 4. Restart Gateway (if needed)
+send_request({
+    "jsonrpc": "2.0",
+    "id": 4,
+    "method": "tools/call",
+    "params": {
+        "name": "manage_gateway_container",
+        "arguments": {
+            "action": "restart"
+        }
+    }
+})
+
+# 5. Stop Gateway
+send_request({
+    "jsonrpc": "2.0",
+    "id": 5,
+    "method": "tools/call",
+    "params": {
+        "name": "manage_gateway_container",
+        "arguments": {
+            "action": "stop"
+        }
+    }
+})
+```
+
+#### Important Notes
+- **Development mode** (`dev_mode: true`): HTTP access on port 15888, Swagger UI available at `http://localhost:15888/docs`
+- **Production mode** (`dev_mode: false`): HTTPS with certificates required, more secure for production use
+- **Passphrase**: Used to encrypt/decrypt DEX wallet keys - store it securely
+- **Port**: Default is 15888, ensure it's available on your system
+
 ## 📚 Additional Resources
 
 - **API Reference**: See @API_REFERENCE.md for all available endpoints
