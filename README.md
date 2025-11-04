@@ -71,7 +71,12 @@ To connect an AI assistant via MCP:
    }
    ```
 3. Restart Claude Desktop
-4. Try: "Show me my portfolio balances"
+4. **First-time setup - Add exchange credentials:**
+   - "Set up my Solana wallet" → Uses `setup_connector` tool for progressive credential setup
+   - Or for CEX: "Set up my Binance account" → Guides you through API key setup
+5. **Try trading operations:**
+   - "What's the current price for swapping SOL to USDC?"
+   - "Execute a swap: sell 0.01 SOL for USDC with 1% slippage"
 
 **3. Access Dashboard (If Enabled)**
 
@@ -116,8 +121,11 @@ Choose the method that best fits your workflow:
   - Full access to all API features
   - Contextual help and explanations
   - Complex multi-step operations made simple
+  - Progressive credential setup with `setup_connector` tool
 - **Setup**: Answer "y" when prompted during setup, then connect your AI assistant
-- **Example**: "Show me my best performing strategies this week"
+- **Examples**:
+  - First-time: "Set up my Solana wallet" → Guides through credential setup
+  - Trading: "What's the price to swap 0.01 SOL for USDC? Execute the trade"
 
 ### 3. 📊 Dashboard - Web Interface (Optional)
 **Visual interface for common operations**
@@ -279,10 +287,28 @@ Once running, Gateway will be available at:
 - Check if port 15888 is available
 - Review logs: `docker logs gateway`
 
+**Multiple Gateway containers running:**
+If you have multiple Gateway containers (e.g., from previous setups), you may experience connection issues or unexpected behavior.
+
+```bash
+# Check for multiple Gateway containers
+docker ps -a | grep gateway
+
+# If you see multiple containers, stop and remove old ones
+docker stop gateway-old-name
+docker rm gateway-old-name
+
+# Keep only the one you want to use
+# The Hummingbot API expects the container to be named 'gateway'
+docker rename your-container-name gateway
+```
+
 **Connection issues:**
-- Verify Gateway URL in your `.env` file
-- macOS/Windows users: Ensure `host.docker.internal` is accessible
-- Linux users: Check network configuration
+- Verify Gateway URL in your `.env` file and `docker-compose.yml`
+- The API uses `GATEWAY_URL=http://host.docker.internal:15888` (configured in docker-compose.yml)
+- Ensure Gateway container is on the same Docker network: `docker network inspect hummingbot-api_emqx-bridge`
+- macOS/Windows users: `host.docker.internal` should work automatically
+- Linux users: Check that `extra_hosts` is properly configured in docker-compose.yml
 
 ## 🐳 Docker Compose Architecture
 
@@ -436,11 +462,11 @@ This runs the API in a Docker container - simple and isolated.
 4. **Restart Claude Desktop**
 
 5. **Start using Hummingbot with natural language:**
-   - "What are my current portfolio balances across all exchanges?"
-   - "Show me my open orders on Binance"
-   - "Create a PMM strategy for SOL-USDT on Kraken"
-   - "What's the current spread for BTC-USDT on multiple exchanges?"
-   - "Start Gateway in development mode"
+   - **First-time setup**: "Set up my Solana wallet" → Progressive credential setup with `setup_connector`
+   - **Trading**: "What's the current price to swap 0.01 SOL for USDC? Execute the trade"
+   - **Portfolio**: "What are my current portfolio balances across all exchanges?"
+   - **Gateway**: "Start Gateway in development mode with passphrase 'admin'"
+   - **Strategies**: "Create a PMM strategy for ETH-USDT on Binance"
 
 ### ChatGPT / OpenAI
 
