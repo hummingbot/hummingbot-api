@@ -31,6 +31,12 @@ read PASSWORD
 PASSWORD=${PASSWORD:-admin}
 
 echo ""
+echo -e "${YELLOW}Optional Services${NC}"
+echo -n "Enable Dashboard web interface? (y/n) [default: n]: "
+read ENABLE_DASHBOARD
+ENABLE_DASHBOARD=${ENABLE_DASHBOARD:-n}
+
+echo ""
 echo -e "${YELLOW}Gateway Configuration (Optional)${NC}"
 echo -n "Gateway passphrase [default: admin, press Enter to skip]: "
 read GATEWAY_PASSPHRASE
@@ -123,6 +129,24 @@ EOF
 echo -e "${GREEN}✅ .env file created successfully!${NC}"
 echo ""
 
+
+# Enable Dashboard if requested
+if [[ "$ENABLE_DASHBOARD" =~ ^[Yy]$ ]]; then
+    echo -e "${GREEN}📊 Enabling Dashboard in docker-compose.yml...${NC}"
+
+    # Remove the comment line first
+    sed -i.bak '/^  # Uncomment to enable Dashboard (optional web interface)/d' docker-compose.yml
+
+    # Uncomment the dashboard service lines
+    sed -i.bak '/^  # dashboard:/,/^  #       - emqx-bridge$/s/^  # /  /' docker-compose.yml
+
+    # Remove backup file
+    rm -f docker-compose.yml.bak
+
+    echo -e "${GREEN}✅ Dashboard enabled!${NC}"
+    echo ""
+fi
+
 # Display configuration summary
 echo -e "${BLUE}📋 Configuration Summary${NC}"
 echo "======================="
@@ -158,16 +182,16 @@ echo -e "${PURPLE}💡 Pro tip:${NC} You can modify environment variables in .en
 echo -e "${PURPLE}📚 Documentation:${NC} Check config.py for all available settings"
 echo -e "${PURPLE}🔒 Security:${NC} The password verification file secures bot credentials"
 echo ""
-echo -e "${GREEN}🐳 Starting required Docker containers and pulling Hummingbot image...${NC}"
+echo -e "${GREEN}🐳 Starting services (API, EMQX, PostgreSQL)...${NC}"
 
-# Run docker operations in parallel
-docker compose up emqx postgres -d &
+# Start all services (MCP and Dashboard are optional - see docker-compose.yml)
+docker compose up -d &
 docker pull hummingbot/hummingbot:latest &
 
 # Wait for both operations to complete
 wait
 
-echo -e "${GREEN}✅ Docker containers started!${NC}"
+echo -e "${GREEN}✅ All Docker containers started!${NC}"
 echo ""
 
 # Wait for PostgreSQL to be ready
@@ -197,18 +221,18 @@ if [ "$DB_READY" = true ]; then
     echo -e "${YELLOW}🔍 Verifying database configuration...${NC}"
 
     # Check if hbot user exists
-    USER_EXISTS=$(docker exec hummingbot-postgres psql -U postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='hbot'" 2>/dev/null)
+    USER_EXISTS=$(docker exec hummingbot-postgres psql -U hbot -tAc "SELECT 1 FROM pg_roles WHERE rolname='hbot'" 2>/dev/null)
 
     # Check if database exists
-    DB_EXISTS=$(docker exec hummingbot-postgres psql -U postgres -tAc "SELECT 1 FROM pg_database WHERE datname='hummingbot_api'" 2>/dev/null)
+    DB_EXISTS=$(docker exec hummingbot-postgres psql -U hbot -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='hummingbot_api'" 2>/dev/null)
 
     if [ "$USER_EXISTS" = "1" ] && [ "$DB_EXISTS" = "1" ]; then
         echo -e "${GREEN}✅ Database 'hummingbot_api' and user 'hbot' verified successfully!${NC}"
     else
         echo -e "${YELLOW}⚠️  Database initialization may be incomplete. Running manual initialization...${NC}"
 
-        # Run the init script manually
-        docker exec -i hummingbot-postgres psql -U postgres < init-db.sql
+        # Run the init script manually (connect to postgres database as hbot user)
+        docker exec -i hummingbot-postgres psql -U hbot -d postgres < init-db.sql
 
         if [ $? -eq 0 ]; then
             echo -e "${GREEN}✅ Database manually initialized successfully!${NC}"
@@ -228,3 +252,67 @@ else
 fi
 
 echo -e "${GREEN}✅ Setup completed!${NC}"
+echo ""
+
+# Display services information
+echo -e "${BLUE}🎉 Your Hummingbot API Platform is Running!${NC}"
+echo "========================================="
+echo ""
+echo -e "${CYAN}Available Services:${NC}"
+echo -e "  🔧 ${GREEN}API${NC}            - http://localhost:8000"
+echo -e "  📚 ${GREEN}API Docs${NC}       - http://localhost:8000/docs (Swagger UI)"
+echo -e "  📡 ${GREEN}EMQX Broker${NC}    - localhost:1883"
+echo -e "  💾 ${GREEN}PostgreSQL${NC}     - localhost:5432"
+
+if [[ "$ENABLE_DASHBOARD" =~ ^[Yy]$ ]]; then
+    echo -e "  📊 ${GREEN}Dashboard${NC}      - http://localhost:8501"
+fi
+
+echo ""
+
+echo -e "${YELLOW}📝 Next Steps:${NC}"
+echo ""
+echo "1. ${CYAN}Access the API:${NC}"
+echo "   • Swagger UI: http://localhost:8000/docs (full REST API documentation)"
+
+echo ""
+echo "2. ${CYAN}Connect an AI Assistant:${NC}"
+echo ""
+echo "   ${GREEN}Claude Code (CLI) Setup:${NC}"
+echo "   Add the MCP server with one command:"
+echo ""
+echo -e "   ${BLUE}claude mcp add --transport stdio hummingbot -- docker run --rm -i -e HUMMINGBOT_API_URL=http://host.docker.internal:8000 -v hummingbot_mcp:/root/.hummingbot_mcp hummingbot/hummingbot-mcp:latest${NC}"
+echo ""
+echo "   Then use natural language in your terminal:"
+echo '      - "Show me my portfolio balances"'
+echo '      - "Create a market making strategy for ETH-USDT on Binance"'
+echo ""
+echo "   ${PURPLE}Other AI assistants:${NC} See CLAUDE.md, GEMINI.md, or AGENTS.md for setup"
+
+if [[ "$ENABLE_DASHBOARD" =~ ^[Yy]$ ]]; then
+    echo ""
+    echo "3. ${CYAN}Access Dashboard:${NC}"
+    echo "   • Web UI: http://localhost:8501"
+fi
+
+echo ""
+echo -e "${CYAN}Available Access Methods:${NC}"
+echo "  ✅ Swagger UI (http://localhost:8000/docs) - Full REST API"
+echo "  ✅ MCP - AI Assistant integration (Claude, ChatGPT, Gemini)"
+
+if [[ "$ENABLE_DASHBOARD" =~ ^[Yy]$ ]]; then
+    echo "  ✅ Dashboard (http://localhost:8501) - Web interface"
+else
+    echo "  ⚪ Dashboard - Run setup.sh again to enable web UI"
+fi
+
+echo ""
+
+echo -e "${PURPLE}💡 Tips:${NC}"
+echo "  • View logs: docker compose logs -f"
+echo "  • Stop services: docker compose down"
+echo "  • Restart services: docker compose restart"
+echo ""
+
+echo -e "${GREEN}Ready to start trading! 🤖💰${NC}"
+echo ""

@@ -1,11 +1,94 @@
 # Hummingbot API
 
+**The central hub for running Hummingbot trading bots - now with AI assistant integration via MCP (Model Context Protocol).**
+
 A comprehensive RESTful API framework for managing trading operations across multiple exchanges. The Hummingbot API provides a centralized platform to aggregate all your trading functionalities, from basic account management to sophisticated automated trading strategies.
+
+## 🚀 Quick Start
+
+Run the setup script to deploy the Hummingbot API platform:
+
+```bash
+git clone https://github.com/hummingbot/hummingbot-api.git
+cd hummingbot-api
+chmod +x setup.sh
+./setup.sh
+```
+
+### Setup Process
+
+The script will prompt you for:
+
+1. **Credentials** (required):
+   - Config password (for encrypting bot credentials)
+   - API username and password
+
+2. **Optional Services**:
+   - **Dashboard**: For web-based visual interface
+
+3. **Gateway**: Optional passphrase for DEX trading
+
+### What Gets Installed
+
+**Core services** (always installed):
+- ✅ **Hummingbot API** (port 8000) - REST API backend
+- ✅ **PostgreSQL** - Database for trading data
+- ✅ **EMQX** - Message broker for real-time communication
+- ✅ **Swagger UI** (port 8000/docs) - API documentation
+
+**Optional service** (enable during setup):
+- 📊 **Dashboard** (port 8501) - Web interface
+
+**Note**: MCP (AI assistant integration) is configured separately - see below
+
+### After Setup
+
+**1. Access Swagger UI (Default)**
+
+The API documentation is immediately available:
+- URL: http://localhost:8000/docs
+- Use the username/password you configured
+- Test all API endpoints directly
+
+**2. Connect AI Assistant (Optional)**
+
+To connect an AI assistant via MCP:
+
+**Claude Desktop:**
+1. Install from [https://claude.ai/download](https://claude.ai/download)
+2. Add to your config file:
+   - **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+   - **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+
+   ```json
+   {
+     "mcpServers": {
+       "hummingbot": {
+         "command": "docker",
+         "args": ["run", "--rm", "-i", "-e", "HUMMINGBOT_API_URL=http://host.docker.internal:8000", "-v", "hummingbot_mcp:/root/.hummingbot_mcp", "hummingbot/hummingbot-mcp:latest"]
+       }
+     }
+   }
+   ```
+3. Restart Claude Desktop
+4. **First-time setup - Add exchange credentials:**
+   - "Set up my Solana wallet" → Uses `setup_connector` tool for progressive credential setup
+   - Or for CEX: "Set up my Binance account" → Guides you through API key setup
+5. **Try trading operations:**
+   - "What's the current price for swapping SOL to USDC?"
+   - "Execute a swap: sell 0.01 SOL for USDC with 1% slippage"
+
+**3. Access Dashboard (If Enabled)**
+
+If you enabled Dashboard during setup:
+- URL: http://localhost:8501
+- Use the same username/password from setup
 
 ## What is Hummingbot API?
 
 The Hummingbot API is designed to be your central hub for trading operations, offering:
 
+- **🤖 AI Assistant Integration**: Control your trading with natural language via MCP (Claude, ChatGPT, Gemini)
 - **Multi-Exchange Account Management**: Create and manage multiple trading accounts across different exchanges
 - **Portfolio Monitoring**: Real-time balance tracking and portfolio distribution analysis
 - **Trade Execution**: Execute trades, manage orders, and monitor positions across all your accounts
@@ -13,11 +96,264 @@ The Hummingbot API is designed to be your central hub for trading operations, of
 - **Strategy Management**: Add, configure, and manage trading strategies in real-time
 - **Complete Flexibility**: Build any trading product on top of this robust API framework
 
+## 🎯 Ways to Interact with Hummingbot API
+
+Choose the method that best fits your workflow:
+
+### 1. 🔧 Swagger UI - API Documentation (Default)
+**Interactive REST API documentation and testing**
+
+- **Best for**: Developers and power users who want full control
+- **Advantages**:
+  - Complete API access - all endpoints available
+  - Direct endpoint testing
+  - Integration development
+  - No additional setup required
+- **Setup**: Automatically available after running setup
+- **Access**: http://localhost:8000/docs
+
+### 2. 🤖 MCP - AI Assistant (Optional)
+**Natural language trading commands through Claude, ChatGPT, or Gemini**
+
+- **Best for**: Users who prefer conversational interaction
+- **Advantages**:
+  - Natural language commands
+  - Full access to all API features
+  - Contextual help and explanations
+  - Complex multi-step operations made simple
+  - Progressive credential setup with `setup_connector` tool
+- **Setup**: Answer "y" when prompted during setup, then connect your AI assistant
+- **Examples**:
+  - First-time: "Set up my Solana wallet" → Guides through credential setup
+  - Trading: "What's the price to swap 0.01 SOL for USDC? Execute the trade"
+
+### 3. 📊 Dashboard - Web Interface (Optional)
+**Visual interface for common operations**
+
+- **Best for**: Users who prefer graphical interfaces
+- **Advantages**:
+  - Intuitive visual workflows
+  - Real-time charts and graphs
+  - Quick access to common tasks
+- **Limitations**: Not all API functions available (focused on core features)
+- **Setup**: Answer "y" when prompted during setup
+- **Access**: http://localhost:8501
+
 Whether you're building a trading dashboard, implementing algorithmic strategies, or creating a comprehensive trading platform, the Hummingbot API provides all the tools you need.
+
+## 🔌 Setting Up MCP with Claude Code
+
+If you're using Claude Code (the CLI tool), you can connect to the Hummingbot MCP server directly from your development environment.
+
+### Quick Setup
+
+1. **Enable MCP during setup** (if not already done):
+   ```bash
+   ./setup.sh  # Answer "y" to "Enable MCP server for AI assistant usage?"
+   ```
+
+2. **Add the MCP server to Claude Code**:
+   ```bash
+   claude mcp add --transport stdio hummingbot -- docker run --rm -i -e HUMMINGBOT_API_URL=http://host.docker.internal:8000 -v hummingbot_mcp:/root/.hummingbot_mcp hummingbot/hummingbot-mcp:latest
+   ```
+
+   This configures Claude Code to communicate with the Hummingbot MCP server.
+
+3. **Start using Hummingbot in Claude Code**:
+   - Open your terminal with Claude Code
+   - Use natural language commands to interact with your trading operations:
+     ```
+     "What are my current portfolio balances?"
+     "Show me active trading bots"
+     "Create a new market making strategy for ETH-USDT"
+     ```
+
+### Configuration File
+
+The command above automatically creates/updates `.mcp.json` in your project root:
+
+```json
+{
+  "mcpServers": {
+    "hummingbot": {
+      "command": "docker",
+      "args": ["run", "--rm", "-i", "-e", "HUMMINGBOT_API_URL=http://host.docker.internal:8000", "-v", "hummingbot_mcp:/root/.hummingbot_mcp", "hummingbot/hummingbot-mcp:latest"]
+    }
+  }
+}
+```
+
+### Managing the Connection
+
+**List configured MCP servers:**
+```bash
+claude mcp list
+```
+
+**View server details:**
+```bash
+claude mcp get hummingbot
+```
+
+**Remove the server:**
+```bash
+claude mcp remove hummingbot
+```
+
+### Prerequisites
+
+- Claude Code CLI installed (see [Claude Code documentation](https://docs.claude.com/en/docs/claude-code))
+- MCP service enabled during Hummingbot API setup
+- Docker running with `hummingbot-mcp` container active
+
+### Verify Setup
+
+Check that the MCP container is running:
+```bash
+docker ps | grep hummingbot-mcp
+```
+
+If the container isn't running, re-run setup with MCP enabled:
+```bash
+./setup.sh  # Answer "y" to MCP prompt
+```
+
+## 🌐 Gateway Setup (For DEX Trading)
+
+Gateway is required for decentralized exchange (DEX) trading. The Hummingbot API can manage Gateway containers for you - no separate installation needed!
+
+### Option 1: Using Swagger UI (API)
+
+1. **Access Swagger UI**: http://localhost:8000/docs
+2. **Navigate to Gateway endpoints**: Look for `/manage-gateway` or similar endpoints
+3. **Start Gateway**:
+   ```json
+   POST /manage-gateway
+   {
+     "action": "start",
+     "passphrase": "your-secure-passphrase",
+     "dev_mode": true
+   }
+   ```
+
+The API automatically handles OS-specific networking:
+- **macOS/Windows**: Uses `host.docker.internal` to connect to the API
+- **Linux**: Uses appropriate network configuration
+
+### Option 2: Using MCP AI Assistant
+
+If you enabled MCP during setup, you can manage Gateway with natural language:
+
+**Example commands:**
+- "Start Gateway in development mode with passphrase 'admin'"
+- "Check Gateway status"
+- "Stop the Gateway container"
+- "Restart Gateway with a new passphrase"
+
+The `manage_gateway_container` MCP tool will:
+- Pull the Gateway Docker image if needed
+- Start the container with proper configuration
+- Configure networking based on your OS
+- Report Gateway status and connection info
+
+### Verify Gateway is Running
+
+**Check container status:**
+```bash
+docker ps | grep gateway
+```
+
+**View Gateway logs:**
+```bash
+docker logs gateway -f
+```
+
+**Test Gateway API** (dev mode only):
+```bash
+curl http://localhost:15888/
+```
+
+### Gateway Access
+
+Once running, Gateway will be available at:
+- **Development mode**: `http://localhost:15888`
+- **Production mode**: `https://localhost:15888` (requires certificates)
+- **API Documentation**: `http://localhost:15888/docs` (dev mode only)
+
+### Troubleshooting
+
+**Gateway won't start:**
+- Ensure Docker is running
+- Check if port 15888 is available
+- Review logs: `docker logs gateway`
+
+**Multiple Gateway containers running:**
+If you have multiple Gateway containers (e.g., from previous setups), you may experience connection issues or unexpected behavior.
+
+```bash
+# Check for multiple Gateway containers
+docker ps -a | grep gateway
+
+# If you see multiple containers, stop and remove old ones
+docker stop gateway-old-name
+docker rm gateway-old-name
+
+# Keep only the one you want to use
+# The Hummingbot API expects the container to be named 'gateway'
+docker rename your-container-name gateway
+```
+
+**Connection issues:**
+- Verify Gateway URL in your `.env` file and `docker-compose.yml`
+- The API uses `GATEWAY_URL=http://host.docker.internal:15888` (configured in docker-compose.yml)
+- Ensure Gateway container is on the same Docker network: `docker network inspect hummingbot-api_emqx-bridge`
+- macOS/Windows users: `host.docker.internal` should work automatically
+- Linux users: Check that `extra_hosts` is properly configured in docker-compose.yml
+
+## 🐳 Docker Compose Architecture
+
+The Hummingbot API uses Docker Compose to orchestrate multiple services into a complete trading platform:
+
+### Services Overview
+
+```yaml
+services:
+  # dashboard:      # Optional - Web UI (enable during setup or uncomment manually)
+  hummingbot-api:   # Core FastAPI backend (port 8000) - Always installed
+  emqx:            # MQTT message broker (port 1883) - Always installed
+  postgres:        # PostgreSQL database (port 5432) - Always installed
+```
+
+### Network Configuration
+
+All services communicate via the `emqx-bridge` Docker network:
+- **Internal communication**: Services reference each other by container name (e.g., `hummingbot-api:8000`)
+- **External access**: Exposed ports allow access from your host machine
+
+### Environment Variables
+
+The setup script creates a `.env` file with all necessary configuration:
+
+```bash
+# Security
+USERNAME=admin                    # API authentication username
+PASSWORD=admin                    # API authentication password
+CONFIG_PASSWORD=admin             # Bot credentials encryption key
+
+# Services (auto-configured)
+BROKER_HOST=emqx
+DATABASE_URL=postgresql+asyncpg://hbot:hummingbot-api@postgres:5432/hummingbot_api
+```
+
+### Persistent Storage
+
+Docker volumes ensure data persistence:
+- `postgres-data`: Trading data and bot performance
+- `emqx-data`, `emqx-log`, `emqx-etc`: Message broker state
 
 ## System Dependencies
 
-The Hummingbot API requires two essential services to function properly:
+The platform includes these essential services:
 
 ### 1. PostgreSQL Database
 Stores all trading data including:
@@ -26,7 +362,7 @@ Stores all trading data including:
 - Positions and funding payments
 - Performance metrics
 
-**Note:** The database is automatically initialized using environment variables (`POSTGRES_USER`, `POSTGRES_DB`, `POSTGRES_PASSWORD`). The included `init-db.sql` script serves as a safety net for edge cases where automatic initialization doesn't complete properly.
+**Note:** The database is automatically initialized using environment variables. The included `init-db.sql` serves as a safety net.
 
 ### 2. EMQX Message Broker
 Enables real-time communication with trading bots:
@@ -99,12 +435,85 @@ This runs the API in a Docker container - simple and isolated.
    ```
    This starts the API from source with hot-reloading enabled.
 
-## Getting Started
+## 🤖 MCP AI Assistant Integration
 
-Once the API is running, you can access it at `http://localhost:8000`
+### Claude Desktop (Recommended)
 
-### First Steps
-1. **Visit the API Documentation**: Go to `http://localhost:8000/docs` to explore the interactive Swagger documentation
+1. **Install Claude Desktop**
+   - Download from [https://claude.ai/download](https://claude.ai/download)
+
+2. **Configure the MCP Server**
+   - Open (or create) your Claude Desktop config file:
+     - **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+     - **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+
+3. **Add the Hummingbot MCP configuration:**
+   ```json
+   {
+     "mcpServers": {
+       "hummingbot": {
+         "command": "docker",
+         "args": ["run", "--rm", "-i", "-e", "HUMMINGBOT_API_URL=http://host.docker.internal:8000", "-v", "hummingbot_mcp:/root/.hummingbot_mcp", "hummingbot/hummingbot-mcp:latest"]
+       }
+     }
+   }
+   ```
+
+4. **Restart Claude Desktop**
+
+5. **Start using Hummingbot with natural language:**
+   - **First-time setup**: "Set up my Solana wallet" → Progressive credential setup with `setup_connector`
+   - **Trading**: "What's the current price to swap 0.01 SOL for USDC? Execute the trade"
+   - **Portfolio**: "What are my current portfolio balances across all exchanges?"
+   - **Gateway**: "Start Gateway in development mode with passphrase 'admin'"
+   - **Strategies**: "Create a PMM strategy for ETH-USDT on Binance"
+
+### ChatGPT / OpenAI
+
+1. **Install the OpenAI CLI** (if available in your region)
+   - Follow OpenAI's official MCP setup guide
+
+2. **Configure the MCP server** similar to Claude Desktop:
+   ```json
+   {
+     "mcpServers": {
+       "hummingbot": {
+         "command": "docker",
+         "args": ["run", "--rm", "-i", "-e", "HUMMINGBOT_API_URL=http://host.docker.internal:8000", "-v", "hummingbot_mcp:/root/.hummingbot_mcp", "hummingbot/hummingbot-mcp:latest"]
+       }
+     }
+   }
+   ```
+
+### Google Gemini
+
+1. **Install Gemini CLI** (if available)
+   - Refer to Google's MCP integration documentation
+
+2. **Add Hummingbot MCP server** to your Gemini configuration
+
+### Available MCP Capabilities
+
+Once connected, your AI assistant can:
+- 📊 **Portfolio Management**: View balances, positions, and P&L across exchanges
+- 📈 **Market Data**: Get real-time prices, orderbook depth, and funding rates
+- 🤖 **Bot Control**: Create, start, stop, and monitor trading bots
+- 📋 **Order Management**: Place, cancel, and track orders
+- 🔍 **Performance Analytics**: Analyze trading performance and statistics
+- ⚙️ **Strategy Configuration**: Create and modify trading strategies
+- 🌐 **Gateway Management**: Start, stop, and configure the Gateway container for DEX trading
+
+## Getting Started (Alternative Methods)
+
+Once the API is running, you can also access it directly:
+
+### Option 1: Web Dashboard
+1. **Access the Dashboard**: Go to `http://localhost:8501`
+2. **Login**: Use the username and password you configured during setup
+3. **Explore**: Navigate through the visual interface
+
+### Option 2: Swagger UI (API Documentation)
+1. **Visit the API Documentation**: Go to `http://localhost:8000/docs`
 2. **Authenticate**: Use the username and password you configured during setup
 3. **Test endpoints**: Use the Swagger interface to test API functionality
 
@@ -280,6 +689,34 @@ This script will:
 3. Automatically fix any missing configuration
 4. Test the connection to ensure everything works
 
+#### "role 'postgres' does not exist" Error
+
+If you see errors like `FATAL: role "postgres" does not exist` in the PostgreSQL logs:
+
+**Cause**: The PostgreSQL container is configured to create only the `hbot` user (via `POSTGRES_USER=hbot`). The default `postgres` superuser is NOT created. This error occurs when something tries to connect using the default `postgres` username.
+
+**Solutions**:
+
+1. **Always specify the correct user** when connecting:
+   ```bash
+   # Correct - use hbot user
+   docker exec -it hummingbot-postgres psql -U hbot -d hummingbot_api
+
+   # Incorrect - tries to use 'postgres' user (doesn't exist)
+   docker exec -it hummingbot-postgres psql
+   ```
+
+2. **If you need the postgres superuser** (not recommended), you can create it:
+   ```bash
+   docker exec -it hummingbot-postgres psql -U hbot -d postgres -c "CREATE ROLE postgres WITH SUPERUSER LOGIN PASSWORD 'your-password';"
+   ```
+
+3. **Complete database reset** (⚠️ deletes all data):
+   ```bash
+   docker compose down -v
+   ./setup.sh
+   ```
+
 #### Manual Database Verification
 
 If you prefer to check manually:
@@ -291,12 +728,49 @@ docker ps | grep -E "hummingbot-postgres|hummingbot-broker"
 # Check PostgreSQL logs
 docker logs hummingbot-postgres
 
-# Verify database connection
+# Verify database connection (use hbot user, not postgres)
 docker exec -it hummingbot-postgres psql -U hbot -d hummingbot_api
 
-# If connection fails, run the initialization script
-docker exec -i hummingbot-postgres psql -U postgres < init-db.sql
+# List all database users
+docker exec -it hummingbot-postgres psql -U hbot -d postgres -c "\du"
 ```
+
+#### "database 'hbot' does not exist" During Setup
+
+If you see this error during `./setup.sh`:
+
+```
+⚠️  Database initialization may be incomplete. Running manual initialization...
+psql: error: connection to server on socket "/var/run/postgresql/.s.PGSQL.5432" failed: FATAL:  database "hbot" does not exist
+❌ Failed to initialize database.
+```
+
+**Cause**: The setup script tried to connect to a database named `hbot` (the username) instead of `hummingbot_api` (the actual database name). This was a bug in older versions of setup.sh.
+
+**Solution**:
+
+1. **Update setup.sh**: Pull the latest version with the fix:
+   ```bash
+   git pull origin main
+   ```
+
+2. **Or manually fix the database**:
+   ```bash
+   # The database already exists, just verify it
+   docker exec hummingbot-postgres psql -U hbot -d postgres -c "\l"
+
+   # You should see 'hummingbot_api' in the list
+   # Test connection
+   docker exec hummingbot-postgres psql -U hbot -d hummingbot_api -c "SELECT version();"
+   ```
+
+3. **If database doesn't exist**, run the fix script:
+   ```bash
+   chmod +x fix-database.sh
+   ./fix-database.sh
+   ```
+
+**Prevention**: This issue is fixed in the latest version of setup.sh. The script now correctly specifies `-d postgres` when running manual initialization.
 
 #### Complete Database Reset
 
