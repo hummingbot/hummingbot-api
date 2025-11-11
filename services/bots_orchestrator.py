@@ -57,7 +57,7 @@ class BotsOrchestrator:
         return [
             container.name
             for container in self.docker_client.containers.list()
-            if container.status == "running" and self.hummingbot_containers_fiter(container)
+            if container.status == "running"
         ]
 
     def start(self):
