@@ -166,3 +166,33 @@ class OrderBookQueryResult(BaseModel):
     result_quote_volume: Optional[float] = Field(default=None, description="Resulting quote volume")
     average_price: Optional[float] = Field(default=None, description="Average/VWAP price")
     timestamp: float = Field(description="Query timestamp")
+
+# The function to fetch the Average spread and it is for spread_capture strategy
+class SpreadAverageData(BaseModel):
+    """Average spread data for a trading pair"""
+    pair: str = Field(..., description="Trading pair (e.g., BTC-USDT)")
+    connector: str = Field(..., description="Exchange connector name")
+    avg_spread: Decimal = Field(..., description="Average spread percentage")
+    sample_count: int = Field(..., description="Number of samples in calculation")
+    avg_bid: Optional[Decimal] = Field(None, description="Average bid price")
+    avg_ask: Optional[Decimal] = Field(None, description="Average ask price")
+    avg_mid: Optional[Decimal] = Field(None, description="Average mid price")
+    min_spread: Optional[Decimal] = Field(None, description="Minimum spread in period")
+    max_spread: Optional[Decimal] = Field(None, description="Maximum spread in period")
+    first_timestamp: Optional[int] = Field(None, description="First sample timestamp")
+    last_timestamp: Optional[int] = Field(None, description="Last sample timestamp")
+
+class SpreadAverageRequest(BaseModel):
+    """Request parameters for spread averages"""
+    pairs: Optional[List[str]] = Field(None, description="Filter by trading pairs")
+    connectors: Optional[List[str]] = Field(None, description="Filter by connectors")
+    # interval_minutes: int = Field(15, description="Grouping interval in minutes", ge=1)
+    window_hours: int = Field(24, description="Time window in hours", ge=1)
+
+class SpreadAverageResponse(BaseModel):
+    """Response containing spread averages"""
+    data: List[SpreadAverageData]
+    # interval_minutes: int
+    window_hours: int
+    total_pairs: int
+    timestamp: float

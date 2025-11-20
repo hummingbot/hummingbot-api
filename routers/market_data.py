@@ -1,17 +1,20 @@
 import asyncio
 import time
-
+from typing import Optional
+from sqlalchemy import text, func
+from decimal import Decimal, ROUND_HALF_UP
 from fastapi import APIRouter, Request, HTTPException, Depends
 from hummingbot.data_feed.candles_feed.data_types import HistoricalCandlesConfig, CandlesConfig
 from hummingbot.data_feed.candles_feed.candles_factory import CandlesFactory
 
 from models.market_data import CandlesConfigRequest
 from services.market_data_feed_manager import MarketDataFeedManager
-from models import (
+from models.market_data import (
     PriceRequest, PricesResponse, FundingInfoRequest, FundingInfoResponse,
     OrderBookRequest, OrderBookResponse, OrderBookLevel,
     VolumeForPriceRequest, PriceForVolumeRequest, QuoteVolumeForPriceRequest,
-    PriceForQuoteVolumeRequest, VWAPForVolumeRequest, OrderBookQueryResult
+    PriceForQuoteVolumeRequest, VWAPForVolumeRequest, OrderBookQueryResult,
+    SpreadAverageRequest, SpreadAverageResponse, SpreadAverageData,
 )
 from deps import get_market_data_feed_manager
 
@@ -435,3 +438,86 @@ async def get_vwap_for_volume(
         raise HTTPException(status_code=500, detail=f"Error in order book query: {str(e)}")
 
 
+# Spread Data Endpoints for Spread_capture strategy -------------------------------------->
+@router.post("/spread-averages", response_model=SpreadAverageResponse)
+async def get_spread_averages(
+    request: SpreadAverageRequest,
+    market_data_manager: MarketDataFeedManager = Depends(get_market_data_feed_manager)
+):
+    """
+    Get average spread data grouped by trading pair.
+    
+    This endpoint calculates average spreads from the spread_samples table
+    within the given time window. Results are grouped by pair and connector.
+    
+    Args:
+        request: Spread average request parameters
+        market_data_manager: Injected market data feed manager
+        
+    Returns:
+        Average spread statistics for each trading pair
+    """
+    try:
+        spread_data = await market_data_manager.get_spread_averages(
+            pairs=request.pairs,
+            connectors=request.connectors,
+            window_hours=request.window_hours
+        )
+        
+        # Convert to response model
+        return SpreadAverageResponse(
+            data=[SpreadAverageData(**item) for item in spread_data],
+            window_hours=request.window_hours,
+            total_pairs=len(spread_data),
+            timestamp=time.time()
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Error fetching spread averages: {str(e)}"
+        )
+
+
+@router.get("/spread-data")
+async def get_spread_data(
+    pair: Optional[str] = None,
+    connector: Optional[str] = None,
+    limit: int = 100,
+    market_data_manager: MarketDataFeedManager = Depends(get_market_data_feed_manager)
+):
+    """
+    Get raw spread samples from database.
+    
+    Query parameters:
+        - pair: Filter by trading pair (e.g., BTC-USDT)
+        - connector: Filter by exchange (e.g., binance)
+        - limit: Max records to return (default 100)
+        
+    Args:
+        pair: Optional trading pair filter
+        connector: Optional connector filter
+        limit: Maximum number of records
+        market_data_manager: Injected market data feed manager
+        
+    Returns:
+        Dictionary with spread data samples and count
+    """
+    try:
+        result = await market_data_manager.get_spread_data(
+            pair=pair,
+            connector=connector,
+            limit=limit
+        )
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error fetching spread data: {str(e)}"
+        )

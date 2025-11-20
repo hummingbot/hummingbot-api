@@ -599,3 +599,97 @@ class MarketDataFeedManager:
                 self.logger.warning(f"No cleanup function for feed type: {feed_type}")
         else:
             self.logger.warning(f"Feed not found for cleanup: {feed_key}")
+
+
+# Average spread API call -------------->
+    async def get_spread_averages(
+        self, 
+        pairs: Optional[List[str]] = None,
+        connectors: Optional[List[str]] = None,
+        window_hours: int = 24
+    ) -> List[Dict]:
+        """
+        Calculate average spread statistics grouped by trading pair.
+        
+        Args:
+            pairs: Optional list of trading pairs to filter
+            connectors: Optional list of connectors to filter
+            window_hours: Time window in hours for aggregation
+            
+        Returns:
+            List of spread average data dictionaries
+        """
+        try:
+            if not self.db_manager:
+                self.logger.error("Database manager not initialized for spread queries")
+                raise ValueError("Database manager required for spread data")
+                
+            import time as t
+            from database.repositories import SpreadRepository
+            
+            # Calculate time window cutoff (convert to milliseconds)
+            current_time = int(t.time() * 1000)
+            cutoff_time = current_time - (window_hours * 3600 * 1000)
+            
+            async with self.db_manager.get_session_context() as session:
+                spread_repo = SpreadRepository(session)
+                spread_data = await spread_repo.get_spread_averages(
+                    pairs=pairs,
+                    connectors=connectors,
+                    cutoff_timestamp=cutoff_time
+                )
+                
+                self.logger.debug(f"Retrieved spread averages: {len(spread_data)} pairs")
+                return spread_data
+                
+        except Exception as e:
+            self.logger.error(f"Error fetching spread averages: {e}")
+            raise
+
+
+    async def get_spread_data(
+        self,
+        pair: Optional[str] = None,
+        connector: Optional[str] = None,
+        limit: int = 100
+    ) -> Dict:
+        """
+        Get raw spread samples from database.
+        
+        Args:
+            pair: Optional trading pair filter
+            connector: Optional connector filter
+            limit: Maximum number of records to return
+            
+        Returns:
+            Dictionary with spread data and count
+        """
+        try:
+            if not self.db_manager:
+                self.logger.error("Database manager not initialized for spread queries")
+                raise ValueError("Database manager required for spread data")
+            
+            from database.repositories import SpreadRepository
+            
+            async with self.db_manager.get_session_context() as session:
+                spread_repo = SpreadRepository(session)
+                
+                # Get spread samples
+                samples = await spread_repo.get_spread_samples(
+                    pair=pair,
+                    connector=connector,
+                    limit=limit
+                )
+                
+                # Convert to dictionaries
+                data = [spread_repo.to_dict(sample) for sample in samples]
+                
+                self.logger.debug(f"Retrieved {len(data)} spread samples")
+                return {
+                    "data": data,
+                    "count": len(data)
+                }
+                
+        except Exception as e:
+            self.logger.error(f"Error fetching spread data: {e}")
+            raise

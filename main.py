@@ -98,7 +98,8 @@ async def lifespan(app: FastAPI):
         market_data_provider=market_data_provider,
         rate_oracle=RateOracle.get_instance(),
         cleanup_interval=settings.market_data.cleanup_interval,
-        feed_timeout=settings.market_data.feed_timeout
+        feed_timeout=settings.market_data.feed_timeout,
+        db_manager=NONE
     )
 
     # Initialize services
@@ -114,6 +115,7 @@ async def lifespan(app: FastAPI):
         market_data_feed_manager=market_data_feed_manager,
         gateway_url=settings.gateway.url
     )
+    market_data_feed_manager.db_manager = accounts_service.db_manager
     docker_service = DockerService()
     gateway_service = GatewayService()
     bot_archiver = BotArchiver(

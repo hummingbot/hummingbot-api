@@ -7,6 +7,8 @@ from sqlalchemy import (
     String,
     Text,
     func,
+    BigInteger,
+    Index,
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
@@ -349,3 +351,18 @@ class GatewayCLMMEvent(Base):
     position = relationship("GatewayCLMMPosition", back_populates="events")
 
 
+class SpreadSample(Base):
+    __tablename__ = "spread_samples"
+    
+    __table_args__ = (
+        Index("ss_pair_ts_idx", "pair", "timestamp"),
+    )
+    id = Column(Integer, primary_key=True, nullable=False, autoincrement=True)
+    pair = Column(String(64), nullable=False, index=True)
+    connector = Column(String(64), nullable=True, index=True)
+    timestamp = Column(BigInteger, nullable=False, index=True)
+    bid = Column(Numeric(48, 18), nullable=True)
+    ask = Column(Numeric(48, 18), nullable=True)
+    mid = Column(Numeric(48, 18), nullable=True)
+    spread = Column(Numeric(18, 6), nullable=True)  # percent spread
+    source = Column(String(32), nullable=True)
