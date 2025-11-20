@@ -1,21 +1,4 @@
 services:
-  # Uncomment to enable Dashboard (optional web interface)
-  # dashboard:
-  #   container_name: dashboard
-  #   image: hummingbot/dashboard:latest
-  #   ports:
-  #     - "8501:8501"
-  #   environment:
-  #       - AUTH_SYSTEM_ENABLED=False
-  #       - BACKEND_API_HOST=hummingbot-api
-  #       - BACKEND_API_PORT=8000
-  #       - BACKEND_API_USERNAME=${USERNAME}
-  #       - BACKEND_API_PASSWORD=${PASSWORD}
-  #   volumes:
-  #     - ./dashboard-credentials.yml:/home/dashboard/credentials.yml
-  #     - ./pages:/home/dashboard/pages
-  #   networks:
-  #       - emqx-bridge
   hummingbot-api:
     container_name: hummingbot-api
     image: hummingbot/hummingbot-api:latest
