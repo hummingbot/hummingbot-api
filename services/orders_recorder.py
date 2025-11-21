@@ -161,9 +161,9 @@ class OrdersRecorder:
                         logger.info(f"OrdersRecorder: Updated exchange_order_id to {exchange_order_id} for order {event.order_id}")
                     
                     # Update status if it's still in PENDING_CREATE or similar early state
-                    if existing_order.status in ["PENDING_CREATE", "PENDING"]:
-                        existing_order.status = "SUBMITTED"
-                        logger.info(f"OrdersRecorder: Updated status from {existing_order.status} to SUBMITTED for order {event.order_id}")
+                    if existing_order.status in ["PENDING_CREATE", "PENDING", "SUBMITTED"]:
+                        existing_order.status = "OPEN"
+                        logger.info(f"OrdersRecorder: Updated status to OPEN for order {event.order_id}")
                     
                     await session.flush()
                     return
@@ -177,7 +177,7 @@ class OrdersRecorder:
                     "order_type": event.type.name if hasattr(event, 'type') else 'UNKNOWN',
                     "amount": float(event.amount),
                     "price": float(event.price) if event.price else None,
-                    "status": "SUBMITTED",
+                    "status": "OPEN",
                     "exchange_order_id": getattr(event, 'exchange_order_id', None)
                 }
                 await order_repo.create_order(order_data)

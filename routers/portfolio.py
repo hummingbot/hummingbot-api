@@ -61,26 +61,39 @@ async def get_portfolio_history(
     accounts_service: AccountsService = Depends(get_accounts_service)
 ):
     """
-    Get the historical state of all or filtered accounts portfolio with pagination.
-    
+    Get the historical state of all or filtered accounts portfolio with pagination and interval sampling.
+
+    The interval parameter allows you to control data granularity:
+    - 5m: Raw data (default, collected every 5 minutes)
+    - 15m: One data point every 15 minutes
+    - 30m: One data point every 30 minutes
+    - 1h: One data point every hour
+    - 4h: One data point every 4 hours
+    - 12h: One data point every 12 hours
+    - 1d: One data point every day
+
+    Using larger intervals significantly reduces response size and improves performance.
+
     Args:
-        filter_request: JSON payload with filtering criteria
-        
+        filter_request: JSON payload with filtering criteria (account_names, connector_names,
+                       start_time, end_time, limit, cursor, interval)
+
     Returns:
-        Paginated response with historical portfolio data
+        Paginated response with historical portfolio data sampled at the requested interval
     """
     try:
         # Convert integer timestamps to datetime objects
         start_time_dt = datetime.fromtimestamp(filter_request.start_time / 1000) if filter_request.start_time else None
         end_time_dt = datetime.fromtimestamp(filter_request.end_time / 1000) if filter_request.end_time else None
-        
+
         if not filter_request.account_names:
             # Get history for all accounts
             data, next_cursor, has_more = await accounts_service.load_account_state_history(
                 limit=filter_request.limit,
                 cursor=filter_request.cursor,
                 start_time=start_time_dt,
-                end_time=end_time_dt
+                end_time=end_time_dt,
+                interval=filter_request.interval
             )
         else:
             # Get history for specific accounts - need to aggregate
@@ -91,7 +104,8 @@ async def get_portfolio_history(
                     limit=filter_request.limit,
                     cursor=filter_request.cursor,
                     start_time=start_time_dt,
-                    end_time=end_time_dt
+                    end_time=end_time_dt,
+                    interval=filter_request.interval
                 )
                 all_data.extend(acc_data)
             
@@ -125,7 +139,8 @@ async def get_portfolio_history(
                     "account_names": filter_request.account_names,
                     "connector_names": filter_request.connector_names,
                     "start_time": filter_request.start_time,
-                    "end_time": filter_request.end_time
+                    "end_time": filter_request.end_time,
+                    "interval": filter_request.interval
                 }
             }
         )

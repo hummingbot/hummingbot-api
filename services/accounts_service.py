@@ -195,17 +195,26 @@ class AccountsService:
             # Re-raise the exception since we no longer have a fallback
             raise
 
-    async def load_account_state_history(self, 
+    async def load_account_state_history(self,
                                         limit: Optional[int] = None,
                                         cursor: Optional[str] = None,
                                         start_time: Optional[datetime] = None,
-                                        end_time: Optional[datetime] = None):
+                                        end_time: Optional[datetime] = None,
+                                        interval: str = "5m"):
         """
-        Load the account state history from the database with pagination.
+        Load the account state history from the database with pagination and interval sampling.
+
+        Args:
+            limit: Maximum number of records to return
+            cursor: Cursor for pagination
+            start_time: Start time filter
+            end_time: End time filter
+            interval: Sampling interval (5m, 15m, 30m, 1h, 4h, 12h, 1d)
+
         :return: Tuple of (data, next_cursor, has_more).
         """
         await self.ensure_db_initialized()
-        
+
         try:
             async with self.db_manager.get_session_context() as session:
                 repository = AccountRepository(session)
@@ -213,7 +222,8 @@ class AccountsService:
                     limit=limit,
                     cursor=cursor,
                     start_time=start_time,
-                    end_time=end_time
+                    end_time=end_time,
+                    interval=interval
                 )
         except Exception as e:
             logger.error(f"Error loading account state history from database: {e}")
@@ -518,26 +528,36 @@ class AccountsService:
             # Fallback to in-memory state
             return self.accounts_state.get(account_name, {})
     
-    async def get_account_state_history(self, 
-                                        account_name: str, 
+    async def get_account_state_history(self,
+                                        account_name: str,
                                         limit: Optional[int] = None,
                                         cursor: Optional[str] = None,
                                         start_time: Optional[datetime] = None,
-                                        end_time: Optional[datetime] = None):
+                                        end_time: Optional[datetime] = None,
+                                        interval: str = "5m"):
         """
-        Get historical state for a specific account with pagination.
+        Get historical state for a specific account with pagination and interval sampling.
+
+        Args:
+            account_name: Account name to filter by
+            limit: Maximum number of records to return
+            cursor: Cursor for pagination
+            start_time: Start time filter
+            end_time: End time filter
+            interval: Sampling interval (5m, 15m, 30m, 1h, 4h, 12h, 1d)
         """
         await self.ensure_db_initialized()
-        
+
         try:
             async with self.db_manager.get_session_context() as session:
                 repository = AccountRepository(session)
                 return await repository.get_account_state_history(
-                    account_name=account_name, 
+                    account_name=account_name,
                     limit=limit,
                     cursor=cursor,
                     start_time=start_time,
-                    end_time=end_time
+                    end_time=end_time,
+                    interval=interval
                 )
         except Exception as e:
             logger.error(f"Error getting account state history: {e}")
