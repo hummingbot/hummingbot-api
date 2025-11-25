@@ -1,6 +1,7 @@
 import secrets
 from contextlib import asynccontextmanager
 from typing import Annotated
+from urllib.parse import urlparse
 
 import logfire
 import logging
@@ -24,6 +25,8 @@ from hummingbot.client.config import config_helpers
 config_helpers.save_to_yml = patched_save_to_yml
 
 from hummingbot.core.rate_oracle.rate_oracle import RateOracle
+from hummingbot.core.gateway.gateway_http_client import GatewayHttpClient
+from hummingbot.client.config.client_config_map import GatewayConfigMap
 
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -89,6 +92,17 @@ async def lifespan(app: FastAPI):
         secrets_manager = ETHKeyFileSecretManger(password=settings.security.config_password)
         BackendAPISecurity.store_password_verification(secrets_manager)
         logging.info("Created password verification file for master_account")
+
+    # Initialize GatewayHttpClient singleton with proper config from settings
+    # This must happen BEFORE MarketDataProvider is created, as it uses GatewayHttpClient.get_instance()
+    parsed_gateway_url = urlparse(settings.gateway.url)
+    gateway_config = GatewayConfigMap(
+        gateway_api_host=parsed_gateway_url.hostname or "localhost",
+        gateway_api_port=str(parsed_gateway_url.port or 15888),
+        gateway_use_ssl=parsed_gateway_url.scheme == "https"
+    )
+    GatewayHttpClient.get_instance(gateway_config)
+    logging.info(f"Initialized GatewayHttpClient with URL: {settings.gateway.url}")
 
     # Initialize MarketDataProvider with empty connectors (will use non-trading connectors)
     market_data_provider = MarketDataProvider(connectors={})
