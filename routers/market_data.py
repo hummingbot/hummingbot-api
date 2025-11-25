@@ -438,7 +438,6 @@ async def get_vwap_for_volume(
         raise HTTPException(status_code=500, detail=f"Error in order book query: {str(e)}")
 
 
-# Spread Data Endpoints for Spread_capture strategy -------------------------------------->
 @router.post("/spread-averages", response_model=SpreadAverageResponse)
 async def get_spread_averages(
     request: SpreadAverageRequest,

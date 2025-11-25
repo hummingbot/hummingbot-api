@@ -3,11 +3,13 @@ import time
 from typing import Dict, Optional, Callable, List
 import logging
 from enum import Enum
-
+from decimal import Decimal
+from collections import defaultdict
 from hummingbot.core.rate_oracle.rate_oracle import RateOracle
 from hummingbot.data_feed.candles_feed.data_types import CandlesConfig
 from hummingbot.data_feed.market_data_provider import MarketDataProvider
-
+from database.connection import AsyncDatabaseManager
+from database.repositories import SpreadRepository
 
 class FeedType(Enum):
     """Types of market data feeds that can be managed."""
@@ -601,7 +603,6 @@ class MarketDataFeedManager:
             self.logger.warning(f"Feed not found for cleanup: {feed_key}")
 
 
-# Average spread API call -------------->
     async def get_spread_averages(
         self, 
         pairs: Optional[List[str]] = None,
@@ -609,7 +610,7 @@ class MarketDataFeedManager:
         window_hours: int = 24
     ) -> List[Dict]:
         """
-        Calculate average spread statistics grouped by trading pair.
+        Calculate average spread statistics grouped by trading pair and connector.
         
         Args:
             pairs: Optional list of trading pairs to filter
@@ -621,29 +622,55 @@ class MarketDataFeedManager:
         """
         try:
             if not self.db_manager:
-                self.logger.error("Database manager not initialized for spread queries")
                 raise ValueError("Database manager required for spread data")
-                
-            import time as t
-            from database.repositories import SpreadRepository
             
             # Calculate time window cutoff (convert to milliseconds)
-            current_time = int(t.time() * 1000)
+            current_time = int(time.time() * 1000)
             cutoff_time = current_time - (window_hours * 3600 * 1000)
             
-            async with self.db_manager.get_session_context() as session:
+            aasync with self.db_manager.get_session_context() as session:
                 spread_repo = SpreadRepository(session)
-                spread_data = await spread_repo.get_spread_averages(
-                    pairs=pairs,
-                    connectors=connectors,
-                    cutoff_timestamp=cutoff_time
+                
+                # Get all samples within the time window
+                samples = await spread_repo.get_spread_samples(
+                    pair=None,
+                    connector=None,
+                    start_timestamp=cutoff_time,
+                    limit=100000  # Large limit to get all samples
                 )
                 
-                self.logger.debug(f"Retrieved spread averages: {len(spread_data)} pairs")
+                # Filter by pairs and connectors if specified
+                if pairs:
+                    samples = [sample for sample in samples if sample.pair in pairs]
+                if connectors:
+                    samples = [sample for sample in samples if sample.connector in connectors]
+                
+                # Group by pair and connector and calculate average spread
+                grouped = defaultdict(list)
+                
+                for sample in samples:
+                    if sample.spread is not None:  # Only include samples with spread data
+                        key = (sample.pair, sample.connector)
+                        grouped[key].append(float(sample.spread))
+                
+                # Calculate averages
+                spread_data = []
+                for (pair, connector), spreads in grouped.items():
+                    avg_spread = sum(spreads) / len(spreads) if spreads else 0.0
+                    spread_data.append({
+                        "pair": pair,
+                        "connector": connector,
+                        "avg_spread": Decimal(f"{avg_spread:.6f}"),
+                        "sample_count": len(spreads)
+                    })
+                
+                # Sort by average spread descending
+                spread_data.sort(key=lambda x: x["avg_spread"], reverse=True)
+                
+                self.logger.debug(f"Calculated spread averages for {len(spread_data)} pairs")
                 return spread_data
                 
         except Exception as e:
-            self.logger.error(f"Error fetching spread averages: {e}")
             raise
 
 
@@ -666,10 +693,7 @@ class MarketDataFeedManager:
         """
         try:
             if not self.db_manager:
-                self.logger.error("Database manager not initialized for spread queries")
                 raise ValueError("Database manager required for spread data")
-            
-            from database.repositories import SpreadRepository
             
             async with self.db_manager.get_session_context() as session:
                 spread_repo = SpreadRepository(session)
@@ -691,5 +715,4 @@ class MarketDataFeedManager:
                 }
                 
         except Exception as e:
-            self.logger.error(f"Error fetching spread data: {e}")
             raise

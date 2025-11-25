@@ -359,7 +359,7 @@ class SpreadSample(Base):
     )
     id = Column(Integer, primary_key=True, nullable=False, autoincrement=True)
     pair = Column(String(64), nullable=False, index=True)
-    connector = Column(String(64), nullable=True, index=True)
+    connector = Column(String(64), nullable=False, index=True)
     timestamp = Column(BigInteger, nullable=False, index=True)
     bid = Column(Numeric(48, 18), nullable=True)
     ask = Column(Numeric(48, 18), nullable=True)
