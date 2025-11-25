@@ -1558,36 +1558,63 @@ class AccountsService:
             connector_name = f"gateway_{chain}-{network}"
 
             # Try to get cached prices first
+            # Try USDT first (more common in CEX like Binance), then USDC (common in DEX)
             prices_from_cache = {}
             tokens_need_update = []
+            token_to_trading_pair = {}  # Maps token -> trading_pair that has the price
 
             if self.market_data_feed_manager:
                 for token in unique_tokens:
                     try:
                         token_unwrapped = self.get_unwrapped_token(token)
-                        trading_pair = f"{token_unwrapped}-USDT"
-                        cached_price = self.market_data_feed_manager.market_data_provider.get_rate(trading_pair)
-                        if cached_price > 0:
-                            prices_from_cache[trading_pair] = cached_price
-                        else:
+                        # Try USDT first (Binance, etc.), then USDC as fallback (DEX)
+                        found_price = False
+                        for quote in ["USDT", "USDC"]:
+                            trading_pair = f"{token_unwrapped}-{quote}"
+                            try:
+                                cached_price = self.market_data_feed_manager.market_data_provider.get_rate(trading_pair)
+                                if cached_price > 0:
+                                    prices_from_cache[token] = cached_price
+                                    token_to_trading_pair[token] = trading_pair
+                                    found_price = True
+                                    break
+                            except Exception:
+                                continue
+                        if not found_price:
                             tokens_need_update.append(token)
                     except Exception:
                         tokens_need_update.append(token)
             else:
                 tokens_need_update = unique_tokens
 
-            # Initialize rate sources for Gateway (using "gateway" as connector for AMM pairs)
-            if tokens_need_update:
-                pricing_connector = self.gateway_default_pricing_connector[chain]
+            # Initialize rate sources for Gateway using the old format: "gateway_{chain}-{network}"
+            # The MarketDataProvider.update_rates_task() will detect this format and resolve
+            # the correct pricing connector (jupiter/router for solana, uniswap/router for ethereum, etc.)
+            if tokens_need_update and self.market_data_feed_manager:
+                # Use the format that MarketDataProvider expects for gateway connectors
+                gateway_connector_key = f"gateway_{chain}-{network}"
                 trading_pairs_need_update = [f"{token}-USDC" for token in tokens_need_update]
-                connector_pairs = [ConnectorPair(connector_name=pricing_connector, trading_pair=tp) for tp in trading_pairs_need_update]
+                connector_pairs = [ConnectorPair(connector_name=gateway_connector_key, trading_pair=tp) for tp in trading_pairs_need_update]
+
                 for pair in connector_pairs:
                     self.market_data_feed_manager.market_data_provider._rates_required.add_or_update(
-                        f"gateway_{chain}-{network}", pair
+                        gateway_connector_key, pair
                     )
-                logger.info(f"Added {len(trading_pairs_need_update)} Gateway trading pairs to market data provider: {trading_pairs_need_update}")
+                logger.info(f"Added {len(trading_pairs_need_update)} Gateway trading pairs to market data provider for {gateway_connector_key}: {trading_pairs_need_update}")
 
-            # Use cached prices (rate sources will update in background)
+                # Trigger immediate price fetch for the new tokens
+                try:
+                    fetched_prices = await self._fetch_gateway_prices_immediate(
+                        chain, network, tokens_need_update
+                    )
+                    for token, price in fetched_prices.items():
+                        if price > 0:
+                            prices_from_cache[token] = price
+                            token_to_trading_pair[token] = f"{token}-USDC"
+                except Exception as e:
+                    logger.warning(f"Error fetching immediate gateway prices: {e}")
+
+            # Use cached prices
             all_prices = prices_from_cache
 
             # Format final result with prices
@@ -1597,8 +1624,8 @@ class AccountsService:
                 if "USD" in token:
                     price = Decimal("1")
                 else:
-                    market = self.get_default_market(token, connector_name)
-                    price = Decimal(str(all_prices.get(market, 0)))
+                    # all_prices is now keyed by token name directly
+                    price = Decimal(str(all_prices.get(token, 0)))
 
                 formatted_balances.append({
                     "token": token,
@@ -1615,6 +1642,77 @@ class AccountsService:
         except Exception as e:
             logger.error(f"Error getting Gateway balances: {e}")
             raise HTTPException(status_code=500, detail=f"Failed to get balances: {str(e)}")
+
+    async def _fetch_gateway_prices_immediate(self, chain: str, network: str,
+                                               tokens: List[str]) -> Dict[str, Decimal]:
+        """
+        Fetch prices immediately from Gateway for the given tokens.
+        This is used to get prices right away instead of waiting for the background update task.
+
+        Uses the same pricing connector resolution as MarketDataProvider.update_rates_task():
+        - solana -> jupiter/router
+        - ethereum -> uniswap/router
+
+        Args:
+            chain: Blockchain chain (e.g., 'solana', 'ethereum')
+            network: Network name (e.g., 'mainnet-beta', 'mainnet')
+            tokens: List of token symbols to get prices for
+
+        Returns:
+            Dictionary mapping token symbol to price in USDC
+        """
+        from hummingbot.core.gateway.gateway_http_client import GatewayHttpClient
+        from hummingbot.core.rate_oracle.rate_oracle import RateOracle
+        from hummingbot.core.data_type.common import TradeType
+
+        gateway_client = GatewayHttpClient.get_instance()
+        rate_oracle = RateOracle.get_instance()
+        prices = {}
+
+        # Resolve pricing connector based on chain (same logic as MarketDataProvider)
+        pricing_connector = self.gateway_default_pricing_connector.get(chain)
+        if not pricing_connector:
+            logger.warning(f"No pricing connector configured for chain '{chain}', skipping immediate price fetch")
+            return prices
+
+        # Create tasks for all tokens in parallel
+        tasks = []
+        task_tokens = []
+
+        for token in tokens:
+            try:
+                task = gateway_client.get_price(
+                    chain=chain,
+                    network=network,
+                    connector=pricing_connector,
+                    base_asset=token,
+                    quote_asset="USDC",
+                    amount=Decimal("1"),
+                    side=TradeType.BUY
+                )
+                tasks.append(task)
+                task_tokens.append(token)
+            except Exception as e:
+                logger.warning(f"Error preparing price request for {token}: {e}")
+                continue
+
+        if tasks:
+            try:
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                for token, result in zip(task_tokens, results):
+                    if isinstance(result, Exception):
+                        logger.warning(f"Error fetching price for {token}: {result}")
+                    elif result and "price" in result:
+                        price = Decimal(str(result["price"]))
+                        prices[token] = price
+                        # Also update the rate oracle so future lookups can find it
+                        trading_pair = f"{token}-USDC"
+                        rate_oracle.set_price(trading_pair, price)
+                        logger.debug(f"Fetched immediate price for {token}: {price} USDC")
+            except Exception as e:
+                logger.error(f"Error fetching gateway prices: {e}", exc_info=True)
+
+        return prices
 
     def get_unwrapped_token(self, token: str) -> str:
         """Get the unwrapped version of a wrapped token symbol."""
