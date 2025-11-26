@@ -375,13 +375,13 @@ class GatewayClient:
         wallet_address: str,
         position_address: str
     ) -> Dict:
-        """Get CLMM position information"""
-        return await self._request("POST", "clmm/liquidity/position", json={
-            "connector": connector,
+        """Get CLMM position information including pending fees"""
+        params = {
             "network": network,
-            "address": wallet_address,
+            "walletAddress": wallet_address,
             "positionAddress": position_address
-        })
+        }
+        return await self._request("GET", f"connectors/{connector}/clmm/position-info", params=params)
 
     async def clmm_positions_owned(
         self,
