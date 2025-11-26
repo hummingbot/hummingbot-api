@@ -93,13 +93,14 @@ async def lifespan(app: FastAPI):
     # Initialize MarketDataProvider with empty connectors (will use non-trading connectors)
     market_data_provider = MarketDataProvider(connectors={})
 
+    db_manager = None
     # Initialize MarketDataFeedManager with lifecycle management
     market_data_feed_manager = MarketDataFeedManager(
         market_data_provider=market_data_provider,
         rate_oracle=RateOracle.get_instance(),
         cleanup_interval=settings.market_data.cleanup_interval,
         feed_timeout=settings.market_data.feed_timeout,
-        db_manager=NONE
+        db_manager=db_manager
     )
 
     # Initialize services
@@ -115,7 +116,16 @@ async def lifespan(app: FastAPI):
         market_data_feed_manager=market_data_feed_manager,
         gateway_url=settings.gateway.url
     )
-    market_data_feed_manager.db_manager = accounts_service.db_manager
+    # Get db_manager from AccountsService, or initialize if not available
+    if accounts_service.db_manager:
+        market_data_feed_manager.db_manager = accounts_service.db_manager
+    else:
+        # If AccountsService didn't create db_manager, initialize it directly
+        from database.connection import AsyncDatabaseManager
+        db_manager = AsyncDatabaseManager()
+        accounts_service.db_manager = db_manager
+        market_data_feed_manager.db_manager = db_manager
+        
     docker_service = DockerService()
     gateway_service = GatewayService()
     bot_archiver = BotArchiver(
