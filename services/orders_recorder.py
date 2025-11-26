@@ -237,10 +237,18 @@ class OrdersRecorder:
                         # Validate all values before creating trade record
                         validated_timestamp = event.timestamp if event.timestamp and not math.isnan(event.timestamp) else time.time()
                         validated_fee = trade_fee_paid if trade_fee_paid and not math.isnan(trade_fee_paid) else 0
-                        
+
+                        # Use exchange_trade_id if available (unique per fill), fallback to generated id
+                        exchange_trade_id = getattr(event, 'exchange_trade_id', None)
+                        if exchange_trade_id:
+                            trade_id = f"{event.order_id}_{exchange_trade_id}"
+                        else:
+                            # Fallback: include amount to differentiate partial fills at same timestamp
+                            trade_id = f"{event.order_id}_{validated_timestamp}_{float(filled_amount)}"
+
                         trade_data = {
                             "order_id": order.id,
-                            "trade_id": f"{event.order_id}_{validated_timestamp}",
+                            "trade_id": trade_id,
                             "timestamp": datetime.fromtimestamp(validated_timestamp),
                             "trading_pair": event.trading_pair,
                             "trade_type": event.trade_type.name,
