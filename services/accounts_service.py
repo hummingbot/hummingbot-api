@@ -303,19 +303,27 @@ class AccountsService:
         """Update account state for all connectors and Gateway wallets."""
         all_connectors = self.connector_manager.get_all_connectors()
 
+        # Prepare parallel tasks
+        tasks = []
+        task_meta = []  # (account_name, connector_name)
+
         for account_name, connectors in all_connectors.items():
             if account_name not in self.accounts_state:
                 self.accounts_state[account_name] = {}
             for connector_name, connector in connectors.items():
-                try:
-                    tokens_info = await self._get_connector_tokens_info(connector, connector_name)
-                    self.accounts_state[account_name][connector_name] = tokens_info
-                except Exception as e:
-                    logger.error(f"Error updating balances for connector {connector_name} in account {account_name}: {e}")
-                    self.accounts_state[account_name][connector_name] = []
+                tasks.append(self._get_connector_tokens_info(connector, connector_name))
+                task_meta.append((account_name, connector_name))
 
-        # Add Gateway wallet balances to master_account if Gateway is available
-        await self._update_gateway_balances()
+        # Execute connectors + gateway in parallel
+        results = await asyncio.gather(*tasks, self._update_gateway_balances(), return_exceptions=True)
+
+        # Process results (gateway is last, it handles its own state internally)
+        for (account_name, connector_name), result in zip(task_meta, results[:-1]):
+            if isinstance(result, Exception):
+                logger.error(f"Error updating balances for connector {connector_name} in account {account_name}: {result}")
+                self.accounts_state[account_name][connector_name] = []
+            else:
+                self.accounts_state[account_name][connector_name] = result
 
     async def _get_connector_tokens_info(self, connector, connector_name: str) -> List[Dict]:
         """Get token info from a connector instance using cached prices when available."""
