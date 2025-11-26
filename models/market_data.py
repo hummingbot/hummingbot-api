@@ -173,6 +173,8 @@ class SpreadAverageData(BaseModel):
     pair: str = Field(..., description="Trading pair (e.g., BTC-USDT)")
     connector: str = Field(..., description="Exchange connector name")
     avg_spread: Decimal = Field(..., description="Average spread percentage")
+    min_spread: Decimal = Field(..., description="Minimum spread percentage")
+    max_spread: Decimal = Field(..., description="Maximum spread percentage")
     sample_count: int = Field(..., description="Number of samples in calculation")
     
 

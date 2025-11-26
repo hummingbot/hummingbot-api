@@ -657,10 +657,14 @@ class MarketDataFeedManager:
                 spread_data = []
                 for (pair, connector), spreads in grouped.items():
                     avg_spread = sum(spreads) / len(spreads) if spreads else 0.0
+                    min_spread = min(spreads) if spreads else 0.0
+                    max_spread = max(spreads) if spreads else 0.0
                     spread_data.append({
                         "pair": pair,
                         "connector": connector,
                         "avg_spread": Decimal(f"{avg_spread:.6f}"),
+                        "min_spread": Decimal(f"{min_spread:.6f}"),
+                        "max_spread": Decimal(f"{max_spread:.6f}"),
                         "sample_count": len(spreads)
                     })
                 
