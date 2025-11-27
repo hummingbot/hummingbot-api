@@ -334,6 +334,56 @@ async def add_pool(
         raise HTTPException(status_code=500, detail=f"Error adding pool: {str(e)}")
 
 
+@router.delete("/pools/{address}")
+async def delete_pool(
+    address: str,
+    connector_name: str = Query(description="DEX connector (e.g., 'meteora', 'raydium', 'uniswap')"),
+    network: str = Query(description="Network name (e.g., 'mainnet-beta', 'mainnet')"),
+    pool_type: str = Query(description="Pool type (e.g., 'clmm', 'amm')"),
+    accounts_service: AccountsService = Depends(get_accounts_service)
+) -> Dict:
+    """
+    Delete a liquidity pool from Gateway's pool list.
+
+    Args:
+        address: Pool contract address to remove
+        connector_name: DEX connector (e.g., 'meteora', 'raydium', 'uniswap')
+        network: Network name (e.g., 'mainnet-beta', 'mainnet')
+        pool_type: Pool type (e.g., 'clmm', 'amm')
+
+    Example: DELETE /gateway/pools/2sf5NYcY...?connector_name=meteora&network=mainnet-beta&pool_type=clmm
+    """
+    try:
+        if not await accounts_service.gateway_client.ping():
+            raise HTTPException(status_code=503, detail="Gateway service is not available")
+
+        result = await accounts_service.gateway_client.delete_pool(
+            connector=connector_name,
+            network=network,
+            pool_type=pool_type,
+            address=address
+        )
+
+        if result is None:
+            raise HTTPException(status_code=400, detail="Failed to delete pool - no response from Gateway")
+
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=f"Failed to delete pool: {result.get('error')}")
+
+        return {
+            "success": True,
+            "message": f"Pool {address} deleted from {connector_name}/{network}",
+            "pool_address": address,
+            "connector": connector_name,
+            "network": network
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error deleting pool: {str(e)}")
+
+
 # ============================================
 # Networks (Primary Endpoints)
 # ============================================

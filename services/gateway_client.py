@@ -189,11 +189,19 @@ class GatewayClient:
         """Add a new pool"""
         return await self._request("POST", "pools", json={
             "connector": connector,
-            "type": pool_type,
+            "type": pool_type.lower(),  # Gateway expects lowercase (amm, clmm)
             "network": network,
             "baseSymbol": base_symbol,
             "quoteSymbol": quote_symbol,
             "address": address
+        })
+
+    async def delete_pool(self, connector: str, network: str, pool_type: str, address: str) -> Dict:
+        """Delete a pool from Gateway's pool list"""
+        return await self._request("DELETE", f"pools/{address}", params={
+            "connector": connector,
+            "network": network,
+            "type": pool_type.lower()  # Gateway expects lowercase (amm, clmm)
         })
 
     async def pool_info(self, connector: str, network: str, pool_address: str) -> Dict:
