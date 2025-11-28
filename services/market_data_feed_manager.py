@@ -631,45 +631,35 @@ class MarketDataFeedManager:
             aasync with self.db_manager.get_session_context() as session:
                 spread_repo = SpreadRepository(session)
                 
-                # Get all samples within the time window
-                samples = await spread_repo.get_spread_samples(
-                    pair=None,
-                    connector=None,
-                    start_timestamp=cutoff_time,
-                    limit=100000  # Large limit to get all samples
-                )
+                # Collect samples grouped by (pair, connector) using a dict
+                samples_by_pair_connector = {}
+                for pair in pairs:
+                    for connector in connectors:
+                        samples = await spread_repo.get_spread_samples(
+                            pair=pair,
+                            connector=connector,
+                            start_timestamp=cutoff_time
+                        )
+                        # Only store if we have samples with spread data
+                        spread_values = [float(samples.spread) for samples in samples if samples.spread is not None]
+                        if spread_values:
+                            samples_by_pair_connector[(pair, connector)] = spread_values
                 
-                # Filter by pairs and connectors if specified
-                if pairs:
-                    samples = [sample for sample in samples if sample.pair in pairs]
-                if connectors:
-                    samples = [sample for sample in samples if sample.connector in connectors]
-                
-                # Group by pair and connector and calculate average spread
-                grouped = defaultdict(list)
-                
-                for sample in samples:
-                    if sample.spread is not None:  # Only include samples with spread data
-                        key = (sample.pair, sample.connector)
-                        grouped[key].append(float(sample.spread))
-                
-                # Calculate averages
+                # Calculate statistics
                 spread_data = []
-                for (pair, connector), spreads in grouped.items():
-                    avg_spread = sum(spreads) / len(spreads) if spreads else 0.0
-                    min_spread = min(spreads) if spreads else 0.0
-                    max_spread = max(spreads) if spreads else 0.0
+                for (pair, connector), spread_values in samples_by_pair_connector.items():
+                    avg_spread = sum(spread_values) / len(spread_values)
+                    min_spread = min(spread_values)
+                    max_spread = max(spread_values)
+                    
                     spread_data.append({
                         "pair": pair,
                         "connector": connector,
                         "avg_spread": Decimal(f"{avg_spread:.6f}"),
                         "min_spread": Decimal(f"{min_spread:.6f}"),
                         "max_spread": Decimal(f"{max_spread:.6f}"),
-                        "sample_count": len(spreads)
+                        "sample_count": len(spread_values)
                     })
-                
-                # Sort by average spread descending
-                spread_data.sort(key=lambda x: x["avg_spread"], reverse=True)
                 
                 self.logger.debug(f"Calculated spread averages for {len(spread_data)} pairs")
                 return spread_data

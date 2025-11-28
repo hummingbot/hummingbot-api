@@ -48,7 +48,8 @@ class AccountsService:
                  account_update_interval: int = 5,
                  default_quote: str = "USDT",
                  market_data_feed_manager: Optional[MarketDataFeedManager] = None,
-                 gateway_url: str = "http://localhost:15888"):
+                 gateway_url: str = "http://localhost:15888",
+                 db_manager: Optional[AsyncDatabaseManager] = None):
         """
         Initialize the AccountsService.
 
@@ -66,7 +67,10 @@ class AccountsService:
         self._update_account_state_task: Optional[asyncio.Task] = None
 
         # Database setup for account states and orders
-        self.db_manager = AsyncDatabaseManager(settings.database.url)
+        if db_manager is None:
+            self.db_manager = AsyncDatabaseManager(settings.database.url)
+        else:
+            self.db_manager = db_manager
         self._db_initialized = False
 
         # Initialize connector manager with db_manager

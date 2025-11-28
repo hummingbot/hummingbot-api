@@ -20,7 +20,7 @@ class SpreadRepository:
         connector: Optional[str] = None,
         start_timestamp: Optional[int] = None,
         end_timestamp: Optional[int] = None,
-        limit: int = 100,
+        limit: Optional[int] = None,
         offset: int = 0
     ) -> List[SpreadSample]:
         """
@@ -56,7 +56,8 @@ class SpreadRepository:
         query = query.order_by(desc(SpreadSample.timestamp))
         
         # Apply pagination
-        query = query.limit(limit).offset(offset)
+        if limit is not None:
+            query = query.limit(limit).offset(offset)
         
         # Execute query
         result = await self.session.execute(query)
