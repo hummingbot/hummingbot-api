@@ -1383,6 +1383,18 @@ class AccountsService:
             wallets = await self.gateway_client.get_wallets()
             if not wallets:
                 logger.debug("No Gateway wallets found")
+                # Clear any stale gateway balances from master_account when no wallets exist
+                if "master_account" in self.accounts_state:
+                    chains_result = await self.gateway_client.get_chains()
+                    if chains_result and "chains" in chains_result:
+                        known_chains = {c["chain"] for c in chains_result["chains"]}
+                        stale_keys = [
+                            key for key in list(self.accounts_state["master_account"].keys())
+                            if "-" in key and key.split("-")[0] in known_chains
+                        ]
+                        for key in stale_keys:
+                            logger.info(f"Removing stale Gateway balance data for {key} (no wallets exist)")
+                            del self.accounts_state["master_account"][key]
                 return
 
             # Get all available chains and networks
@@ -1428,6 +1440,10 @@ class AccountsService:
                 t_zero = time.time()
                 results = await asyncio.gather(*balance_tasks, return_exceptions=True)
                 duration = time.time() - t_zero
+
+                # Build set of active chain-network keys from current wallets
+                active_chain_networks = {f"{chain}-{network}" for chain, network, _ in task_metadata}
+
                 # Process results
                 for idx, (result, (chain, network, address)) in enumerate(zip(results, task_metadata)):
                     chain_network = f"{chain}-{network}"
@@ -1442,6 +1458,21 @@ class AccountsService:
                     else:
                         # Store empty list to indicate we checked this network
                         self.accounts_state["master_account"][chain_network] = []
+
+                # Remove stale gateway chain-network keys (wallets that were deleted)
+                # Gateway keys follow pattern: chain-network (e.g., "solana-mainnet-beta", "ethereum-mainnet")
+                stale_keys = []
+                for key in self.accounts_state["master_account"]:
+                    # Check if key looks like a gateway chain-network (contains hyphen and matches chain pattern)
+                    if "-" in key and key not in active_chain_networks:
+                        # Verify it's a gateway key by checking if chain part matches known chains
+                        chain_part = key.split("-")[0]
+                        if chain_part in chain_networks_map:
+                            stale_keys.append(key)
+
+                for key in stale_keys:
+                    logger.info(f"Removing stale Gateway balance data for {key} (wallet no longer exists)")
+                    del self.accounts_state["master_account"][key]
 
         except Exception as e:
             logger.error(f"Error updating Gateway balances: {e}")
