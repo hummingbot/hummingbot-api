@@ -22,7 +22,8 @@ def patched_save_to_yml(yml_path, cm):
 # Apply the patch before importing hummingbot components
 from hummingbot.client.config import config_helpers
 config_helpers.save_to_yml = patched_save_to_yml
-
+from database.connection import AsyncDatabaseManager
+from config import settings
 from hummingbot.core.rate_oracle.rate_oracle import RateOracle
 
 from fastapi import Depends, FastAPI, HTTPException, status
