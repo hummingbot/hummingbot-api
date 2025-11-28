@@ -204,16 +204,32 @@ class GatewayClient:
             "network": network
         })
 
-    async def add_pool(self, connector: str, pool_type: str, network: str, base_symbol: str, quote_symbol: str, address: str) -> Dict:
+    async def add_pool(
+        self,
+        connector: str,
+        pool_type: str,
+        network: str,
+        address: str,
+        base_symbol: str,
+        quote_symbol: str,
+        base_token_address: str,
+        quote_token_address: str,
+        fee_pct: Optional[float] = None
+    ) -> Dict:
         """Add a new pool"""
-        return await self._request("POST", "pools", json={
+        payload = {
             "connector": connector,
             "type": pool_type.lower(),  # Gateway expects lowercase (amm, clmm)
             "network": network,
+            "address": address,
             "baseSymbol": base_symbol,
             "quoteSymbol": quote_symbol,
-            "address": address
-        })
+            "baseTokenAddress": base_token_address,
+            "quoteTokenAddress": quote_token_address
+        }
+        if fee_pct is not None:
+            payload["feePct"] = fee_pct
+        return await self._request("POST", "pools", json=payload)
 
     async def delete_pool(self, connector: str, network: str, pool_type: str, address: str) -> Dict:
         """Delete a pool from Gateway's pool list"""

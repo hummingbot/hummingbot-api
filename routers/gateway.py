@@ -314,9 +314,12 @@ async def add_pool(
             connector=pool_request.connector_name,
             pool_type=pool_request.type,
             network=pool_request.network,
+            address=pool_request.address,
             base_symbol=pool_request.base,
             quote_symbol=pool_request.quote,
-            address=pool_request.address
+            base_token_address=pool_request.base_address,
+            quote_token_address=pool_request.quote_address,
+            fee_pct=pool_request.fee_pct
         )
 
         if result is None:
