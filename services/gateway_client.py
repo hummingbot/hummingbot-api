@@ -59,25 +59,44 @@ class GatewayClient:
         try:
             if method == "GET":
                 async with session.get(url, params=params) as response:
-                    response.raise_for_status()
+                    if not response.ok:
+                        error_body = await self._get_error_body(response)
+                        logger.warning(f"Gateway request failed: {method} {url} - {response.status} - {error_body}")
+                        return {"error": error_body, "status": response.status}
                     return await response.json()
             elif method == "POST":
                 async with session.post(url, json=json) as response:
-                    response.raise_for_status()
+                    if not response.ok:
+                        error_body = await self._get_error_body(response)
+                        logger.warning(f"Gateway request failed: {method} {url} - {response.status} - {error_body}")
+                        return {"error": error_body, "status": response.status}
                     return await response.json()
             elif method == "DELETE":
                 async with session.delete(url, params=params, json=json) as response:
-                    response.raise_for_status()
+                    if not response.ok:
+                        error_body = await self._get_error_body(response)
+                        logger.warning(f"Gateway request failed: {method} {url} - {response.status} - {error_body}")
+                        return {"error": error_body, "status": response.status}
                     return await response.json()
-        except aiohttp.ClientResponseError as e:
-            logger.warning(f"Gateway request failed with status {e.status}: {method} {url} - {e.message}")
-            return None
         except aiohttp.ClientError as e:
             logger.debug(f"Gateway request error: {method} {url} - {e}")
             return None
         except Exception as e:
             logger.debug(f"Gateway request failed: {method} {url} - {e}")
             raise
+
+    async def _get_error_body(self, response: aiohttp.ClientResponse) -> str:
+        """Extract error message from response body"""
+        try:
+            data = await response.json()
+            if isinstance(data, dict):
+                return data.get("message") or data.get("error") or str(data)
+            return str(data)
+        except Exception:
+            try:
+                return await response.text()
+            except Exception:
+                return f"HTTP {response.status}"
 
     async def ping(self) -> bool:
         """Check if Gateway is online"""

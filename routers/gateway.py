@@ -319,8 +319,12 @@ async def add_pool(
             address=pool_request.address
         )
 
+        if result is None:
+            raise HTTPException(status_code=502, detail="Failed to add pool: Gateway returned no response")
+
         if "error" in result:
-            raise HTTPException(status_code=400, detail=f"Failed to add pool: {result.get('error')}")
+            status = result.get("status", 400)
+            raise HTTPException(status_code=status, detail=f"Failed to add pool: {result.get('error')}")
 
         trading_pair = f"{pool_request.base}-{pool_request.quote}"
         return {
