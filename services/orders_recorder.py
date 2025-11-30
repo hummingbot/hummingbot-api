@@ -161,9 +161,9 @@ class OrdersRecorder:
                         logger.info(f"OrdersRecorder: Updated exchange_order_id to {exchange_order_id} for order {event.order_id}")
                     
                     # Update status if it's still in PENDING_CREATE or similar early state
-                    if existing_order.status in ["PENDING_CREATE", "PENDING"]:
-                        existing_order.status = "SUBMITTED"
-                        logger.info(f"OrdersRecorder: Updated status from {existing_order.status} to SUBMITTED for order {event.order_id}")
+                    if existing_order.status in ["PENDING_CREATE", "PENDING", "SUBMITTED"]:
+                        existing_order.status = "OPEN"
+                        logger.info(f"OrdersRecorder: Updated status to OPEN for order {event.order_id}")
                     
                     await session.flush()
                     return
@@ -177,7 +177,7 @@ class OrdersRecorder:
                     "order_type": event.type.name if hasattr(event, 'type') else 'UNKNOWN',
                     "amount": float(event.amount),
                     "price": float(event.price) if event.price else None,
-                    "status": "SUBMITTED",
+                    "status": "OPEN",
                     "exchange_order_id": getattr(event, 'exchange_order_id', None)
                 }
                 await order_repo.create_order(order_data)
@@ -237,10 +237,18 @@ class OrdersRecorder:
                         # Validate all values before creating trade record
                         validated_timestamp = event.timestamp if event.timestamp and not math.isnan(event.timestamp) else time.time()
                         validated_fee = trade_fee_paid if trade_fee_paid and not math.isnan(trade_fee_paid) else 0
-                        
+
+                        # Use exchange_trade_id if available (unique per fill), fallback to generated id
+                        exchange_trade_id = getattr(event, 'exchange_trade_id', None)
+                        if exchange_trade_id:
+                            trade_id = f"{event.order_id}_{exchange_trade_id}"
+                        else:
+                            # Fallback: include amount to differentiate partial fills at same timestamp
+                            trade_id = f"{event.order_id}_{validated_timestamp}_{float(filled_amount)}"
+
                         trade_data = {
                             "order_id": order.id,
-                            "trade_id": f"{event.order_id}_{validated_timestamp}",
+                            "trade_id": trade_id,
                             "timestamp": datetime.fromtimestamp(validated_timestamp),
                             "trading_pair": event.trading_pair,
                             "trade_type": event.trade_type.name,

@@ -463,25 +463,17 @@ class GatewayTransactionPoller:
 
             chain, network = parts
 
-            # Get all positions for this pool from Gateway
+            # Get individual position info from Gateway (includes pending fees)
             try:
-                positions_list = await self.gateway_client.clmm_positions_owned(
+                result = await self.gateway_client.clmm_position_info(
                     connector=position.connector,
                     network=network,
                     wallet_address=position.wallet_address,
-                    pool_address=position.pool_address
+                    position_address=position.position_address
                 )
 
-                # Find our specific position in the list
-                result = None
-                if isinstance(positions_list, list):
-                    for pos in positions_list:
-                        if pos.get("address") == position.position_address:
-                            result = pos
-                            break
-
-                # If position not found, it was closed externally
-                if result is None:
+                # If position not found or error, it may have been closed externally
+                if result is None or not isinstance(result, dict) or "address" not in result:
                     logger.info(f"Position {position.position_address} not found on Gateway, marking as CLOSED")
                     await clmm_repo.close_position(position.position_address)
                     return
@@ -521,19 +513,19 @@ class GatewayTransactionPoller:
                 in_range=in_range
             )
 
-            # Update pending fees if available
+            # Update pending fees (always update to keep in sync with on-chain state)
             base_fee_pending = Decimal(str(result.get("baseFeeAmount", 0)))
             quote_fee_pending = Decimal(str(result.get("quoteFeeAmount", 0)))
 
-            if base_fee_pending or quote_fee_pending:
-                await clmm_repo.update_position_fees(
-                    position_address=position.position_address,
-                    base_fee_pending=base_fee_pending,
-                    quote_fee_pending=quote_fee_pending
-                )
+            await clmm_repo.update_position_fees(
+                position_address=position.position_address,
+                base_fee_pending=base_fee_pending,
+                quote_fee_pending=quote_fee_pending
+            )
 
             logger.debug(f"Refreshed position {position.position_address}: in_range={in_range}, "
-                        f"base={base_token_amount}, quote={quote_token_amount}")
+                        f"base={base_token_amount}, quote={quote_token_amount}, "
+                        f"base_fee={base_fee_pending}, quote_fee={quote_fee_pending}")
 
         except Exception as e:
             logger.error(f"Error refreshing position state {position.position_address}: {e}", exc_info=True)

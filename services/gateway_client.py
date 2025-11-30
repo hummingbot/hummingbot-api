@@ -59,25 +59,44 @@ class GatewayClient:
         try:
             if method == "GET":
                 async with session.get(url, params=params) as response:
-                    response.raise_for_status()
+                    if not response.ok:
+                        error_body = await self._get_error_body(response)
+                        logger.warning(f"Gateway request failed: {method} {url} - {response.status} - {error_body}")
+                        return {"error": error_body, "status": response.status}
                     return await response.json()
             elif method == "POST":
                 async with session.post(url, json=json) as response:
-                    response.raise_for_status()
+                    if not response.ok:
+                        error_body = await self._get_error_body(response)
+                        logger.warning(f"Gateway request failed: {method} {url} - {response.status} - {error_body}")
+                        return {"error": error_body, "status": response.status}
                     return await response.json()
             elif method == "DELETE":
                 async with session.delete(url, params=params, json=json) as response:
-                    response.raise_for_status()
+                    if not response.ok:
+                        error_body = await self._get_error_body(response)
+                        logger.warning(f"Gateway request failed: {method} {url} - {response.status} - {error_body}")
+                        return {"error": error_body, "status": response.status}
                     return await response.json()
-        except aiohttp.ClientResponseError as e:
-            logger.warning(f"Gateway request failed with status {e.status}: {method} {url} - {e.message}")
-            return None
         except aiohttp.ClientError as e:
             logger.debug(f"Gateway request error: {method} {url} - {e}")
             return None
         except Exception as e:
             logger.debug(f"Gateway request failed: {method} {url} - {e}")
             raise
+
+    async def _get_error_body(self, response: aiohttp.ClientResponse) -> str:
+        """Extract error message from response body"""
+        try:
+            data = await response.json()
+            if isinstance(data, dict):
+                return data.get("message") or data.get("error") or str(data)
+            return str(data)
+        except Exception:
+            try:
+                return await response.text()
+            except Exception:
+                return f"HTTP {response.status}"
 
     async def ping(self) -> bool:
         """Check if Gateway is online"""
@@ -185,15 +204,39 @@ class GatewayClient:
             "network": network
         })
 
-    async def add_pool(self, connector: str, pool_type: str, network: str, base_symbol: str, quote_symbol: str, address: str) -> Dict:
+    async def add_pool(
+        self,
+        connector: str,
+        pool_type: str,
+        network: str,
+        address: str,
+        base_symbol: str,
+        quote_symbol: str,
+        base_token_address: str,
+        quote_token_address: str,
+        fee_pct: Optional[float] = None
+    ) -> Dict:
         """Add a new pool"""
-        return await self._request("POST", "pools", json={
+        payload = {
             "connector": connector,
-            "type": pool_type,
+            "type": pool_type.lower(),  # Gateway expects lowercase (amm, clmm)
             "network": network,
+            "address": address,
             "baseSymbol": base_symbol,
             "quoteSymbol": quote_symbol,
-            "address": address
+            "baseTokenAddress": base_token_address,
+            "quoteTokenAddress": quote_token_address
+        }
+        if fee_pct is not None:
+            payload["feePct"] = fee_pct
+        return await self._request("POST", "pools", json=payload)
+
+    async def delete_pool(self, connector: str, network: str, pool_type: str, address: str) -> Dict:
+        """Delete a pool from Gateway's pool list"""
+        return await self._request("DELETE", f"pools/{address}", params={
+            "connector": connector,
+            "network": network,
+            "type": pool_type.lower()  # Gateway expects lowercase (amm, clmm)
         })
 
     async def pool_info(self, connector: str, network: str, pool_address: str) -> Dict:
@@ -375,13 +418,13 @@ class GatewayClient:
         wallet_address: str,
         position_address: str
     ) -> Dict:
-        """Get CLMM position information"""
-        return await self._request("POST", "clmm/liquidity/position", json={
-            "connector": connector,
+        """Get CLMM position information including pending fees"""
+        params = {
             "network": network,
-            "address": wallet_address,
+            "walletAddress": wallet_address,
             "positionAddress": position_address
-        })
+        }
+        return await self._request("GET", f"connectors/{connector}/clmm/position-info", params=params)
 
     async def clmm_positions_owned(
         self,

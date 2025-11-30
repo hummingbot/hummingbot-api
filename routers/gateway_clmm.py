@@ -95,7 +95,7 @@ async def fetch_raydium_pool_info(pool_address: str) -> Optional[dict]:
         Dictionary with pool info from Raydium API, or None if failed
     """
     try:
-        url = f"https://api-v3.raydium.io/pools/line/position?id={pool_address}"
+        url = f"https://api-v3.raydium.io/pools/info/ids?ids={pool_address}"
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers={"accept": "application/json"}) as response:
                 response.raise_for_status()
@@ -105,7 +105,14 @@ async def fetch_raydium_pool_info(pool_address: str) -> Optional[dict]:
                     logger.error(f"Raydium API returned unsuccessful response: {data}")
                     return None
 
-                return data
+                # Extract the first pool from the data list
+                pools_data = data.get("data", [])
+                if not pools_data:
+                    logger.error(f"Raydium API returned empty data for pool: {pool_address}")
+                    return None
+
+                # Return the pool data directly (not wrapped in data key)
+                return pools_data[0]
     except aiohttp.ClientError as e:
         logger.error(f"Failed to fetch pool info from Raydium API: {e}")
         return None
@@ -119,69 +126,49 @@ def transform_raydium_to_clmm_response(raydium_data: dict, pool_address: str) ->
     Transform Raydium API response to match Gateway's CLMMPoolInfoResponse format.
 
     Args:
-        raydium_data: Response from Raydium API
+        raydium_data: Pool data from Raydium API (pools/info/ids endpoint)
         pool_address: Pool contract address
 
     Returns:
         Dictionary matching Gateway's pool info structure
     """
-    pool_data = raydium_data.get("data", {})
-    line_data = pool_data.get("line", [])
+    # Extract token info
+    mint_a = raydium_data.get("mintA", {})
+    mint_b = raydium_data.get("mintB", {})
 
-    if not line_data:
-        raise ValueError("No liquidity bins found in Raydium pool data")
+    base_token_address = mint_a.get("address", "")
+    quote_token_address = mint_b.get("address", "")
 
-    # Sort bins by tick to find the active bin
-    sorted_bins = sorted(line_data, key=lambda x: x.get("tick", 0))
+    # Get current price
+    current_price = Decimal(str(raydium_data.get("price", 0)))
 
-    # Calculate active bin (the one with mid-range tick)
-    # For Raydium, we need to determine the current active bin based on the pool state
-    # We'll use the middle bin as a proxy for active bin
-    active_bin_idx = len(sorted_bins) // 2
-    active_bin = sorted_bins[active_bin_idx]
+    # Get token amounts
+    base_amount = Decimal(str(raydium_data.get("mintAmountA", 0)))
+    quote_amount = Decimal(str(raydium_data.get("mintAmountB", 0)))
 
-    # Calculate total liquidity across all bins
-    total_base_liquidity = sum(Decimal(str(bin_data.get("liquidity", 0))) for bin_data in line_data)
-    total_quote_liquidity = total_base_liquidity  # Approximation
+    # Get fee rate (convert from decimal to percentage, e.g., 0.0025 -> 0.25%)
+    fee_rate = raydium_data.get("feeRate", 0.0025)
+    fee_pct = Decimal(str(fee_rate * 100))
 
-    # Extract min and max ticks
-    min_tick = sorted_bins[0].get("tick", 0) if sorted_bins else 0
-    max_tick = sorted_bins[-1].get("tick", 0) if sorted_bins else 0
-
-    # Convert ticks to bin IDs (assuming 1:1 mapping for simplicity)
-    min_bin_id = min_tick
-    max_bin_id = max_tick
-    active_bin_id = active_bin.get("tick", 0)
-
-    # Get current price from active bin
-    current_price = Decimal(str(active_bin.get("price", 0)))
-
-    # Transform bins to match Gateway format
-    bins = []
-    for bin_data in line_data[:100]:  # Limit to 100 bins for performance
-        liquidity = Decimal(str(bin_data.get("liquidity", 0)))
-        bins.append({
-            "binId": bin_data.get("tick", 0),
-            "price": Decimal(str(bin_data.get("price", 0))),
-            "baseTokenAmount": liquidity,
-            "quoteTokenAmount": liquidity  # Approximation
-        })
+    # Check if this is a CLMM (Concentrated) pool
+    pool_type = raydium_data.get("type", "Standard")
+    is_clmm = pool_type == "Concentrated"
 
     # Return in Gateway-compatible format
     return {
         "address": pool_address,
-        "baseTokenAddress": "unknown",  # Not provided by Raydium API
-        "quoteTokenAddress": "unknown",  # Not provided by Raydium API
-        "binStep": 1,  # Default value, not provided by Raydium API
-        "feePct": Decimal("0.25"),  # Typical Raydium CLMM fee
+        "baseTokenAddress": base_token_address,
+        "quoteTokenAddress": quote_token_address,
+        "binStep": 1 if is_clmm else None,  # CLMM pools have tick spacing
+        "feePct": fee_pct,
         "price": current_price,
-        "baseTokenAmount": total_base_liquidity,
-        "quoteTokenAmount": total_quote_liquidity,
-        "activeBinId": active_bin_id,
+        "baseTokenAmount": base_amount,
+        "quoteTokenAmount": quote_amount,
+        "activeBinId": None,  # Not available from this endpoint
         "dynamicFeePct": None,
-        "minBinId": min_bin_id,
-        "maxBinId": max_bin_id,
-        "bins": bins
+        "minBinId": None,
+        "maxBinId": None,
+        "bins": []  # Bin data not available from pool info endpoint
     }
 
 
