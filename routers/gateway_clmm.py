@@ -348,6 +348,15 @@ async def get_clmm_pool_info(
             if raydium_data is None:
                 raise HTTPException(status_code=503, detail="Failed to get pool info from Raydium API")
 
+            # Check if this is a CLMM pool - Standard AMM pools are not supported on this endpoint
+            pool_type = raydium_data.get("type", "Standard")
+            if pool_type != "Concentrated":
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Pool {pool_address} is a Raydium {pool_type} AMM pool, not a CLMM pool. "
+                           f"This endpoint only supports Concentrated Liquidity (CLMM) pools."
+                )
+
             # Transform to Gateway-compatible format
             result = transform_raydium_to_clmm_response(raydium_data, pool_address)
 
