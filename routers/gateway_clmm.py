@@ -95,7 +95,7 @@ async def fetch_raydium_pool_info(pool_address: str) -> Optional[dict]:
         Dictionary with pool info from Raydium API, or None if failed
     """
     try:
-        url = f"https://api-v3.raydium.io/pools/line/position?id={pool_address}"
+        url = f"https://api-v3.raydium.io/pools/info/ids?ids={pool_address}"
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers={"accept": "application/json"}) as response:
                 response.raise_for_status()
@@ -105,7 +105,14 @@ async def fetch_raydium_pool_info(pool_address: str) -> Optional[dict]:
                     logger.error(f"Raydium API returned unsuccessful response: {data}")
                     return None
 
-                return data
+                # Extract the first pool from the data list
+                pools_data = data.get("data", [])
+                if not pools_data:
+                    logger.error(f"Raydium API returned empty data for pool: {pool_address}")
+                    return None
+
+                # Return the pool data directly (not wrapped in data key)
+                return pools_data[0]
     except aiohttp.ClientError as e:
         logger.error(f"Failed to fetch pool info from Raydium API: {e}")
         return None
@@ -119,69 +126,49 @@ def transform_raydium_to_clmm_response(raydium_data: dict, pool_address: str) ->
     Transform Raydium API response to match Gateway's CLMMPoolInfoResponse format.
 
     Args:
-        raydium_data: Response from Raydium API
+        raydium_data: Pool data from Raydium API (pools/info/ids endpoint)
         pool_address: Pool contract address
 
     Returns:
         Dictionary matching Gateway's pool info structure
     """
-    pool_data = raydium_data.get("data", {})
-    line_data = pool_data.get("line", [])
+    # Extract token info
+    mint_a = raydium_data.get("mintA", {})
+    mint_b = raydium_data.get("mintB", {})
 
-    if not line_data:
-        raise ValueError("No liquidity bins found in Raydium pool data")
+    base_token_address = mint_a.get("address", "")
+    quote_token_address = mint_b.get("address", "")
 
-    # Sort bins by tick to find the active bin
-    sorted_bins = sorted(line_data, key=lambda x: x.get("tick", 0))
+    # Get current price
+    current_price = Decimal(str(raydium_data.get("price", 0)))
 
-    # Calculate active bin (the one with mid-range tick)
-    # For Raydium, we need to determine the current active bin based on the pool state
-    # We'll use the middle bin as a proxy for active bin
-    active_bin_idx = len(sorted_bins) // 2
-    active_bin = sorted_bins[active_bin_idx]
+    # Get token amounts
+    base_amount = Decimal(str(raydium_data.get("mintAmountA", 0)))
+    quote_amount = Decimal(str(raydium_data.get("mintAmountB", 0)))
 
-    # Calculate total liquidity across all bins
-    total_base_liquidity = sum(Decimal(str(bin_data.get("liquidity", 0))) for bin_data in line_data)
-    total_quote_liquidity = total_base_liquidity  # Approximation
+    # Get fee rate (convert from decimal to percentage, e.g., 0.0025 -> 0.25%)
+    fee_rate = raydium_data.get("feeRate", 0.0025)
+    fee_pct = Decimal(str(fee_rate * 100))
 
-    # Extract min and max ticks
-    min_tick = sorted_bins[0].get("tick", 0) if sorted_bins else 0
-    max_tick = sorted_bins[-1].get("tick", 0) if sorted_bins else 0
-
-    # Convert ticks to bin IDs (assuming 1:1 mapping for simplicity)
-    min_bin_id = min_tick
-    max_bin_id = max_tick
-    active_bin_id = active_bin.get("tick", 0)
-
-    # Get current price from active bin
-    current_price = Decimal(str(active_bin.get("price", 0)))
-
-    # Transform bins to match Gateway format
-    bins = []
-    for bin_data in line_data[:100]:  # Limit to 100 bins for performance
-        liquidity = Decimal(str(bin_data.get("liquidity", 0)))
-        bins.append({
-            "binId": bin_data.get("tick", 0),
-            "price": Decimal(str(bin_data.get("price", 0))),
-            "baseTokenAmount": liquidity,
-            "quoteTokenAmount": liquidity  # Approximation
-        })
+    # Check if this is a CLMM (Concentrated) pool
+    pool_type = raydium_data.get("type", "Standard")
+    is_clmm = pool_type == "Concentrated"
 
     # Return in Gateway-compatible format
     return {
         "address": pool_address,
-        "baseTokenAddress": "unknown",  # Not provided by Raydium API
-        "quoteTokenAddress": "unknown",  # Not provided by Raydium API
-        "binStep": 1,  # Default value, not provided by Raydium API
-        "feePct": Decimal("0.25"),  # Typical Raydium CLMM fee
+        "baseTokenAddress": base_token_address,
+        "quoteTokenAddress": quote_token_address,
+        "binStep": 1 if is_clmm else None,  # CLMM pools have tick spacing
+        "feePct": fee_pct,
         "price": current_price,
-        "baseTokenAmount": total_base_liquidity,
-        "quoteTokenAmount": total_quote_liquidity,
-        "activeBinId": active_bin_id,
+        "baseTokenAmount": base_amount,
+        "quoteTokenAmount": quote_amount,
+        "activeBinId": None,  # Not available from this endpoint
         "dynamicFeePct": None,
-        "minBinId": min_bin_id,
-        "maxBinId": max_bin_id,
-        "bins": bins
+        "minBinId": None,
+        "maxBinId": None,
+        "bins": []  # Bin data not available from pool info endpoint
     }
 
 
@@ -299,12 +286,13 @@ async def _refresh_position_data(position, accounts_service: AccountsService, cl
             await clmm_repo.close_position(position.position_address)
             return
 
-        # Update liquidity amounts and in_range status
+        # Update liquidity amounts, in_range status, and current price
         await clmm_repo.update_position_liquidity(
             position_address=position.position_address,
             base_token_amount=base_token_amount,
             quote_token_amount=quote_token_amount,
-            in_range=in_range
+            in_range=in_range,
+            current_price=current_price
         )
 
         # Update pending fees if available
@@ -318,7 +306,7 @@ async def _refresh_position_data(position, accounts_service: AccountsService, cl
                 quote_fee_pending=quote_fee_pending
             )
 
-        logger.debug(f"Refreshed position {position.position_address}: in_range={in_range}, "
+        logger.debug(f"Refreshed position {position.position_address}: price={current_price}, in_range={in_range}, "
                     f"base={base_token_amount}, quote={quote_token_amount}")
 
     except Exception as e:
@@ -360,6 +348,15 @@ async def get_clmm_pool_info(
             raydium_data = await fetch_raydium_pool_info(pool_address)
             if raydium_data is None:
                 raise HTTPException(status_code=503, detail="Failed to get pool info from Raydium API")
+
+            # Check if this is a CLMM pool - Standard AMM pools are not supported on this endpoint
+            pool_type = raydium_data.get("type", "Standard")
+            if pool_type != "Concentrated":
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Pool {pool_address} is a Raydium {pool_type} AMM pool, not a CLMM pool. "
+                           f"This endpoint only supports Concentrated Liquidity (CLMM) pools."
+                )
 
             # Transform to Gateway-compatible format
             result = transform_raydium_to_clmm_response(raydium_data, pool_address)
@@ -586,6 +583,11 @@ async def open_clmm_position(
         base_token_address = pool_info.get("baseTokenAddress", "")
         quote_token_address = pool_info.get("quoteTokenAddress", "")
 
+        # Extract entry price from pool info (current pool price at time of opening)
+        entry_price = float(pool_info.get("price", 0)) if pool_info.get("price") else None
+        if entry_price:
+            logger.info(f"Entry price for position: {entry_price}")
+
         # Store full token addresses in the database
         base = base_token_address if base_token_address else "UNKNOWN"
         quote = quote_token_address if quote_token_address else "UNKNOWN"
@@ -655,6 +657,8 @@ async def open_clmm_position(
                     "lower_price": float(request.lower_price),
                     "upper_price": float(request.upper_price),
                     "percentage": percentage,
+                    "entry_price": entry_price,  # Pool price when position opened
+                    "current_price": entry_price,  # Same as entry at open time, updated by poller
                     "initial_base_token_amount": float(request.base_token_amount) if request.base_token_amount else 0,
                     "initial_quote_token_amount": float(request.quote_token_amount) if request.quote_token_amount else 0,
                     "position_rent": float(position_rent) if position_rent else None,
@@ -939,9 +943,10 @@ async def close_clmm_position(
                 detail=f"Position {request.position_address} not found in database. Pool address is required."
             )
 
-        # Fetch pending fees BEFORE closing (Gateway doesn't always return collected amounts in response)
+        # Fetch pending fees and current price BEFORE closing (Gateway doesn't always return these in response)
         base_fee_to_collect = Decimal("0")
         quote_fee_to_collect = Decimal("0")
+        close_price = None
 
         try:
             positions_list = await accounts_service.gateway_client.clmm_positions_owned(
@@ -951,18 +956,19 @@ async def close_clmm_position(
                 pool_address=pool_address
             )
 
-            # Find our specific position and get pending fees
+            # Find our specific position and get pending fees and current price
             if positions_list and isinstance(positions_list, list):
                 for pos in positions_list:
                     if pos and pos.get("address") == request.position_address:
                         base_fee_to_collect = Decimal(str(pos.get("baseFeeAmount", 0)))
                         quote_fee_to_collect = Decimal(str(pos.get("quoteFeeAmount", 0)))
-                        logger.info(f"Pending fees before closing: base={base_fee_to_collect}, quote={quote_fee_to_collect}")
+                        close_price = float(pos.get("price", 0)) if pos.get("price") else None
+                        logger.info(f"Before closing: price={close_price}, pending fees base={base_fee_to_collect}, quote={quote_fee_to_collect}")
                         break
             else:
                 logger.warning(f"Could not find position {request.position_address} in positions_owned response")
         except Exception as e:
-            logger.warning(f"Could not fetch pending fees before closing: {e}", exc_info=True)
+            logger.warning(f"Could not fetch position state before closing: {e}", exc_info=True)
 
         # Close position
         result = await accounts_service.gateway_client.clmm_close_position(
@@ -1027,6 +1033,15 @@ async def close_clmm_position(
                         base_fee_pending=Decimal("0"),
                         quote_fee_pending=Decimal("0")
                     )
+
+                    # Update current_price with close price before marking as closed
+                    if close_price:
+                        await clmm_repo.update_position_liquidity(
+                            position_address=request.position_address,
+                            base_token_amount=Decimal(str(position.base_token_amount)),
+                            quote_token_amount=Decimal(str(position.quote_token_amount)),
+                            current_price=Decimal(str(close_price))
+                        )
 
                     # Mark position as CLOSED
                     await clmm_repo.close_position(request.position_address)

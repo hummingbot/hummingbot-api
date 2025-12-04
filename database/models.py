@@ -284,6 +284,10 @@ class GatewayCLMMPosition(Base):
     lower_bin_id = Column(Integer, nullable=True)  # For bin-based CLMM (Meteora)
     upper_bin_id = Column(Integer, nullable=True)
 
+    # Price tracking for PnL calculation
+    entry_price = Column(Numeric(precision=30, scale=18), nullable=True)  # Pool price when position opened
+    current_price = Column(Numeric(precision=30, scale=18), nullable=True)  # Latest price (becomes close price when closed)
+
     # Initial deposit amounts (for PnL calculation)
     initial_base_token_amount = Column(Numeric(precision=30, scale=18), nullable=True)
     initial_quote_token_amount = Column(Numeric(precision=30, scale=18), nullable=True)

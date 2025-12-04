@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Dict, List, Optional, Tuple
 import base64
@@ -14,6 +14,54 @@ from database import AccountState, TokenState
 class AccountRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
+
+    @staticmethod
+    def _interval_to_minutes(interval: str) -> int:
+        """Convert interval string to minutes."""
+        interval_map = {
+            "5m": 5,
+            "15m": 15,
+            "30m": 30,
+            "1h": 60,
+            "4h": 240,
+            "12h": 720,
+            "1d": 1440
+        }
+        return interval_map.get(interval, 5)  # Default to 5 minutes
+
+    @staticmethod
+    def _sample_history_by_interval(history: List[Dict], interval_minutes: int) -> List[Dict]:
+        """
+        Sample historical data points based on the specified interval.
+
+        Args:
+            history: List of historical data points sorted by timestamp (descending)
+            interval_minutes: Sampling interval in minutes
+
+        Returns:
+            Sampled list of data points
+        """
+        if not history or interval_minutes <= 5:
+            return history  # Return all data for 5m or less
+
+        sampled = []
+        last_sampled_time = None
+
+        for item in history:
+            item_time = datetime.fromisoformat(item["timestamp"].replace('Z', '+00:00'))
+
+            if last_sampled_time is None:
+                # Always include the first (most recent) data point
+                sampled.append(item)
+                last_sampled_time = item_time
+            else:
+                # Check if enough time has passed since last sampled point
+                time_diff = (last_sampled_time - item_time).total_seconds() / 60
+                if time_diff >= interval_minutes:
+                    sampled.append(item)
+                    last_sampled_time = item_time
+
+        return sampled
 
     async def save_account_state(self, account_name: str, connector_name: str, tokens_info: List[Dict], 
                                 snapshot_timestamp: Optional[datetime] = None) -> AccountState:
@@ -99,19 +147,30 @@ class AccountRepository:
         
         return accounts_state
 
-    async def get_account_state_history(self, 
+    async def get_account_state_history(self,
                                       limit: Optional[int] = None,
                                       account_name: Optional[str] = None,
                                       connector_name: Optional[str] = None,
                                       cursor: Optional[str] = None,
                                       start_time: Optional[datetime] = None,
-                                      end_time: Optional[datetime] = None) -> Tuple[List[Dict], Optional[str], bool]:
+                                      end_time: Optional[datetime] = None,
+                                      interval: str = "5m") -> Tuple[List[Dict], Optional[str], bool]:
         """
-        Get historical account states with cursor-based pagination.
-        
+        Get historical account states with cursor-based pagination and interval sampling.
+
+        Args:
+            limit: Maximum number of records to return
+            account_name: Filter by account name
+            connector_name: Filter by connector name
+            cursor: Cursor for pagination
+            start_time: Start time filter
+            end_time: End time filter
+            interval: Sampling interval (5m, 15m, 30m, 1h, 4h, 12h, 1d)
+
         Returns:
             Tuple of (data, next_cursor, has_more)
         """
+        interval_minutes = self._interval_to_minutes(interval)
         query = (
             select(AccountState)
             .options(joinedload(AccountState.token_states))
@@ -136,24 +195,16 @@ class AccountRepository:
             except (ValueError, TypeError):
                 # Invalid cursor, ignore it
                 pass
-        
-        # Fetch limit + 1 to check if there are more records
-        fetch_limit = limit + 1 if limit else 101
+
+        # Fetch more records than requested to ensure we have enough after sampling
+        # For intervals > 5m, we need to fetch more data to get enough sampled points
+        sampling_multiplier = max(1, interval_minutes // 5)  # How many 5m intervals per sample
+        fetch_limit = (limit * sampling_multiplier + 1) if limit else (100 * sampling_multiplier + 1)
         query = query.limit(fetch_limit)
             
         result = await self.session.execute(query)
         account_states = result.unique().scalars().all()
-        
-        # Check if there are more records
-        has_more = len(account_states) == fetch_limit
-        if has_more:
-            account_states = account_states[:-1]  # Remove the extra record
-        
-        # Generate next cursor
-        next_cursor = None
-        if has_more and account_states:
-            next_cursor = account_states[-1].timestamp.isoformat()
-        
+
         # Format response - Group by minute to aggregate account/connector states
         minute_groups = {}
         for account_state in account_states:
@@ -166,29 +217,42 @@ class AccountRepository:
                     "value": float(token_state.value),
                     "available_units": float(token_state.available_units)
                 })
-            
+
             # Round timestamp to the nearest minute for grouping
             minute_timestamp = account_state.timestamp.replace(second=0, microsecond=0)
             minute_key = minute_timestamp.isoformat()
-            
+
             # Initialize minute group if it doesn't exist
             if minute_key not in minute_groups:
                 minute_groups[minute_key] = {
                     "timestamp": minute_key,
                     "state": {}
                 }
-            
+
             # Add account/connector to the minute group
             if account_state.account_name not in minute_groups[minute_key]["state"]:
                 minute_groups[minute_key]["state"][account_state.account_name] = {}
-            
+
             minute_groups[minute_key]["state"][account_state.account_name][account_state.connector_name] = token_info
-        
+
         # Convert to list and maintain chronological order (most recent first)
         history = list(minute_groups.values())
         history.sort(key=lambda x: x["timestamp"], reverse=True)
-        
-        return history, next_cursor, has_more
+
+        # Apply interval sampling
+        sampled_history = self._sample_history_by_interval(history, interval_minutes)
+
+        # Apply limit and check if there are more records after sampling
+        has_more = len(sampled_history) > limit if limit else False
+        if has_more:
+            sampled_history = sampled_history[:limit]
+
+        # Generate next cursor from the last sampled item
+        next_cursor = None
+        if has_more and sampled_history:
+            next_cursor = sampled_history[-1]["timestamp"]
+
+        return sampled_history, next_cursor, has_more
     
     async def get_account_current_state(self, account_name: str) -> Dict[str, List[Dict]]:
         """
