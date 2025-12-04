@@ -12,6 +12,9 @@ from typing import Optional, Dict, List
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
+
 from database import AsyncDatabaseManager
 from database.repositories import GatewaySwapRepository, GatewayCLMMRepository
 from database.models import GatewayCLMMEvent, GatewayCLMMPosition
@@ -190,14 +193,11 @@ class GatewayTransactionPoller:
     async def _poll_clmm_event_transaction(self, event, clmm_repo: GatewayCLMMRepository):
         """Poll a specific CLMM event transaction status."""
         try:
-            # Get the position to access network info
-            position = await clmm_repo.get_position_by_address(
-                position_address=(await self.db_manager.get_session_context().__aenter__())
-                .query(GatewayCLMMEvent)
-                .filter(GatewayCLMMEvent.id == event.id)
-                .first()
-                .position.position_address
+            # Get the position by ID from the event's position_id foreign key
+            result = await clmm_repo.session.execute(
+                select(GatewayCLMMPosition).where(GatewayCLMMPosition.id == event.position_id)
             )
+            position = result.scalar_one_or_none()
 
             if not position:
                 logger.error(f"Position not found for CLMM event {event.transaction_hash}")
@@ -245,35 +245,32 @@ class GatewayTransactionPoller:
     async def _update_position_from_event(self, event, clmm_repo: GatewayCLMMRepository):
         """Update CLMM position state based on confirmed event."""
         try:
-            # Get position through session
-            async with self.db_manager.get_session_context() as session:
-                result = await session.execute(
-                    session.query(GatewayCLMMEvent).filter(GatewayCLMMEvent.id == event.id)
-                )
-                event_with_position = result.scalar_one_or_none()
+            # Get position by ID using the existing clmm_repo session
+            result = await clmm_repo.session.execute(
+                select(GatewayCLMMPosition).where(GatewayCLMMPosition.id == event.position_id)
+            )
+            position = result.scalar_one_or_none()
 
-                if not event_with_position or not event_with_position.position:
-                    logger.error(f"Position not found for event {event.id}")
-                    return
+            if not position:
+                logger.error(f"Position not found for event {event.id}")
+                return
 
-                position = event_with_position.position
+            if event.event_type == "CLOSE":
+                await clmm_repo.close_position(position.position_address)
 
-                if event.event_type == "CLOSE":
-                    await clmm_repo.close_position(position.position_address)
+            elif event.event_type == "COLLECT_FEES":
+                # Add collected fees to cumulative total
+                if event.base_fee_collected or event.quote_fee_collected:
+                    new_base_collected = float(position.base_fee_collected or 0) + float(event.base_fee_collected or 0)
+                    new_quote_collected = float(position.quote_fee_collected or 0) + float(event.quote_fee_collected or 0)
 
-                elif event.event_type == "COLLECT_FEES":
-                    # Add collected fees to cumulative total
-                    if event.base_fee_collected or event.quote_fee_collected:
-                        new_base_collected = float(position.base_fee_collected or 0) + float(event.base_fee_collected or 0)
-                        new_quote_collected = float(position.quote_fee_collected or 0) + float(event.quote_fee_collected or 0)
-
-                        await clmm_repo.update_position_fees(
-                            position_address=position.position_address,
-                            base_fee_collected=Decimal(str(new_base_collected)),
-                            quote_fee_collected=Decimal(str(new_quote_collected)),
-                            base_fee_pending=Decimal("0"),
-                            quote_fee_pending=Decimal("0")
-                        )
+                    await clmm_repo.update_position_fees(
+                        position_address=position.position_address,
+                        base_fee_collected=Decimal(str(new_base_collected)),
+                        quote_fee_collected=Decimal(str(new_quote_collected)),
+                        base_fee_pending=Decimal("0"),
+                        quote_fee_pending=Decimal("0")
+                    )
 
         except Exception as e:
             logger.error(f"Error updating position from event: {e}", exc_info=True)
@@ -472,10 +469,30 @@ class GatewayTransactionPoller:
                     position_address=position.position_address
                 )
 
-                # If position not found or error, it may have been closed externally
-                if result is None or not isinstance(result, dict) or "address" not in result:
-                    logger.info(f"Position {position.position_address} not found on Gateway, marking as CLOSED")
-                    await clmm_repo.close_position(position.position_address)
+                # Check for Gateway errors
+                if result is None:
+                    logger.debug(f"Gateway connection error for position {position.position_address}, skipping update")
+                    return
+
+                if not isinstance(result, dict):
+                    logger.warning(f"Unexpected response type for position {position.position_address}: {type(result)}")
+                    return
+
+                # Check if Gateway returned an error response
+                if "error" in result:
+                    status_code = result.get("status")
+                    # 404 means position doesn't exist on-chain → close it
+                    if status_code == 404:
+                        logger.info(f"Position {position.position_address} not found on Gateway (404), marking as CLOSED")
+                        await clmm_repo.close_position(position.position_address)
+                        return
+                    # Other errors (500, timeout, etc.) → skip update, don't close
+                    logger.debug(f"Gateway error for position {position.position_address}: {result.get('error')} (status: {status_code})")
+                    return
+
+                # Validate response has required fields
+                if "address" not in result:
+                    logger.warning(f"Invalid response for position {position.position_address}, missing 'address' field")
                     return
 
             except Exception as e:
@@ -495,11 +512,19 @@ class GatewayTransactionPoller:
                 else:
                     in_range = "OUT_OF_RANGE"
 
-            # Extract token amounts
-            base_token_amount = Decimal(str(result.get("baseTokenAmount", 0)))
-            quote_token_amount = Decimal(str(result.get("quoteTokenAmount", 0)))
+            # Extract token amounts - validate they exist in response
+            base_amount_raw = result.get("baseTokenAmount")
+            quote_amount_raw = result.get("quoteTokenAmount")
 
-            # Check if position has been closed (zero liquidity)
+            # If amounts are missing or None, skip update (don't assume zero)
+            if base_amount_raw is None or quote_amount_raw is None:
+                logger.warning(f"Position {position.position_address} missing token amounts in response, skipping update")
+                return
+
+            base_token_amount = Decimal(str(base_amount_raw))
+            quote_token_amount = Decimal(str(quote_amount_raw))
+
+            # If Gateway confirms zero liquidity, position was closed externally
             if base_token_amount == 0 and quote_token_amount == 0:
                 logger.info(f"Position {position.position_address} has zero liquidity, marking as CLOSED")
                 await clmm_repo.close_position(position.position_address)
