@@ -23,14 +23,17 @@ async def get_portfolio_state(
 ):
     """
     Get the current state of all or filtered accounts portfolio.
-    
+
     Args:
-        filter_request: JSON payload with filtering criteria
-        
+        filter_request: JSON payload with filtering criteria including:
+            - account_names: Optional list of account names to filter by
+            - connector_names: Optional list of connector names to filter by
+            - skip_gateway: If True, skip Gateway wallet balance updates for faster CEX-only queries
+
     Returns:
         Dict containing account states with connector balances and token information
     """
-    await accounts_service.update_account_state()
+    await accounts_service.update_account_state(skip_gateway=filter_request.skip_gateway)
     all_states = accounts_service.get_accounts_state()
     
     # Apply account name filter first

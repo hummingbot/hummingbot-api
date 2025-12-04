@@ -505,12 +505,13 @@ class GatewayTransactionPoller:
                 await clmm_repo.close_position(position.position_address)
                 return
 
-            # Update liquidity amounts and in_range status
+            # Update liquidity amounts, in_range status, and current price
             await clmm_repo.update_position_liquidity(
                 position_address=position.position_address,
                 base_token_amount=base_token_amount,
                 quote_token_amount=quote_token_amount,
-                in_range=in_range
+                in_range=in_range,
+                current_price=current_price
             )
 
             # Update pending fees (always update to keep in sync with on-chain state)
@@ -523,7 +524,7 @@ class GatewayTransactionPoller:
                 quote_fee_pending=quote_fee_pending
             )
 
-            logger.debug(f"Refreshed position {position.position_address}: in_range={in_range}, "
+            logger.debug(f"Refreshed position {position.position_address}: price={current_price}, in_range={in_range}, "
                         f"base={base_token_amount}, quote={quote_token_amount}, "
                         f"base_fee={base_fee_pending}, quote_fee={quote_fee_pending}")
 

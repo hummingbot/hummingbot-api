@@ -299,8 +299,12 @@ class AccountsService:
         except Exception as e:
             logger.error(f"Error initializing price tracking for {connector_name} in account {account_name}: {e}")
 
-    async def update_account_state(self):
-        """Update account state for all connectors and Gateway wallets."""
+    async def update_account_state(self, skip_gateway: bool = False):
+        """Update account state for all connectors and optionally Gateway wallets.
+
+        Args:
+            skip_gateway: If True, skip Gateway wallet balance updates for faster CEX-only queries.
+        """
         all_connectors = self.connector_manager.get_all_connectors()
 
         # Prepare parallel tasks
@@ -314,11 +318,16 @@ class AccountsService:
                 tasks.append(self._get_connector_tokens_info(connector, connector_name))
                 task_meta.append((account_name, connector_name))
 
-        # Execute connectors + gateway in parallel
-        results = await asyncio.gather(*tasks, self._update_gateway_balances(), return_exceptions=True)
+        # Execute connectors + gateway in parallel (unless skip_gateway is True)
+        if skip_gateway:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+        else:
+            results = await asyncio.gather(*tasks, self._update_gateway_balances(), return_exceptions=True)
+            # Remove gateway result from processing (it handles its own state internally)
+            results = results[:-1]
 
-        # Process results (gateway is last, it handles its own state internally)
-        for (account_name, connector_name), result in zip(task_meta, results[:-1]):
+        # Process results
+        for (account_name, connector_name), result in zip(task_meta, results):
             if isinstance(result, Exception):
                 logger.error(f"Error updating balances for connector {connector_name} in account {account_name}: {result}")
                 self.accounts_state[account_name][connector_name] = []
@@ -469,18 +478,20 @@ class AccountsService:
         :param connector_name:
         :return:
         """
+        # Delete credentials file if it exists
         if fs_util.path_exists(f"credentials/{account_name}/connectors/{connector_name}.yml"):
             fs_util.delete_file(directory=f"credentials/{account_name}/connectors", file_name=f"{connector_name}.yml")
-            
-            # Stop the connector if it's running
-            await self.connector_manager.stop_connector(account_name, connector_name)
-            
-            # Remove from account state
-            if account_name in self.accounts_state and connector_name in self.accounts_state[account_name]:
-                self.accounts_state[account_name].pop(connector_name)
-            
-            # Clear the connector from cache
-            self.connector_manager.clear_cache(account_name, connector_name)
+
+        # Always perform cleanup regardless of file existence
+        # Stop the connector if it's running
+        await self.connector_manager.stop_connector(account_name, connector_name)
+
+        # Remove from account state
+        if account_name in self.accounts_state and connector_name in self.accounts_state[account_name]:
+            self.accounts_state[account_name].pop(connector_name)
+
+        # Clear the connector from cache
+        self.connector_manager.clear_cache(account_name, connector_name)
 
     def add_account(self, account_name: str):
         """
