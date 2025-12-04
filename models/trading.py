@@ -189,6 +189,7 @@ class PortfolioStateFilterRequest(BaseModel):
     """Request model for filtering portfolio state"""
     account_names: Optional[List[str]] = Field(default=None, description="List of account names to filter by")
     connector_names: Optional[List[str]] = Field(default=None, description="List of connector names to filter by")
+    skip_gateway: bool = Field(default=False, description="Skip Gateway wallet balance updates for faster CEX-only queries")
 
 
 class PortfolioHistoryFilterRequest(TimeRangePaginationParams):
