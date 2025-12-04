@@ -286,12 +286,13 @@ async def _refresh_position_data(position, accounts_service: AccountsService, cl
             await clmm_repo.close_position(position.position_address)
             return
 
-        # Update liquidity amounts and in_range status
+        # Update liquidity amounts, in_range status, and current price
         await clmm_repo.update_position_liquidity(
             position_address=position.position_address,
             base_token_amount=base_token_amount,
             quote_token_amount=quote_token_amount,
-            in_range=in_range
+            in_range=in_range,
+            current_price=current_price
         )
 
         # Update pending fees if available
@@ -305,7 +306,7 @@ async def _refresh_position_data(position, accounts_service: AccountsService, cl
                 quote_fee_pending=quote_fee_pending
             )
 
-        logger.debug(f"Refreshed position {position.position_address}: in_range={in_range}, "
+        logger.debug(f"Refreshed position {position.position_address}: price={current_price}, in_range={in_range}, "
                     f"base={base_token_amount}, quote={quote_token_amount}")
 
     except Exception as e:
@@ -582,6 +583,11 @@ async def open_clmm_position(
         base_token_address = pool_info.get("baseTokenAddress", "")
         quote_token_address = pool_info.get("quoteTokenAddress", "")
 
+        # Extract entry price from pool info (current pool price at time of opening)
+        entry_price = float(pool_info.get("price", 0)) if pool_info.get("price") else None
+        if entry_price:
+            logger.info(f"Entry price for position: {entry_price}")
+
         # Store full token addresses in the database
         base = base_token_address if base_token_address else "UNKNOWN"
         quote = quote_token_address if quote_token_address else "UNKNOWN"
@@ -651,6 +657,8 @@ async def open_clmm_position(
                     "lower_price": float(request.lower_price),
                     "upper_price": float(request.upper_price),
                     "percentage": percentage,
+                    "entry_price": entry_price,  # Pool price when position opened
+                    "current_price": entry_price,  # Same as entry at open time, updated by poller
                     "initial_base_token_amount": float(request.base_token_amount) if request.base_token_amount else 0,
                     "initial_quote_token_amount": float(request.quote_token_amount) if request.quote_token_amount else 0,
                     "position_rent": float(position_rent) if position_rent else None,
@@ -935,9 +943,10 @@ async def close_clmm_position(
                 detail=f"Position {request.position_address} not found in database. Pool address is required."
             )
 
-        # Fetch pending fees BEFORE closing (Gateway doesn't always return collected amounts in response)
+        # Fetch pending fees and current price BEFORE closing (Gateway doesn't always return these in response)
         base_fee_to_collect = Decimal("0")
         quote_fee_to_collect = Decimal("0")
+        close_price = None
 
         try:
             positions_list = await accounts_service.gateway_client.clmm_positions_owned(
@@ -947,18 +956,19 @@ async def close_clmm_position(
                 pool_address=pool_address
             )
 
-            # Find our specific position and get pending fees
+            # Find our specific position and get pending fees and current price
             if positions_list and isinstance(positions_list, list):
                 for pos in positions_list:
                     if pos and pos.get("address") == request.position_address:
                         base_fee_to_collect = Decimal(str(pos.get("baseFeeAmount", 0)))
                         quote_fee_to_collect = Decimal(str(pos.get("quoteFeeAmount", 0)))
-                        logger.info(f"Pending fees before closing: base={base_fee_to_collect}, quote={quote_fee_to_collect}")
+                        close_price = float(pos.get("price", 0)) if pos.get("price") else None
+                        logger.info(f"Before closing: price={close_price}, pending fees base={base_fee_to_collect}, quote={quote_fee_to_collect}")
                         break
             else:
                 logger.warning(f"Could not find position {request.position_address} in positions_owned response")
         except Exception as e:
-            logger.warning(f"Could not fetch pending fees before closing: {e}", exc_info=True)
+            logger.warning(f"Could not fetch position state before closing: {e}", exc_info=True)
 
         # Close position
         result = await accounts_service.gateway_client.clmm_close_position(
@@ -1023,6 +1033,15 @@ async def close_clmm_position(
                         base_fee_pending=Decimal("0"),
                         quote_fee_pending=Decimal("0")
                     )
+
+                    # Update current_price with close price before marking as closed
+                    if close_price:
+                        await clmm_repo.update_position_liquidity(
+                            position_address=request.position_address,
+                            base_token_amount=Decimal(str(position.base_token_amount)),
+                            quote_token_amount=Decimal(str(position.quote_token_amount)),
+                            current_price=Decimal(str(close_price))
+                        )
 
                     # Mark position as CLOSED
                     await clmm_repo.close_position(request.position_address)
