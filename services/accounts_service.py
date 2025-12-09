@@ -1738,7 +1738,7 @@ class AccountsService:
                     base_asset=token,
                     quote_asset="USDC",
                     amount=Decimal("1"),
-                    side=TradeType.BUY
+                    side=TradeType.SELL
                 )
                 tasks.append(task)
                 task_tokens.append(token)
