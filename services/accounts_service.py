@@ -1611,7 +1611,6 @@ class AccountsService:
             # Try USDT first (more common in CEX like Binance), then USDC (common in DEX)
             prices_from_cache = {}
             tokens_need_update = []
-            token_to_trading_pair = {}  # Maps token -> trading_pair that has the price
 
             if self.market_data_feed_manager:
                 for token in unique_tokens:
@@ -1625,7 +1624,6 @@ class AccountsService:
                                 cached_price = self.market_data_feed_manager.market_data_provider.get_rate(trading_pair)
                                 if cached_price > 0:
                                     prices_from_cache[token] = cached_price
-                                    token_to_trading_pair[token] = trading_pair
                                     found_price = True
                                     break
                             except Exception:
@@ -1660,7 +1658,6 @@ class AccountsService:
                     for token, price in fetched_prices.items():
                         if price > 0:
                             prices_from_cache[token] = price
-                            token_to_trading_pair[token] = f"{token}-USDC"
                 except Exception as e:
                     logger.warning(f"Error fetching immediate gateway prices: {e}")
 
