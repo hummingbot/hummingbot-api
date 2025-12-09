@@ -161,11 +161,11 @@ class DManV3Controller(DirectionalTradingControllerBase):
                                                       interval=self.config.interval,
                                                       max_records=self.max_records)
         # Add indicators
-        df.ta.bbands(length=self.config.bb_length, std=self.config.bb_std, append=True)
+        df.ta.bbands(length=self.config.bb_length, lower_std=self.config.bb_std, upper_std=self.config.bb_std, append=True)
 
         # Generate signal
-        long_condition = df[f"BBP_{self.config.bb_length}_{self.config.bb_std}"] < self.config.bb_long_threshold
-        short_condition = df[f"BBP_{self.config.bb_length}_{self.config.bb_std}"] > self.config.bb_short_threshold
+        long_condition = df[f"BBP_{self.config.bb_length}_{self.config.bb_std}_{self.config.bb_std}"] < self.config.bb_long_threshold
+        short_condition = df[f"BBP_{self.config.bb_length}_{self.config.bb_std}_{self.config.bb_std}"] > self.config.bb_short_threshold
 
         # Generate signal
         df["signal"] = 0
