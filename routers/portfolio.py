@@ -29,13 +29,21 @@ async def get_portfolio_state(
             - account_names: Optional list of account names to filter by
             - connector_names: Optional list of connector names to filter by
             - skip_gateway: If True, skip Gateway wallet balance updates for faster CEX-only queries
+            - refresh: If True, refresh balances before returning. If False (default), return cached state
 
     Returns:
         Dict containing account states with connector balances and token information
     """
-    await accounts_service.update_account_state(skip_gateway=filter_request.skip_gateway)
+    # Only refresh balances if explicitly requested
+    if filter_request.refresh:
+        await accounts_service.update_account_state(
+            skip_gateway=filter_request.skip_gateway,
+            account_names=filter_request.account_names,
+            connector_names=filter_request.connector_names
+        )
+
     all_states = accounts_service.get_accounts_state()
-    
+
     # Apply account name filter first
     if filter_request.account_names:
         filtered_states = {}
@@ -43,7 +51,7 @@ async def get_portfolio_state(
             if account_name in all_states:
                 filtered_states[account_name] = all_states[account_name]
         all_states = filtered_states
-    
+
     # Apply connector filter if specified
     if filter_request.connector_names:
         for account_name, account_data in all_states.items():
@@ -54,7 +62,7 @@ async def get_portfolio_state(
                     filtered_connectors[connector_name] = account_data[connector_name]
             # Replace account_data with only filtered connectors
             all_states[account_name] = filtered_connectors
-    
+
     return all_states
 
 
