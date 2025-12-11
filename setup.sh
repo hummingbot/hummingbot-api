@@ -32,9 +32,18 @@ PASSWORD=${PASSWORD:-admin}
 
 echo ""
 echo -e "${YELLOW}Optional Services${NC}"
-echo -n "Enable Dashboard web interface? (y/n) [default: n]: "
-read ENABLE_DASHBOARD
-ENABLE_DASHBOARD=${ENABLE_DASHBOARD:-n}
+echo -n "Enable Condor Telegram bot? (y/n) [default: n]: "
+read ENABLE_CONDOR
+ENABLE_CONDOR=${ENABLE_CONDOR:-n}
+
+if [[ "$ENABLE_CONDOR" =~ ^[Yy]$ ]]; then
+    echo -n "Telegram Bot Token: "
+    read TELEGRAM_TOKEN
+    echo -n "Telegram Allowed User IDs (comma-separated): "
+    read TELEGRAM_ALLOWED_IDS
+    echo -n "Pydantic Gateway Key (optional, press Enter to skip): "
+    read PYDANTIC_GATEWAY_KEY
+fi
 
 echo ""
 echo -e "${YELLOW}Gateway Configuration (Optional)${NC}"
@@ -130,20 +139,32 @@ echo -e "${GREEN}✅ .env file created successfully!${NC}"
 echo ""
 
 
-# Enable Dashboard if requested
-if [[ "$ENABLE_DASHBOARD" =~ ^[Yy]$ ]]; then
-    echo -e "${GREEN}📊 Enabling Dashboard in docker-compose.yml...${NC}"
+# Enable Condor if requested
+if [[ "$ENABLE_CONDOR" =~ ^[Yy]$ ]]; then
+    echo -e "${GREEN}🤖 Setting up Condor Telegram bot...${NC}"
 
-    # Remove the comment line first
-    sed -i.bak '/^  # Uncomment to enable Dashboard (optional web interface)/d' docker-compose.yml
+    # Create condor directory for config files
+    mkdir -p condor
 
-    # Uncomment the dashboard service lines
-    sed -i.bak '/^  # dashboard:/,/^  #       - emqx-bridge$/s/^  # /  /' docker-compose.yml
+    # Create Condor .env file
+    cat > condor/.env << CONDOR_EOF
+TELEGRAM_TOKEN=$TELEGRAM_TOKEN
+TELEGRAM_ALLOWED_IDS=$TELEGRAM_ALLOWED_IDS
+PYDANTIC_GATEWAY_KEY=$PYDANTIC_GATEWAY_KEY
+CONDOR_EOF
 
-    # Remove backup file
-    rm -f docker-compose.yml.bak
+    # Create servers.yml for Condor to connect to hummingbot-api
+    cat > condor/servers.yml << SERVERS_EOF
+servers:
+  local:
+    host: host.docker.internal
+    port: 8000
+    username: $USERNAME
+    password: $PASSWORD
+    default: true
+SERVERS_EOF
 
-    echo -e "${GREEN}✅ Dashboard enabled!${NC}"
+    echo -e "${GREEN}✅ Condor configured!${NC}"
     echo ""
 fi
 
@@ -184,7 +205,7 @@ echo -e "${PURPLE}🔒 Security:${NC} The password verification file secures bot
 echo ""
 echo -e "${GREEN}🐳 Starting services (API, EMQX, PostgreSQL)...${NC}"
 
-# Start all services (MCP and Dashboard are optional - see docker-compose.yml)
+# Start all services
 docker compose up -d &
 docker pull hummingbot/hummingbot:latest &
 
@@ -264,8 +285,8 @@ echo -e "  📚 ${GREEN}API Docs${NC}       - http://localhost:8000/docs (Swagge
 echo -e "  📡 ${GREEN}EMQX Broker${NC}    - localhost:1883"
 echo -e "  💾 ${GREEN}PostgreSQL${NC}     - localhost:5432"
 
-if [[ "$ENABLE_DASHBOARD" =~ ^[Yy]$ ]]; then
-    echo -e "  📊 ${GREEN}Dashboard${NC}      - http://localhost:8501"
+if [[ "$ENABLE_CONDOR" =~ ^[Yy]$ ]]; then
+    echo -e "  🤖 ${GREEN}Condor${NC}         - Telegram bot (running in condor/)"
 fi
 
 echo ""
@@ -289,10 +310,11 @@ echo '      - "Create a market making strategy for ETH-USDT on Binance"'
 echo ""
 echo "   ${PURPLE}Other AI assistants:${NC} See CLAUDE.md, GEMINI.md, or AGENTS.md for setup"
 
-if [[ "$ENABLE_DASHBOARD" =~ ^[Yy]$ ]]; then
+if [[ "$ENABLE_CONDOR" =~ ^[Yy]$ ]]; then
     echo ""
-    echo "3. ${CYAN}Access Dashboard:${NC}"
-    echo "   • Web UI: http://localhost:8501"
+    echo "3. ${CYAN}Start Condor Telegram Bot:${NC}"
+    echo "   • Run: docker run -d --name condor --env-file condor/.env -v \$(pwd)/condor/servers.yml:/app/servers.yml --add-host=host.docker.internal:host-gateway hummingbot/condor:latest"
+    echo "   • Find your bot in Telegram and send /start"
 fi
 
 echo ""
@@ -300,10 +322,10 @@ echo -e "${CYAN}Available Access Methods:${NC}"
 echo "  ✅ Swagger UI (http://localhost:8000/docs) - Full REST API"
 echo "  ✅ MCP - AI Assistant integration (Claude, ChatGPT, Gemini)"
 
-if [[ "$ENABLE_DASHBOARD" =~ ^[Yy]$ ]]; then
-    echo "  ✅ Dashboard (http://localhost:8501) - Web interface"
+if [[ "$ENABLE_CONDOR" =~ ^[Yy]$ ]]; then
+    echo "  ✅ Condor - Telegram bot for mobile trading"
 else
-    echo "  ⚪ Dashboard - Run setup.sh again to enable web UI"
+    echo "  ⚪ Condor - Run setup.sh again to enable Telegram bot"
 fi
 
 echo ""
