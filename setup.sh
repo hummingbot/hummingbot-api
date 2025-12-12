@@ -1,340 +1,47 @@
 #!/bin/bash
+# Hummingbot API Setup - Creates .env with sensible defaults
 
-# Backend API Setup Script
-# This script creates a comprehensive .env file with all configuration options
-# following the Pydantic Settings structure established in config.py
+set -e
 
-set -e  # Exit on any error
-
-# Colors for better output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-PURPLE='\033[0;35m'
-CYAN='\033[0;36m'
-NC='\033[0m' # No Color
-
-echo "🚀 Backend API Setup"
+echo "Hummingbot API Setup"
 echo ""
 
-echo -n "Config password [default: admin]: "
-read CONFIG_PASSWORD
-CONFIG_PASSWORD=${CONFIG_PASSWORD:-admin}
-
-echo -n "API username [default: admin]: "
-read USERNAME
-USERNAME=${USERNAME:-admin}
-
-echo -n "API password [default: admin]: "
-read PASSWORD
+# Only prompt for password (most common customization)
+read -p "API password [default: admin]: " PASSWORD
 PASSWORD=${PASSWORD:-admin}
 
-echo ""
-echo -e "${YELLOW}Optional Services${NC}"
-echo -n "Enable Condor Telegram bot? (y/n) [default: n]: "
-read ENABLE_CONDOR
-ENABLE_CONDOR=${ENABLE_CONDOR:-n}
+read -p "Config password [default: admin]: " CONFIG_PASSWORD
+CONFIG_PASSWORD=${CONFIG_PASSWORD:-admin}
 
-if [[ "$ENABLE_CONDOR" =~ ^[Yy]$ ]]; then
-    echo -n "Telegram Bot Token: "
-    read TELEGRAM_TOKEN
-    echo -n "Telegram Allowed User IDs (comma-separated): "
-    read TELEGRAM_ALLOWED_IDS
-    echo -n "Pydantic Gateway Key (optional, press Enter to skip): "
-    read PYDANTIC_GATEWAY_KEY
-fi
-
-echo ""
-echo -e "${YELLOW}Gateway Configuration (Optional)${NC}"
-echo -n "Gateway passphrase [default: admin, press Enter to skip]: "
-read GATEWAY_PASSPHRASE
-GATEWAY_PASSPHRASE=${GATEWAY_PASSPHRASE:-admin}
-
-# Set paths and defaults
-BOTS_PATH=$(pwd)
-
-# Use sensible defaults for everything else
-DEBUG_MODE="false"
-BROKER_HOST="localhost"
-BROKER_PORT="1883"
-BROKER_USERNAME="admin"
-BROKER_PASSWORD="password"
-DATABASE_URL="postgresql+asyncpg://hbot:hummingbot-api@localhost:5432/hummingbot_api"
-CLEANUP_INTERVAL="300"
-FEED_TIMEOUT="600"
-AWS_API_KEY=""
-AWS_SECRET_KEY=""
-S3_BUCKET=""
-LOGFIRE_ENV="dev"
-BANNED_TOKENS='["NAV","ARS","ETHW","ETHF","NEWT"]'
-
-echo ""
-echo -e "${GREEN}✅ Using sensible defaults for MQTT, Database, and other settings${NC}"
-
-echo ""
-echo -e "${GREEN}📝 Creating .env file...${NC}"
-
-# Create .env file with proper structure and comments
+# Create .env with sensible defaults
 cat > .env << EOF
-# =================================================================
-# Backend API Environment Configuration
-# Generated on: $(date)
-# =================================================================
-
-# =================================================================
-# 🔐 Security Configuration
-# =================================================================
-USERNAME=$USERNAME
+# Hummingbot API Configuration
+USERNAME=admin
 PASSWORD=$PASSWORD
-DEBUG_MODE=$DEBUG_MODE
 CONFIG_PASSWORD=$CONFIG_PASSWORD
+DEBUG_MODE=false
 
-# =================================================================
-# 🔗 MQTT Broker Configuration (BROKER_*)
-# =================================================================
-BROKER_HOST=$BROKER_HOST
-BROKER_PORT=$BROKER_PORT
-BROKER_USERNAME=$BROKER_USERNAME
-BROKER_PASSWORD=$BROKER_PASSWORD
+# MQTT Broker
+BROKER_HOST=localhost
+BROKER_PORT=1883
+BROKER_USERNAME=admin
+BROKER_PASSWORD=password
 
-# =================================================================
-# 💾 Database Configuration (DATABASE_*)
-# =================================================================
-DATABASE_URL=$DATABASE_URL
+# Database (auto-configured by docker-compose)
+DATABASE_URL=postgresql+asyncpg://hbot:hummingbot-api@localhost:5432/hummingbot_api
 
-# =================================================================
-# 📊 Market Data Feed Manager Configuration (MARKET_DATA_*)
-# =================================================================
-MARKET_DATA_CLEANUP_INTERVAL=$CLEANUP_INTERVAL
-MARKET_DATA_FEED_TIMEOUT=$FEED_TIMEOUT
-
-# =================================================================
-# ☁️ AWS Configuration (AWS_*) - Optional
-# =================================================================
-AWS_API_KEY=$AWS_API_KEY
-AWS_SECRET_KEY=$AWS_SECRET_KEY
-AWS_S3_DEFAULT_BUCKET_NAME=$S3_BUCKET
-
-# =================================================================
-# ⚙️ Application Settings
-# =================================================================
-LOGFIRE_ENVIRONMENT=$LOGFIRE_ENV
-BANNED_TOKENS=$BANNED_TOKENS
-
-# =================================================================
-# 🌐 Gateway Configuration (GATEWAY_*) - Optional
-# =================================================================
-GATEWAY_PASSPHRASE=$GATEWAY_PASSPHRASE
+# Gateway (optional)
 GATEWAY_URL=http://localhost:15888
+GATEWAY_PASSPHRASE=admin
 
-# =================================================================
-# 📁 Legacy Settings (maintained for backward compatibility)
-# =================================================================
-BOTS_PATH=$BOTS_PATH
-
+# Paths
+BOTS_PATH=$(pwd)
 EOF
 
-echo -e "${GREEN}✅ .env file created successfully!${NC}"
 echo ""
-
-
-# Enable Condor if requested
-if [[ "$ENABLE_CONDOR" =~ ^[Yy]$ ]]; then
-    echo -e "${GREEN}🤖 Setting up Condor Telegram bot...${NC}"
-
-    # Create condor directory for config files
-    mkdir -p condor
-
-    # Create Condor .env file
-    cat > condor/.env << CONDOR_EOF
-TELEGRAM_TOKEN=$TELEGRAM_TOKEN
-TELEGRAM_ALLOWED_IDS=$TELEGRAM_ALLOWED_IDS
-PYDANTIC_GATEWAY_KEY=$PYDANTIC_GATEWAY_KEY
-CONDOR_EOF
-
-    # Create servers.yml for Condor to connect to hummingbot-api
-    cat > condor/servers.yml << SERVERS_EOF
-servers:
-  local:
-    host: host.docker.internal
-    port: 8000
-    username: $USERNAME
-    password: $PASSWORD
-    default: true
-SERVERS_EOF
-
-    echo -e "${GREEN}✅ Condor configured!${NC}"
-    echo ""
-fi
-
-# Display configuration summary
-echo -e "${BLUE}📋 Configuration Summary${NC}"
-echo "======================="
-echo -e "${CYAN}Security:${NC} Username: $USERNAME, Debug: $DEBUG_MODE"
-echo -e "${CYAN}Broker:${NC} $BROKER_HOST:$BROKER_PORT"
-echo -e "${CYAN}Database:${NC} ${DATABASE_URL%%@*}@[hidden]"
-echo -e "${CYAN}Market Data:${NC} Cleanup: ${CLEANUP_INTERVAL}s, Timeout: ${FEED_TIMEOUT}s"
-echo -e "${CYAN}Environment:${NC} $LOGFIRE_ENV"
-
-if [ -n "$AWS_API_KEY" ]; then
-    echo -e "${CYAN}AWS:${NC} Configured with S3 bucket: $S3_BUCKET"
-else
-    echo -e "${CYAN}AWS:${NC} Not configured (optional)"
-fi
-
+echo ".env created successfully!"
 echo ""
-echo -e "${GREEN}🎉 Setup Complete!${NC}"
-echo ""
-
-# Check if password verification file exists
-if [ ! -f "bots/credentials/master_account/.password_verification" ]; then
-    echo -e "${YELLOW}📌 Note:${NC} Password verification file will be created on first startup"
-    echo -e "   Location: ${BLUE}bots/credentials/master_account/.password_verification${NC}"
-    echo ""
-fi
-
-echo -e "Next steps:"
-echo "1. Review the .env file if needed: cat .env"
-echo "2. Install dependencies: make install"
-echo "3. Start the API: make run"
-echo ""
-echo -e "${PURPLE}💡 Pro tip:${NC} You can modify environment variables in .env file anytime"
-echo -e "${PURPLE}📚 Documentation:${NC} Check config.py for all available settings"
-echo -e "${PURPLE}🔒 Security:${NC} The password verification file secures bot credentials"
-echo ""
-echo -e "${GREEN}🐳 Starting services (API, EMQX, PostgreSQL)...${NC}"
-
-# Start all services
-docker compose up -d &
-docker pull hummingbot/hummingbot:latest &
-
-# Wait for both operations to complete
-wait
-
-echo -e "${GREEN}✅ All Docker containers started!${NC}"
-echo ""
-
-# Wait for PostgreSQL to be ready
-echo -e "${YELLOW}⏳ Waiting for PostgreSQL to initialize...${NC}"
-sleep 5
-
-# Check PostgreSQL connection
-MAX_RETRIES=30
-RETRY_COUNT=0
-DB_READY=false
-
-while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-    if docker exec hummingbot-postgres pg_isready -U hbot -d hummingbot_api > /dev/null 2>&1; then
-        DB_READY=true
-        break
-    fi
-    RETRY_COUNT=$((RETRY_COUNT + 1))
-    echo -ne "\r${YELLOW}⏳ Waiting for database... ($RETRY_COUNT/$MAX_RETRIES)${NC}"
-    sleep 2
-done
-echo ""
-
-if [ "$DB_READY" = true ]; then
-    echo -e "${GREEN}✅ PostgreSQL is ready!${NC}"
-
-    # Verify database and user exist
-    echo -e "${YELLOW}🔍 Verifying database configuration...${NC}"
-
-    # Check if hbot user exists
-    USER_EXISTS=$(docker exec hummingbot-postgres psql -U hbot -tAc "SELECT 1 FROM pg_roles WHERE rolname='hbot'" 2>/dev/null)
-
-    # Check if database exists
-    DB_EXISTS=$(docker exec hummingbot-postgres psql -U hbot -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='hummingbot_api'" 2>/dev/null)
-
-    if [ "$USER_EXISTS" = "1" ] && [ "$DB_EXISTS" = "1" ]; then
-        echo -e "${GREEN}✅ Database 'hummingbot_api' and user 'hbot' verified successfully!${NC}"
-    else
-        echo -e "${YELLOW}⚠️  Database initialization may be incomplete. Running manual initialization...${NC}"
-
-        # Run the init script manually (connect to postgres database as hbot user)
-        docker exec -i hummingbot-postgres psql -U hbot -d postgres < init-db.sql
-
-        if [ $? -eq 0 ]; then
-            echo -e "${GREEN}✅ Database manually initialized successfully!${NC}"
-        else
-            echo -e "${RED}❌ Failed to initialize database. See troubleshooting below.${NC}"
-        fi
-    fi
-else
-    echo -e "${RED}❌ PostgreSQL failed to start within timeout period${NC}"
-    echo ""
-    echo -e "${YELLOW}Troubleshooting steps:${NC}"
-    echo "1. Check PostgreSQL logs: docker logs hummingbot-postgres"
-    echo "2. Verify container status: docker ps -a | grep postgres"
-    echo "3. Try removing old volumes: docker compose down -v && docker compose up emqx postgres -d"
-    echo "4. Manually verify database: docker exec -it hummingbot-postgres psql -U postgres"
-    echo ""
-fi
-
-echo -e "${GREEN}✅ Setup completed!${NC}"
-echo ""
-
-# Display services information
-echo -e "${BLUE}🎉 Your Hummingbot API Platform is Running!${NC}"
-echo "========================================="
-echo ""
-echo -e "${CYAN}Available Services:${NC}"
-echo -e "  🔧 ${GREEN}API${NC}            - http://localhost:8000"
-echo -e "  📚 ${GREEN}API Docs${NC}       - http://localhost:8000/docs (Swagger UI)"
-echo -e "  📡 ${GREEN}EMQX Broker${NC}    - localhost:1883"
-echo -e "  💾 ${GREEN}PostgreSQL${NC}     - localhost:5432"
-
-if [[ "$ENABLE_CONDOR" =~ ^[Yy]$ ]]; then
-    echo -e "  🤖 ${GREEN}Condor${NC}         - Telegram bot (running in condor/)"
-fi
-
-echo ""
-
-echo -e "${YELLOW}📝 Next Steps:${NC}"
-echo ""
-echo "1. ${CYAN}Access the API:${NC}"
-echo "   • Swagger UI: http://localhost:8000/docs (full REST API documentation)"
-
-echo ""
-echo "2. ${CYAN}Connect an AI Assistant:${NC}"
-echo ""
-echo "   ${GREEN}Claude Code (CLI) Setup:${NC}"
-echo "   Add the MCP server with one command:"
-echo ""
-echo -e "   ${BLUE}claude mcp add --transport stdio hummingbot -- docker run --rm -i -e HUMMINGBOT_API_URL=http://host.docker.internal:8000 -v hummingbot_mcp:/root/.hummingbot_mcp hummingbot/hummingbot-mcp:latest${NC}"
-echo ""
-echo "   Then use natural language in your terminal:"
-echo '      - "Show me my portfolio balances"'
-echo '      - "Create a market making strategy for ETH-USDT on Binance"'
-echo ""
-echo "   ${PURPLE}Other AI assistants:${NC} See CLAUDE.md, GEMINI.md, or AGENTS.md for setup"
-
-if [[ "$ENABLE_CONDOR" =~ ^[Yy]$ ]]; then
-    echo ""
-    echo "3. ${CYAN}Start Condor Telegram Bot:${NC}"
-    echo "   • Run: docker run -d --name condor --env-file condor/.env -v \$(pwd)/condor/servers.yml:/app/servers.yml --add-host=host.docker.internal:host-gateway hummingbot/condor:latest"
-    echo "   • Find your bot in Telegram and send /start"
-fi
-
-echo ""
-echo -e "${CYAN}Available Access Methods:${NC}"
-echo "  ✅ Swagger UI (http://localhost:8000/docs) - Full REST API"
-echo "  ✅ MCP - AI Assistant integration (Claude, ChatGPT, Gemini)"
-
-if [[ "$ENABLE_CONDOR" =~ ^[Yy]$ ]]; then
-    echo "  ✅ Condor - Telegram bot for mobile trading"
-else
-    echo "  ⚪ Condor - Run setup.sh again to enable Telegram bot"
-fi
-
-echo ""
-
-echo -e "${PURPLE}💡 Tips:${NC}"
-echo "  • View logs: docker compose logs -f"
-echo "  • Stop services: docker compose down"
-echo "  • Restart services: docker compose restart"
-echo ""
-
-echo -e "${GREEN}Ready to start trading! 🤖💰${NC}"
+echo "Next steps:"
+echo "  make deploy    # Start all services"
+echo "  make run       # Run API locally (dev mode)"
 echo ""
