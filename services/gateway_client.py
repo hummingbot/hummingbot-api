@@ -123,6 +123,38 @@ class GatewayClient:
             logger.error(f"Error getting default wallet for chain {chain}: {e}")
             return None
 
+    async def get_all_wallet_addresses(self, chain: Optional[str] = None) -> Dict[str, List[str]]:
+        """
+        Get all wallet addresses, optionally filtered by chain.
+
+        Args:
+            chain: Optional chain filter (e.g., 'solana', 'ethereum').
+                   If not provided, returns wallets for all chains.
+
+        Returns:
+            Dict mapping chain name to list of wallet addresses.
+            Example: {"solana": ["addr1", "addr2"], "ethereum": ["addr3"]}
+        """
+        try:
+            wallets = await self.get_wallets()
+            if wallets is None:
+                return {}
+
+            result = {}
+            for wallet in wallets:
+                wallet_chain = wallet.get("chain")
+                if chain and wallet_chain != chain:
+                    continue
+
+                addresses = wallet.get("walletAddresses", [])
+                if addresses and wallet_chain:
+                    result[wallet_chain] = addresses
+
+            return result
+        except Exception as e:
+            logger.error(f"Error getting all wallet addresses: {e}")
+            return {}
+
     async def add_wallet(self, chain: str, private_key: str, set_default: bool = True) -> Dict:
         """Add a wallet to Gateway"""
         return await self._request("POST", "wallet/add", json={
@@ -414,33 +446,68 @@ class GatewayClient:
     async def clmm_position_info(
         self,
         connector: str,
-        network: str,
-        wallet_address: str,
+        chain_network: str,
         position_address: str
     ) -> Dict:
-        """Get CLMM position information including pending fees"""
+        """
+        Get CLMM position information including pending fees.
+
+        Note: Gateway returns 500 instead of 404 when position doesn't exist (is closed).
+        Callers should treat 500 errors as "position not found/closed".
+        """
+        # Validate required parameters
+        if not connector:
+            raise ValueError("connector is required for clmm_position_info")
+        if not chain_network:
+            raise ValueError("chain_network is required for clmm_position_info")
+        if not position_address:
+            raise ValueError("position_address is required for clmm_position_info")
+
         params = {
-            "network": network,
-            "walletAddress": wallet_address,
+            "connector": connector,
+            "chainNetwork": chain_network,
             "positionAddress": position_address
         }
-        return await self._request("GET", f"connectors/{connector}/clmm/position-info", params=params)
+        return await self._request("GET", "trading/clmm/position-info", params=params)
 
     async def clmm_positions_owned(
         self,
         connector: str,
-        network: str,
+        chain_network: str,
         wallet_address: str,
-        pool_address: str
-    ) -> Dict:
-        """Get all CLMM positions owned by wallet for a specific pool"""
+        pool_address: Optional[str] = None
+    ) -> List[Dict]:
+        """
+        Get CLMM positions owned by a wallet.
+
+        Args:
+            connector: CLMM connector (e.g., 'meteora', 'raydium')
+            chain_network: Chain and network in format 'chain-network' (e.g., 'solana-mainnet-beta')
+            wallet_address: Wallet address to query
+            pool_address: Optional pool address to filter positions.
+                         If not provided, returns ALL positions across all pools.
+
+        Returns:
+            List of position dictionaries with fields like:
+            - address: Position NFT address
+            - poolAddress: Pool address
+            - baseTokenAddress, quoteTokenAddress
+            - baseTokenAmount, quoteTokenAmount
+            - baseFeeAmount, quoteFeeAmount
+            - lowerBinId, upperBinId
+            - lowerPrice, upperPrice, price
+        """
         params = {
-            "network": network,
+            "connector": connector,
+            "chainNetwork": chain_network,
             "walletAddress": wallet_address,
-            "poolAddress": pool_address
         }
 
-        return await self._request("GET", f"connectors/{connector}/clmm/positions-owned", params=params)
+        # Only add poolAddress if specified (allows fetching all positions)
+        if pool_address:
+            params["poolAddress"] = pool_address
+
+        return await self._request("GET", "trading/clmm/positions-owned", params=params)
 
     async def clmm_collect_fees(
         self,

@@ -2,6 +2,7 @@
 Gateway CLMM Router - Handles DEX CLMM liquidity operations via Hummingbot Gateway.
 Supports CLMM connectors (Meteora, Raydium, Uniswap V3) for concentrated liquidity positions.
 """
+import asyncio
 import logging
 from typing import List, Optional
 from decimal import Decimal
@@ -229,9 +230,6 @@ async def _refresh_position_data(position, accounts_service: AccountsService, cl
     - position status (if closed externally)
     """
     try:
-        # Parse network to get chain and network name
-        chain, network = accounts_service.gateway_client.parse_network_id(position.network)
-
         # Get wallet address for the position
         wallet_address = position.wallet_address
 
@@ -239,7 +237,7 @@ async def _refresh_position_data(position, accounts_service: AccountsService, cl
         try:
             positions_list = await accounts_service.gateway_client.clmm_positions_owned(
                 connector=position.connector,
-                network=network,
+                chain_network=position.network,  # position.network is already in 'chain-network' format
                 wallet_address=wallet_address,
                 pool_address=position.pool_address
             )
@@ -951,7 +949,7 @@ async def close_clmm_position(
         try:
             positions_list = await accounts_service.gateway_client.clmm_positions_owned(
                 connector=request.connector,
-                network=network,
+                chain_network=request.network,  # request.network is already in 'chain-network' format
                 wallet_address=wallet_address,
                 pool_address=pool_address
             )
@@ -1034,7 +1032,7 @@ async def close_clmm_position(
                         quote_fee_pending=Decimal("0")
                     )
 
-                    # Update current_price with close price before marking as closed
+                    # Update current_price with close price
                     if close_price:
                         await clmm_repo.update_position_liquidity(
                             position_address=request.position_address,
@@ -1043,9 +1041,35 @@ async def close_clmm_position(
                             current_price=Decimal(str(close_price))
                         )
 
-                    # Mark position as CLOSED
-                    await clmm_repo.close_position(request.position_address)
-                    logger.info(f"Updated position {request.position_address}: collected fees updated, pending fees reset to 0, status set to CLOSED")
+                    # Verify position is actually closed by checking if it still exists on Gateway
+                    # Gateway returns 500 (or 404) when position doesn't exist
+                    try:
+                        await asyncio.sleep(2)  # Wait for transaction to propagate
+
+                        verify_result = await accounts_service.gateway_client.clmm_position_info(
+                            connector=request.connector,
+                            chain_network=request.network,
+                            position_address=request.position_address
+                        )
+
+                        # If we get an error response (404 or 500), position is closed
+                        if verify_result and isinstance(verify_result, dict) and "error" in verify_result:
+                            status_code = verify_result.get("status")
+                            if status_code in (404, 500):
+                                await clmm_repo.close_position(request.position_address)
+                                logger.info(f"Position {request.position_address} verified as closed (Gateway returned {status_code})")
+                            else:
+                                logger.warning(f"Unexpected error verifying position close: {verify_result}")
+                        elif verify_result and "address" in verify_result:
+                            # Position still exists - might be a failed close or delayed propagation
+                            logger.warning(f"Position {request.position_address} still exists after close transaction. Will be handled by poller.")
+                        else:
+                            logger.debug(f"Could not verify position close status, will be handled by poller")
+
+                    except Exception as verify_error:
+                        logger.warning(f"Error verifying position close: {verify_error}. Will be handled by poller.")
+
+                    logger.info(f"Updated position {request.position_address}: collected fees updated, pending fees reset to 0.")
         except Exception as db_error:
             logger.error(f"Error recording CLOSE event: {db_error}", exc_info=True)
 
@@ -1123,7 +1147,7 @@ async def collect_fees_from_clmm_position(
         try:
             positions_list = await accounts_service.gateway_client.clmm_positions_owned(
                 connector=request.connector,
-                network=network,
+                chain_network=request.network,  # request.network is already in 'chain-network' format
                 wallet_address=wallet_address,
                 pool_address=pool_address
             )
@@ -1261,7 +1285,7 @@ async def get_clmm_positions_owned(
         # Get positions for the specified pool
         result = await accounts_service.gateway_client.clmm_positions_owned(
             connector=request.connector,
-            network=network,
+            chain_network=request.network,  # request.network is already in 'chain-network' format
             wallet_address=wallet_address,
             pool_address=request.pool_address
         )

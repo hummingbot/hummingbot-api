@@ -1,8 +1,8 @@
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set, Tuple
 from decimal import Decimal
 
-from sqlalchemy import desc, select
+from sqlalchemy import desc, select, distinct
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import GatewayCLMMPosition, GatewayCLMMEvent
@@ -90,6 +90,23 @@ class GatewayCLMMRepository:
             await self.session.flush()
         return position
 
+    async def reopen_position(self, position_address: str) -> Optional[GatewayCLMMPosition]:
+        """
+        Reopen a position that was incorrectly marked as closed.
+
+        This is used when autodiscover finds a position that exists on-chain
+        but was marked as CLOSED in the database (e.g., due to a failed close transaction).
+        """
+        result = await self.session.execute(
+            select(GatewayCLMMPosition).where(GatewayCLMMPosition.position_address == position_address)
+        )
+        position = result.scalar_one_or_none()
+        if position and position.status == "CLOSED":
+            position.status = "OPEN"
+            position.closed_at = None
+            await self.session.flush()
+        return position
+
     async def get_positions(
         self,
         network: Optional[str] = None,
@@ -137,6 +154,49 @@ class GatewayCLMMRepository:
             status="OPEN",
             limit=1000
         )
+
+    async def get_unique_wallet_configs(self) -> List[Dict]:
+        """
+        Get unique combinations of connector/network/wallet from all positions.
+
+        Returns:
+            List of dicts with keys: connector, network, wallet_address
+            This is useful for discovering which wallets to poll for positions.
+        """
+        query = select(
+            distinct(GatewayCLMMPosition.connector),
+            GatewayCLMMPosition.network,
+            GatewayCLMMPosition.wallet_address
+        ).distinct()
+
+        result = await self.session.execute(query)
+        rows = result.all()
+
+        return [
+            {
+                "connector": row[0],
+                "network": row[1],
+                "wallet_address": row[2]
+            }
+            for row in rows
+        ]
+
+    async def get_position_addresses_set(self, status: Optional[str] = None) -> Set[str]:
+        """
+        Get a set of position addresses in the database.
+
+        Args:
+            status: Optional filter by status ("OPEN" or "CLOSED").
+                    If None, returns all positions.
+
+        Returns:
+            Set of position addresses (useful for quick existence checks)
+        """
+        query = select(GatewayCLMMPosition.position_address)
+        if status:
+            query = query.where(GatewayCLMMPosition.status == status)
+        result = await self.session.execute(query)
+        return {row[0] for row in result.all()}
 
     # ============================================
     # Event Management
