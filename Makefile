@@ -1,22 +1,19 @@
 .PHONY: setup run deploy stop install uninstall build install-pre-commit
 
-# Conda detection
-detect_conda_bin := $(shell bash -c 'if [ "${CONDA_EXE} " == " " ]; then \
-    CONDA_EXE=$$((find /opt/conda/bin/conda || find ~/anaconda3/bin/conda || \
-    find /usr/local/anaconda3/bin/conda || find ~/miniconda3/bin/conda || \
-    find /root/miniconda/bin/conda || find ~/Anaconda3/Scripts/conda || \
-    find $$CONDA/bin/conda) 2>/dev/null); fi; \
-    echo $$(dirname $${CONDA_EXE})')
-CONDA_BIN := $(detect_conda_bin)
+# Check if conda is available
+ifeq (, $(shell which conda))
+  $(error "Conda is not found in PATH. Please install Conda or add it to your PATH.")
+endif
 
 # Setup - create .env file
 setup:
-	@./setup.sh
+	chmod +x setup.sh
+	./setup.sh
 
 # Run locally (dev mode)
 run:
 	docker compose up emqx postgres -d
-	uvicorn main:app --reload
+	conda run --no-capture-output -n hummingbot-api uvicorn main:app --reload
 
 # Deploy with Docker
 deploy:
@@ -34,15 +31,14 @@ install:
 	    conda env create -f environment.yml; \
 	fi
 	$(MAKE) install-pre-commit
+	$(MAKE) setup
 
 uninstall:
 	conda env remove -n hummingbot-api -y
 
 install-pre-commit:
-	@/bin/bash -c 'source "${CONDA_BIN}/activate" hummingbot-api && \
-	if ! conda list pre-commit | grep pre-commit &> /dev/null; then \
-	    pip install pre-commit; \
-	fi && pre-commit install'
+	conda run -n hummingbot-api pip install pre-commit
+	conda run -n hummingbot-api pre-commit install
 
 # Build Docker image
 build:
