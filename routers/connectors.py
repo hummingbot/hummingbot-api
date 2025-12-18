@@ -97,11 +97,12 @@ async def get_supported_order_types(request: Request, connector_name: str):
     try:
         market_data_feed_manager: MarketDataFeedManager = request.app.state.market_data_feed_manager
 
-        # Access connector through MarketDataProvider's _rate_sources
-        connector_instance = market_data_feed_manager.market_data_provider._rate_sources.get(connector_name)
-
-        if not connector_instance:
-            raise HTTPException(status_code=404, detail=f"Connector '{connector_name}' not found")
+        # Access connector through MarketDataProvider's _non_trading_connectors LazyDict
+        # This lazily creates the connector if it doesn't exist
+        try:
+            connector_instance = market_data_feed_manager.market_data_provider._non_trading_connectors[connector_name]
+        except (KeyError, ValueError) as e:
+            raise HTTPException(status_code=404, detail=f"Connector '{connector_name}' not found: {str(e)}")
 
         # Get supported order types
         if hasattr(connector_instance, 'supported_order_types'):

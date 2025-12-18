@@ -183,9 +183,9 @@ class MarketDataFeedManager:
             Dictionary mapping trading pairs to their trading rules
         """
         try:
-            # Access connector through MarketDataProvider's _rate_sources LazyDict
+            # Access connector through MarketDataProvider's _non_trading_connectors LazyDict
             connector = self.market_data_provider._non_trading_connectors[connector_name]
-            
+
             # Check if trading rules are initialized, if not update them
             if not connector.trading_rules or len(connector.trading_rules) == 0:
                 await connector._update_trading_rules()
@@ -251,9 +251,9 @@ class MarketDataFeedManager:
             Dictionary mapping trading pairs to their current prices
         """
         try:
-            # Access connector through MarketDataProvider's _rate_sources LazyDict
+            # Access connector through MarketDataProvider's _non_trading_connectors LazyDict
             connector = self.market_data_provider._non_trading_connectors[connector_name]
-            
+
             # Get last traded prices
             prices = await connector.get_last_traded_prices(trading_pairs)
             
