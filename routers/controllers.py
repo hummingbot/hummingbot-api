@@ -11,7 +11,7 @@ from utils.file_system import fs_util
 router = APIRouter(tags=["Controllers"], prefix="/controllers")
 
 
-@router.get("/", response_model=Dict[str, List[str]])
+@router.get("", response_model=Dict[str, List[str]])
 async def list_controllers():
     """
     List all controllers organized by type.
