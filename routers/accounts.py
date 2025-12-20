@@ -11,7 +11,7 @@ from models import PaginatedResponse, GatewayWalletCredential, GatewayWalletInfo
 router = APIRouter(tags=["Accounts"], prefix="/accounts")
 
 
-@router.get("", response_model=List[str])
+@router.get("/", response_model=List[str])
 async def list_accounts(accounts_service: AccountsService = Depends(get_accounts_service)):
     """
     Get a list of all account names in the system.
