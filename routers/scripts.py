@@ -11,7 +11,7 @@ from utils.file_system import fs_util
 router = APIRouter(tags=["Scripts"], prefix="/scripts")
 
 
-@router.get("/", response_model=List[str])
+@router.get("", response_model=List[str])
 async def list_scripts():
     """
     List all available scripts.
