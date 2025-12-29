@@ -179,7 +179,7 @@ class DManV3Controller(DirectionalTradingControllerBase):
     def get_spread_multiplier(self) -> Decimal:
         if self.config.dynamic_order_spread:
             df = self.processed_data["features"]
-            bb_width = df[f"BBB_{self.config.bb_length}_{self.config.bb_std}"].iloc[-1]
+            bb_width = df[f"BBB_{self.config.bb_length}_{self.config.bb_std}_{self.config.bb_std}"].iloc[-1]
             return Decimal(bb_width / 200)
         else:
             return Decimal("1.0")
