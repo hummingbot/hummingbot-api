@@ -105,6 +105,9 @@ from .docker import DockerImage
 from .gateway import (
     GatewayConfig,
     GatewayStatus,
+    CreateWalletRequest,
+    ShowPrivateKeyRequest,
+    SendTransactionRequest,
     GatewayWalletCredential,
     GatewayWalletInfo,
     GatewayBalanceRequest,
@@ -267,6 +270,9 @@ __all__ = [
     # Gateway models
     "GatewayConfig",
     "GatewayStatus",
+    "CreateWalletRequest",
+    "ShowPrivateKeyRequest",
+    "SendTransactionRequest",
     "GatewayWalletCredential",
     "GatewayWalletInfo",
     "GatewayBalanceRequest",
