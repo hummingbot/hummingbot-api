@@ -163,6 +163,38 @@ class GatewayClient:
             "setDefault": set_default
         })
 
+    async def create_wallet(self, chain: str, set_default: bool = True) -> Dict:
+        """Create a new wallet in Gateway"""
+        return await self._request("POST", "wallet/create", json={
+            "chain": chain,
+            "setDefault": set_default
+        })
+
+    async def show_private_key(self, chain: str, address: str, passphrase: str) -> Dict:
+        """Show private key for a wallet"""
+        return await self._request("POST", "wallet/show-private-key", json={
+            "chain": chain,
+            "address": address,
+            "passphrase": passphrase
+        })
+
+    async def send_transaction(
+        self,
+        chain: str,
+        network: str,
+        address: str,
+        to_address: str,
+        amount: str
+    ) -> Dict:
+        """Send a native token transaction"""
+        return await self._request("POST", "wallet/send", json={
+            "chain": chain,
+            "network": network,
+            "address": address,
+            "toAddress": to_address,
+            "amount": amount
+        })
+
     async def remove_wallet(self, chain: str, address: str) -> Dict:
         """Remove a wallet from Gateway"""
         return await self._request("DELETE", "wallet/remove", json={
