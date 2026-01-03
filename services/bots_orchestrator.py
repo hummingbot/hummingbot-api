@@ -226,7 +226,8 @@ class BotsOrchestrator:
 
         Args:
             controller_reports: Dict with controller_id as key and report dict as value.
-                Each report contains 'performance' and 'custom_info' keys.
+                New format: Each report contains 'performance' and 'custom_info' keys.
+                Old format: Report contains performance metrics directly (backward compatible).
 
         Returns:
             Dict with cleaned controller data including status, performance, and custom_info.
@@ -234,8 +235,17 @@ class BotsOrchestrator:
         cleaned_data = {}
         for controller_id, report in controller_reports.items():
             try:
-                performance = report.get("performance", {})
-                custom_info = report.get("custom_info", {})
+                # Support both new format (nested) and old format (flat)
+                # New format: {"performance": {...}, "custom_info": {...}}
+                # Old format: {...performance metrics directly...}
+                if "performance" in report:
+                    # New format with nested structure
+                    performance = report.get("performance", {})
+                    custom_info = report.get("custom_info", {})
+                else:
+                    # Old format - metrics are directly in the report
+                    performance = report
+                    custom_info = {}
 
                 # Validate performance metrics are numeric (skip known non-numeric fields)
                 non_numeric_fields = ("positions_summary", "close_type_counts")
@@ -250,11 +260,18 @@ class BotsOrchestrator:
                     "custom_info": custom_info
                 }
             except Exception as e:
+                # Handle both formats in error case too
+                if "performance" in report:
+                    perf = report.get("performance", {})
+                    info = report.get("custom_info", {})
+                else:
+                    perf = report
+                    info = {}
                 cleaned_data[controller_id] = {
                     "status": "error",
                     "error": f"Error processing controller data: {e}",
-                    "performance": report.get("performance", {}),
-                    "custom_info": report.get("custom_info", {})
+                    "performance": perf,
+                    "custom_info": info
                 }
         return cleaned_data
 
