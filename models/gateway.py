@@ -27,6 +27,28 @@ class GatewayStatus(BaseModel):
 # Wallet Management Models
 # ============================================
 
+class CreateWalletRequest(BaseModel):
+    """Request to create a new wallet in Gateway"""
+    chain: str = Field(description="Blockchain chain (e.g., 'solana', 'ethereum')")
+    set_default: bool = Field(default=True, description="Set as default wallet for this chain")
+
+
+class ShowPrivateKeyRequest(BaseModel):
+    """Request to show private key for a wallet"""
+    chain: str = Field(description="Blockchain chain (e.g., 'solana', 'ethereum')")
+    address: str = Field(description="Wallet address")
+    passphrase: str = Field(description="Gateway passphrase for decryption")
+
+
+class SendTransactionRequest(BaseModel):
+    """Request to send a native token transaction"""
+    chain: str = Field(description="Blockchain chain (e.g., 'solana', 'ethereum')")
+    network: str = Field(description="Network (e.g., 'mainnet-beta', 'mainnet')")
+    address: str = Field(description="Sender wallet address")
+    to_address: str = Field(description="Recipient address")
+    amount: str = Field(description="Amount to send (in native token units)")
+
+
 class GatewayWalletCredential(BaseModel):
     """Credentials for connecting a Gateway wallet"""
     chain: str = Field(description="Blockchain chain (e.g., 'solana', 'ethereum')")

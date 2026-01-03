@@ -163,15 +163,20 @@ async def stop_bot(
     Returns:
         Dictionary with status and response from bot stop operation
     """
+    # Capture final status BEFORE stopping (performance data is cleared on stop)
+    final_status = None
+    try:
+        final_status = bots_manager.get_bot_status(action.bot_name)
+        logger.info(f"Captured final status for {action.bot_name} before stopping")
+    except Exception as e:
+        logger.warning(f"Failed to capture final status for {action.bot_name}: {e}")
+
     response = await bots_manager.stop_bot(action.bot_name, skip_order_cancellation=action.skip_order_cancellation,
                                      async_backend=action.async_backend)
-    
+
     # Update bot run status to STOPPED if stop was successful
     if response.get("success"):
         try:
-            # Try to get bot status for final status data
-            final_status = bots_manager.get_bot_status(action.bot_name)
-            
             async with db_manager.get_session_context() as session:
                 bot_run_repo = BotRunRepository(session)
                 await bot_run_repo.update_bot_run_stopped(

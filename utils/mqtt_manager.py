@@ -26,8 +26,8 @@ class MQTTManager:
         # Message handlers by topic pattern
         self._handlers: Dict[str, Callable] = {}
 
-        # Bot data storage
-        self._bot_performance: Dict[str, Dict] = defaultdict(dict)
+        # Bot data storage - stores full controller reports (performance + custom_info)
+        self._bot_controller_reports: Dict[str, Dict] = defaultdict(dict)
         self._bot_logs: Dict[str, deque] = defaultdict(lambda: deque(maxlen=100))
         self._bot_error_logs: Dict[str, deque] = defaultdict(lambda: deque(maxlen=100))
 
@@ -182,12 +182,21 @@ class MQTTManager:
         return True
 
     async def _handle_performance(self, bot_id: str, data: Any):
-        """Handle performance updates."""
+        """Handle performance updates.
+
+        Expected data structure from Hummingbot:
+        {
+            "controller_id": {
+                "performance": { ... performance metrics ... },
+                "custom_info": { ... custom controller data ... }
+            }
+        }
+        """
         if isinstance(data, dict):
-            for controller_id, performance in data.items():
-                if bot_id not in self._bot_performance:
-                    self._bot_performance[bot_id] = {}
-                self._bot_performance[bot_id][controller_id] = performance
+            for controller_id, controller_report in data.items():
+                if bot_id not in self._bot_controller_reports:
+                    self._bot_controller_reports[bot_id] = {}
+                self._bot_controller_reports[bot_id][controller_id] = controller_report
 
     async def _handle_log(self, bot_id: str, data: Any):
         """Handle log messages with deduplication."""
@@ -468,9 +477,14 @@ class MQTTManager:
         """Remove a message handler."""
         self._handlers.pop(topic_pattern, None)
 
-    def get_bot_performance(self, bot_id: str) -> Dict[str, Any]:
-        """Get performance data for a bot."""
-        return self._bot_performance.get(bot_id, {})
+    def get_bot_controller_reports(self, bot_id: str) -> Dict[str, Any]:
+        """Get controller reports for a bot.
+
+        Returns:
+            Dict with controller_id as key and report dict as value.
+            Each report contains 'performance' and 'custom_info' keys.
+        """
+        return self._bot_controller_reports.get(bot_id, {})
 
     def get_bot_logs(self, bot_id: str) -> list:
         """Get recent logs for a bot."""
@@ -482,14 +496,14 @@ class MQTTManager:
 
     def clear_bot_data(self, bot_id: str):
         """Clear stored data for a bot."""
-        self._bot_performance.pop(bot_id, None)
+        self._bot_controller_reports.pop(bot_id, None)
         self._bot_logs.pop(bot_id, None)
         self._bot_error_logs.pop(bot_id, None)
         self._discovered_bots.pop(bot_id, None)
 
-    def clear_bot_performance(self, bot_id: str):
-        """Clear only performance data for a bot (useful when bot is stopped)."""
-        self._bot_performance.pop(bot_id, None)
+    def clear_bot_controller_reports(self, bot_id: str):
+        """Clear only controller report data for a bot (useful when bot is stopped)."""
+        self._bot_controller_reports.pop(bot_id, None)
 
     @property
     def is_connected(self) -> bool:
