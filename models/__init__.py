@@ -191,6 +191,20 @@ from .archived_bots import (
     ExecutorsResponse,
 )
 
+# Rate Oracle models
+from .rate_oracle import (
+    RateOracleSourceEnum,
+    GlobalTokenConfig,
+    RateOracleSourceConfig,
+    RateOracleConfig,
+    RateOracleConfigResponse,
+    RateOracleConfigUpdateRequest,
+    RateOracleConfigUpdateResponse,
+    RateRequest,
+    RateResponse,
+    SingleRateResponse,
+)
+
 __all__ = [
     # Bot orchestration models
     "BotAction",
@@ -338,4 +352,15 @@ __all__ = [
     "TradeHistoryResponse",
     "OrderHistoryResponse",
     "ExecutorsResponse",
+    # Rate Oracle models
+    "RateOracleSourceEnum",
+    "GlobalTokenConfig",
+    "RateOracleSourceConfig",
+    "RateOracleConfig",
+    "RateOracleConfigResponse",
+    "RateOracleConfigUpdateRequest",
+    "RateOracleConfigUpdateResponse",
+    "RateRequest",
+    "RateResponse",
+    "SingleRateResponse",
 ]

@@ -709,7 +709,7 @@ def _standardize_in_flight_order_response(order, account_name: str, connector_na
     status_mapping = {
         OrderState.PENDING_CREATE: "SUBMITTED",
         OrderState.OPEN: "OPEN",
-        OrderState.PENDING_CANCEL: "OPEN",  # Still open until cancelled
+        OrderState.PENDING_CANCEL: "PENDING_CANCEL",  # Cancellation in progress
         OrderState.CANCELED: "CANCELLED",
         OrderState.PARTIALLY_FILLED: "PARTIALLY_FILLED",
         OrderState.FILLED: "FILLED",

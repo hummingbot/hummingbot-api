@@ -111,9 +111,9 @@ class OrderRepository:
     async def get_active_orders(self, account_name: Optional[str] = None,
                               connector_name: Optional[str] = None,
                               trading_pair: Optional[str] = None) -> List[Order]:
-        """Get active orders (SUBMITTED, OPEN, PARTIALLY_FILLED)."""
+        """Get active orders (SUBMITTED, OPEN, PARTIALLY_FILLED, PENDING_CANCEL)."""
         query = select(Order).where(
-            Order.status.in_(["SUBMITTED", "OPEN", "PARTIALLY_FILLED"])
+            Order.status.in_(["SUBMITTED", "OPEN", "PARTIALLY_FILLED", "PENDING_CANCEL"])
         )
         
         # Apply filters

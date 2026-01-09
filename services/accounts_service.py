@@ -59,9 +59,11 @@ class AccountsService:
         self.secrets_manager = ETHKeyFileSecretManger(settings.security.config_password)
         self.accounts_state = {}
         self.update_account_state_interval = account_update_interval * 60
+        self.order_status_poll_interval = 60  # Poll order status every 1 minute
         self.default_quote = default_quote
         self.market_data_feed_manager = market_data_feed_manager
         self._update_account_state_task: Optional[asyncio.Task] = None
+        self._order_status_polling_task: Optional[asyncio.Task] = None
 
         # Database setup for account states and orders
         self.db_manager = AsyncDatabaseManager(settings.database.url)
@@ -108,6 +110,10 @@ class AccountsService:
         # Start the update loop which will call check_all_connectors
         self._update_account_state_task = asyncio.create_task(self.update_account_state_loop())
 
+        # Start order status polling loop (every 1 minute)
+        self._order_status_polling_task = asyncio.create_task(self.order_status_polling_loop())
+        logger.info("Order status polling started (1 minute interval)")
+
         # Start Gateway transaction poller
         if not self._gateway_poller_started:
             asyncio.create_task(self._start_gateway_poller())
@@ -134,6 +140,12 @@ class AccountsService:
             self._update_account_state_task.cancel()
             self._update_account_state_task = None
             logger.info("Stopped account state update loop")
+
+        # Stop the order status polling loop
+        if self._order_status_polling_task:
+            self._order_status_polling_task.cancel()
+            self._order_status_polling_task = None
+            logger.info("Stopped order status polling loop")
 
         # Stop Gateway transaction poller
         if self._gateway_poller_started:
@@ -166,6 +178,21 @@ class AccountsService:
                 logger.error(f"Error updating account state: {e}")
             finally:
                 await asyncio.sleep(self.update_account_state_interval)
+
+    async def order_status_polling_loop(self):
+        """
+        Sync order state to database for all connectors at a frequent interval (1 minute).
+
+        The connector's built-in _lost_orders_update_polling_loop already polls the exchange.
+        This loop just syncs that state to our database and cleans up closed orders.
+        """
+        while True:
+            try:
+                await self.connector_manager.sync_order_state_to_database_for_all_connectors()
+            except Exception as e:
+                logger.error(f"Error syncing order state to database: {e}")
+            finally:
+                await asyncio.sleep(self.order_status_poll_interval)
 
     async def dump_account_state(self):
         """
