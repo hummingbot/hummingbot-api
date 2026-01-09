@@ -1,5 +1,9 @@
 .PHONY: setup run deploy stop install uninstall build install-pre-commit
 
+setup:
+	chmod +x setup.sh
+	./setup.sh
+
 # Run locally (dev mode)
 run:
 	docker compose up emqx postgres -d
