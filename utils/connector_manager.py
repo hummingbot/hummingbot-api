@@ -172,7 +172,8 @@ class ConnectorManager:
         :param keys: Dictionary of API keys to update.
         :return: The updated connector instance.
         """
-        BackendAPISecurity.login_account(account_name=account_name, secrets_manager=self.secrets_manager)
+        if not BackendAPISecurity.login_account(account_name=account_name, secrets_manager=self.secrets_manager):
+            raise ValueError(f"Failed to authenticate for account '{account_name}'. Password validation failed.")
         connector_config = HummingbotAPIConfigAdapter(AllConnectorSettings.get_connector_config_keys(connector_name))
 
         for key, value in keys.items():
