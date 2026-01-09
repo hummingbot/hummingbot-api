@@ -42,7 +42,7 @@ from services.accounts_service import AccountsService
 from services.docker_service import DockerService
 from services.gateway_service import GatewayService
 from services.market_data_feed_manager import MarketDataFeedManager
-from services.executor_service import ExecutorService
+# from services.executor_service import ExecutorService
 from utils.bot_archiver import BotArchiver
 from routers import (
     accounts,
