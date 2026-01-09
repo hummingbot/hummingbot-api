@@ -6,6 +6,14 @@ set -e
 echo "Hummingbot API Setup"
 echo ""
 
+# Check if .env file already exists
+if [ -f ".env" ]; then
+    echo ".env file already exists. Skipping setup."
+    echo ""
+    echo ""
+    exit 0
+fi
+
 # Only prompt for password (most common customization)
 read -p "API password [default: admin]: " PASSWORD
 PASSWORD=${PASSWORD:-admin}
