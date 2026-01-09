@@ -42,6 +42,7 @@ from services.accounts_service import AccountsService
 from services.docker_service import DockerService
 from services.gateway_service import GatewayService
 from services.market_data_feed_manager import MarketDataFeedManager
+from services.executor_service import ExecutorService
 from utils.bot_archiver import BotArchiver
 from routers import (
     accounts,
@@ -51,7 +52,7 @@ from routers import (
     connectors,
     controllers,
     docker,
-    executors,
+    # executors,
     gateway,
     gateway_swap,
     gateway_clmm,
@@ -180,6 +181,18 @@ async def lifespan(app: FastAPI):
     # Initialize database
     await accounts_service.ensure_db_initialized()
 
+    # Initialize ExecutorService for running executors directly via API
+    executor_service = ExecutorService(
+        connector_manager=accounts_service.connector_manager,
+        market_data_feed_manager=market_data_feed_manager,
+        db_manager=accounts_service.db_manager,
+        default_account="master_account",
+        update_interval=1.0,
+        max_retries=10
+    )
+    # Store reference in accounts_service for router access
+    accounts_service._executor_service = executor_service
+
     # Store services in app state
     app.state.bots_orchestrator = bots_orchestrator
     app.state.accounts_service = accounts_service
@@ -187,17 +200,22 @@ async def lifespan(app: FastAPI):
     app.state.gateway_service = gateway_service
     app.state.bot_archiver = bot_archiver
     app.state.market_data_feed_manager = market_data_feed_manager
+    app.state.executor_service = executor_service
 
     # Start services
     bots_orchestrator.start()
     accounts_service.start()
     market_data_feed_manager.start()
+    executor_service.start()
 
     yield
 
     # Shutdown services
     bots_orchestrator.stop()
     await accounts_service.stop()
+
+    # Stop executor service
+    await executor_service.stop()
 
     # Stop market data feed manager (which will stop all feeds)
     market_data_feed_manager.stop()
@@ -292,6 +310,7 @@ app.include_router(market_data.router, dependencies=[Depends(auth_user)])
 app.include_router(rate_oracle.router, dependencies=[Depends(auth_user)])
 app.include_router(backtesting.router, dependencies=[Depends(auth_user)])
 app.include_router(archived_bots.router, dependencies=[Depends(auth_user)])
+app.include_router(executors.router, dependencies=[Depends(auth_user)])
 
 @app.get("/")
 async def root():
