@@ -1,12 +1,39 @@
 #!/bin/bash
 # Hummingbot API Setup - Creates .env with sensible defaults (Mac/Linux/WSL2)
-# - On Linux/WSL (apt-based): installs build deps (gcc, build-essential)
-# - Ensures Docker + Docker Compose are available (auto-installs on Linux/WSL via get.docker.com)
+# - On Linux (apt-based): installs build deps (gcc, build-essential)
+# - Ensures Docker + Docker Compose are available (auto-installs on Linux via get.docker.com)
 
 set -euo pipefail
 
 echo "Hummingbot API Setup"
 echo ""
+
+has_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+resolve_script_dir() {
+  local src="${BASH_SOURCE[0]}"
+  while [ -h "$src" ]; do
+    local dir
+    dir="$(cd -P "$(dirname "$src")" >/dev/null 2>&1 && pwd)"
+    src="$(readlink "$src")"
+    [[ "$src" != /* ]] && src="$dir/$src"
+  done
+  cd -P "$(dirname "$src")" >/dev/null 2>&1 && pwd
+}
+
+SCRIPT_DIR="$(resolve_script_dir)"
+
+# Log file defaults to the script folder (fallback to /tmp if not writable)
+LOG_FILE="${LOG_FILE:-${SCRIPT_DIR}/hummingbot-api-setup.log}"
+if ! ( : >>"$LOG_FILE" ) 2>/dev/null; then
+  LOG_FILE="/tmp/hummingbot-api-setup.log"
+fi
+
+run_quiet() {
+  # Usage: run_quiet <command...>
+  # Writes detailed output to LOG_FILE, but keeps terminal clean
+  "$@" >>"$LOG_FILE" 2>&1
+}
 
 # --------------------------
 # OS / Environment Detection
@@ -16,18 +43,6 @@ ARCH="$(uname -m || true)"
 
 is_linux() { [[ "${OS}" == "Linux" ]]; }
 is_macos() { [[ "${OS}" == "Darwin" ]]; }
-
-is_wsl() {
-  if [[ -f /proc/version ]] && grep -qiE "microsoft|wsl" /proc/version; then
-    return 0
-  fi
-  if [[ -f /proc/sys/kernel/osrelease ]] && grep -qiE "microsoft|wsl" /proc/sys/kernel/osrelease; then
-    return 0
-  fi
-  return 1
-}
-
-has_cmd() { command -v "$1" >/dev/null 2>&1; }
 
 docker_ok() { has_cmd docker; }
 
@@ -50,18 +65,20 @@ need_sudo_or_die() {
 }
 
 # --------------------------
-# Linux/WSL Dependencies
+# Linux Dependencies
 # --------------------------
 install_linux_build_deps() {
   if has_cmd apt-get; then
     need_sudo_or_die
-    echo "[INFO] Detected Linux/WSL. Installing build dependencies (gcc, build-essential)..."
-    sudo apt update
-    sudo apt upgrade -y
-    sudo apt install -y gcc build-essential
+    echo "[INFO] Detected Linux. Installing build dependencies (gcc, build-essential)... (logging to $LOG_FILE)"
+
+    run_quiet sudo env DEBIAN_FRONTEND=noninteractive apt-get update -qq
+    run_quiet sudo env DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -qq
+    run_quiet sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq gcc build-essential
+
+    echo "[OK] Build dependencies checked/installed."
   else
-    echo "[WARN] Detected Linux/WSL, but 'apt-get' is not available. Skipping build dependency install."
-    echo "       Install equivalents of gcc + build-essential using your distro's package manager."
+    echo "[WARN] Detected Linux, but 'apt-get' is not available. Skipping build dependency install."
   fi
 }
 
@@ -72,9 +89,10 @@ ensure_curl_on_linux() {
 
   if has_cmd apt-get; then
     need_sudo_or_die
-    echo "[INFO] Installing curl (required for Docker install script)..."
-    sudo apt update
-    sudo apt install -y curl ca-certificates
+    echo "[INFO] Installing curl (required for Docker install script)... (logging to $LOG_FILE)"
+    run_quiet sudo env DEBIAN_FRONTEND=noninteractive apt-get update -qq
+    run_quiet sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl ca-certificates
+    echo "[OK] curl installed."
     return 0
   fi
 
@@ -86,12 +104,13 @@ ensure_curl_on_linux() {
 # Docker Install / Validation
 # --------------------------
 install_docker_linux() {
+  need_sudo_or_die
   ensure_curl_on_linux
 
-  echo "[INFO] Docker not found. Installing Docker using get.docker.com script..."
-  curl -fsSL https://get.docker.com -o get-docker.sh
-  sh get-docker.sh
-  rm -f get-docker.sh
+  echo "[INFO] Docker not found. Installing Docker using get.docker.com script... (logging to $LOG_FILE)"
+  run_quiet curl -fsSL https://get.docker.com -o get-docker.sh
+  run_quiet sudo sh get-docker.sh
+  run_quiet rm -f get-docker.sh
 
   if has_cmd systemctl; then
     if systemctl is-system-running >/dev/null 2>&1; then
@@ -124,16 +143,16 @@ ensure_docker_and_compose() {
     if ! docker_compose_ok; then
       if has_cmd apt-get; then
         need_sudo_or_die
-        echo "[INFO] Docker Compose not found. Attempting to install docker-compose-plugin..."
-        sudo apt update
-        sudo apt install -y docker-compose-plugin || true
+        echo "[INFO] Docker Compose not found. Attempting to install docker-compose-plugin... (logging to $LOG_FILE)"
+        run_quiet sudo env DEBIAN_FRONTEND=noninteractive apt-get update -qq
+        run_quiet sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker-compose-plugin || true
       fi
     fi
 
     if ! docker_compose_ok; then
       echo "ERROR: Docker Compose is not available."
       echo "       Expected either 'docker compose' (v2) or 'docker-compose' (v1)."
-      echo "       On Ubuntu/Debian, try: sudo apt install -y docker-compose-plugin"
+      echo "       On Ubuntu/Debian, try: sudo apt-get install -y docker-compose-plugin"
       exit 1
     fi
   elif is_macos; then
@@ -168,7 +187,6 @@ if is_linux; then
 fi
 
 ensure_docker_and_compose
-
 echo ""
 
 # --------------------------
@@ -177,7 +195,6 @@ echo ""
 if [ -f ".env" ]; then
   echo ".env file already exists. Skipping setup."
   echo ""
-  echo ""
   exit 0
 fi
 
@@ -185,7 +202,6 @@ fi
 if has_cmd clear; then
   clear
 else
-  # Fallback: ANSI clear
   printf "\033c"
 fi
 
@@ -227,10 +243,10 @@ echo ".env created successfully!"
 echo ""
 echo "Next steps:"
 echo ""
-echo "Option 1: Start all services with Docker (recommended) "
-echo "  make deploy " 
+echo "Option 1: Start all services with Docker (recommended)"
+echo "  make deploy"
 echo ""
 echo "Option 2: Run API locally (dev mode)"
 echo "  make install   # Creates the conda environment - Note: Please install the latest Anaconda version manually"
-echo "  make run       # Run API "
+echo "  make run       # Run API"
 echo ""
