@@ -238,6 +238,8 @@ GATEWAY_PASSPHRASE=admin
 BOTS_PATH=$(pwd)
 EOF
 
+touch .setup-complete
+
 echo ""
 echo ".env created successfully!"
 echo ""
