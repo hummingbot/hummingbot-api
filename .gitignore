@@ -68,6 +68,9 @@ instance/
 # Scrapy stuff:
 .scrapy
 
+# Setup sentinel
+.setup-complete
+
 # Sphinx documentation
 docs/_build/
 
