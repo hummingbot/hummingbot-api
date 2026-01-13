@@ -200,7 +200,7 @@ async def lifespan(app: FastAPI):
     app.state.gateway_service = gateway_service
     app.state.bot_archiver = bot_archiver
     app.state.market_data_feed_manager = market_data_feed_manager
-    app.state.executor_service = executor_service
+    # app.state.executor_service = executor_service
 
     # Start services
     bots_orchestrator.start()
