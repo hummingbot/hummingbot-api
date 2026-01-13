@@ -181,17 +181,17 @@ async def lifespan(app: FastAPI):
     # Initialize database
     await accounts_service.ensure_db_initialized()
 
-    # Initialize ExecutorService for running executors directly via API
-    executor_service = ExecutorService(
-        connector_manager=accounts_service.connector_manager,
-        market_data_feed_manager=market_data_feed_manager,
-        db_manager=accounts_service.db_manager,
-        default_account="master_account",
-        update_interval=1.0,
-        max_retries=10
-    )
-    # Store reference in accounts_service for router access
-    accounts_service._executor_service = executor_service
+    # # Initialize ExecutorService for running executors directly via API
+    # executor_service = ExecutorService(
+    #     connector_manager=accounts_service.connector_manager,
+    #     market_data_feed_manager=market_data_feed_manager,
+    #     db_manager=accounts_service.db_manager,
+    #     default_account="master_account",
+    #     update_interval=1.0,
+    #     max_retries=10
+    # )
+    # # Store reference in accounts_service for router access
+    # accounts_service._executor_service = executor_service
 
     # Store services in app state
     app.state.bots_orchestrator = bots_orchestrator
@@ -206,7 +206,7 @@ async def lifespan(app: FastAPI):
     bots_orchestrator.start()
     accounts_service.start()
     market_data_feed_manager.start()
-    executor_service.start()
+    # executor_service.start()
 
     yield
 
@@ -215,7 +215,7 @@ async def lifespan(app: FastAPI):
     await accounts_service.stop()
 
     # Stop executor service
-    await executor_service.stop()
+    # await executor_service.stop()
 
     # Stop market data feed manager (which will stop all feeds)
     market_data_feed_manager.stop()
