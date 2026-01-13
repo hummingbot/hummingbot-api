@@ -310,7 +310,7 @@ app.include_router(market_data.router, dependencies=[Depends(auth_user)])
 app.include_router(rate_oracle.router, dependencies=[Depends(auth_user)])
 app.include_router(backtesting.router, dependencies=[Depends(auth_user)])
 app.include_router(archived_bots.router, dependencies=[Depends(auth_user)])
-app.include_router(executors.router, dependencies=[Depends(auth_user)])
+# app.include_router(executors.router, dependencies=[Depends(auth_user)])
 
 @app.get("/")
 async def root():
