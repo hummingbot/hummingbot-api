@@ -1,12 +1,12 @@
-from typing import List, Optional, Dict
+from typing import Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Request, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from hummingbot.client.settings import AllConnectorSettings
 
-from services.accounts_service import AccountsService
-from services.market_data_feed_manager import MarketDataFeedManager
 from deps import get_accounts_service
 from models import AddTokenRequest
+from services.accounts_service import AccountsService
+from services.market_data_feed_manager import MarketDataFeedManager
 
 router = APIRouter(tags=["Connectors"], prefix="/connectors")
 
@@ -22,16 +22,19 @@ async def available_connectors():
     return list(AllConnectorSettings.get_connector_settings().keys())
 
 
-@router.get("/{connector_name}/config-map", response_model=List[str])
+@router.get("/{connector_name}/config-map", response_model=Dict[str, dict])
 async def get_connector_config_map(connector_name: str, accounts_service: AccountsService = Depends(get_accounts_service)):
     """
-    Get configuration fields required for a specific connector.
-    
+    Get configuration fields required for a specific connector with type information.
+
     Args:
         connector_name: Name of the connector to get config map for
-        
+
     Returns:
-        List of configuration field names required for the connector
+        Dictionary mapping field names to their type information.
+        Each field contains:
+        - type: The expected data type (e.g., "str", "SecretStr", "int")
+        - required: Whether the field is required
     """
     return accounts_service.get_connector_config_map(connector_name)
 

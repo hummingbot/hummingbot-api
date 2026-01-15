@@ -105,13 +105,63 @@ class ConnectorManager:
     @staticmethod
     def get_connector_config_map(connector_name: str):
         """
-        Get the connector config map for the specified connector.
+        Get the connector config map for the specified connector with type information.
 
         :param connector_name: The name of the connector.
-        :return: The connector config map.
+        :return: Dictionary mapping field names to their type information.
         """
+        from typing import Literal, get_args, get_origin
+
         connector_config = HummingbotAPIConfigAdapter(AllConnectorSettings.get_connector_config_keys(connector_name))
-        return [key for key in connector_config.hb_config.__fields__.keys() if key != "connector"]
+        fields_info = {}
+
+        for key, field in connector_config.hb_config.model_fields.items():
+            if key == "connector":
+                continue
+
+            # Get the type annotation
+            field_type = field.annotation
+            type_name = getattr(field_type, "__name__", str(field_type))
+            allowed_values = None
+
+            # Handle Optional and Literal types
+            origin = get_origin(field_type)
+            args = get_args(field_type)
+
+            if origin is Literal:
+                # It's a Literal type, extract the allowed values
+                type_name = "Literal"
+                allowed_values = list(args)
+            elif origin is not None:
+                # Handle Union types (Optional is Union[X, None])
+                if type(None) in args:
+                    # It's an Optional type, get the actual type
+                    actual_types = [arg for arg in args if arg is not type(None)]
+                    if actual_types:
+                        inner_type = actual_types[0]
+                        inner_origin = get_origin(inner_type)
+                        inner_args = get_args(inner_type)
+
+                        if inner_origin is Literal:
+                            # Optional[Literal[...]]
+                            type_name = "Literal"
+                            allowed_values = list(inner_args)
+                        else:
+                            type_name = getattr(inner_type, "__name__", str(inner_type))
+                else:
+                    type_name = str(field_type)
+
+            field_info = {
+                "type": type_name,
+                "required": field.is_required(),
+            }
+
+            if allowed_values is not None:
+                field_info["allowed_values"] = allowed_values
+
+            fields_info[key] = field_info
+
+        return fields_info
 
     async def update_connector_keys(self, account_name: str, connector_name: str, keys: dict):
         """
@@ -122,7 +172,8 @@ class ConnectorManager:
         :param keys: Dictionary of API keys to update.
         :return: The updated connector instance.
         """
-        BackendAPISecurity.login_account(account_name=account_name, secrets_manager=self.secrets_manager)
+        if not BackendAPISecurity.login_account(account_name=account_name, secrets_manager=self.secrets_manager):
+            raise ValueError(f"Failed to authenticate for account '{account_name}'. Password validation failed.")
         connector_config = HummingbotAPIConfigAdapter(AllConnectorSettings.get_connector_config_keys(connector_name))
 
         for key, value in keys.items():
@@ -240,7 +291,7 @@ class ConnectorManager:
         await self._start_connector_network(connector)
         
         # Perform initial update of connector state
-        await self._update_connector_state(connector, connector_name)
+        await self._update_connector_state(connector, connector_name, account_name)
 
         logger.info(f"Initialized connector {connector_name} for account {account_name}")
         return connector
@@ -313,10 +364,14 @@ class ConnectorManager:
         except Exception as e:
             logger.error(f"Error stopping connector network: {e}")
 
-    async def _update_connector_state(self, connector: ConnectorBase, connector_name: str):
+    async def _update_connector_state(self, connector: ConnectorBase, connector_name: str, account_name: str = None):
         """
         Update connector state including balances, orders, positions, and trading rules.
         This function can be called both during initialization and periodically.
+
+        :param connector: The connector instance
+        :param connector_name: The name of the connector
+        :param account_name: The name of the account (optional, used for order sync)
         """
         try:
             # Update current timestamp
@@ -324,18 +379,22 @@ class ConnectorManager:
 
             # Update balances
             await connector._update_balances()
-            
+
             # Update trading rules
             await connector._update_trading_rules()
-            
+
             # Update positions for perpetual connectors
             if "_perpetual" in connector_name:
                 await connector._update_positions()
-            
+
             # Update order status for in-flight orders
             if hasattr(connector, '_update_order_status') and connector.in_flight_orders:
                 await connector._update_order_status()
-                
+
+                # Sync updated order state to database and cleanup closed orders
+                if account_name:
+                    await self._sync_orders_to_database(connector, account_name, connector_name)
+
             logger.debug(f"Updated connector state for {connector_name}")
             
         except Exception as e:
@@ -349,9 +408,31 @@ class ConnectorManager:
         for cache_key, connector in self._connector_cache.items():
             account_name, connector_name = cache_key.split(":", 1)
             try:
-                await self._update_connector_state(connector, connector_name)
+                await self._update_connector_state(connector, connector_name, account_name)
             except Exception as e:
                 logger.error(f"Error updating state for {account_name}/{connector_name}: {e}")
+
+    async def sync_order_state_to_database_for_all_connectors(self):
+        """
+        Sync connector's in_flight_orders state to database for all connectors.
+
+        The connector's built-in _lost_orders_update_polling_loop already polls the exchange
+        and updates in_flight_orders. This method just syncs that state to our database
+        and cleans up closed orders. Called every minute.
+        """
+        for cache_key, connector in self._connector_cache.items():
+            account_name, connector_name = cache_key.split(":", 1)
+            try:
+                # Only process if there are in-flight orders
+                if not connector.in_flight_orders:
+                    continue
+
+                # Sync connector state to database and cleanup closed orders
+                await self._sync_orders_to_database(connector, account_name, connector_name)
+                logger.debug(f"Synced order state to DB for {account_name}/{connector_name}")
+
+            except Exception as e:
+                logger.error(f"Error syncing order state for {account_name}/{connector_name}: {e}")
 
     async def _load_existing_orders_from_database(self, connector: ConnectorBase, account_name: str, connector_name: str):
         """
@@ -394,6 +475,85 @@ class ConnectorManager:
 
         except Exception as e:
             logger.error(f"Error loading existing orders from database for {account_name}/{connector_name}: {e}")
+
+    def _map_order_state_to_status(self, order_state: OrderState) -> str:
+        """
+        Map Hummingbot OrderState to database status string.
+
+        :param order_state: The OrderState enum value from Hummingbot
+        :return: Database status string
+        """
+        status_mapping = {
+            OrderState.PENDING_CREATE: "SUBMITTED",
+            OrderState.OPEN: "OPEN",
+            OrderState.PENDING_CANCEL: "PENDING_CANCEL",
+            OrderState.CANCELED: "CANCELLED",
+            OrderState.PARTIALLY_FILLED: "PARTIALLY_FILLED",
+            OrderState.FILLED: "FILLED",
+            OrderState.FAILED: "FAILED",
+            OrderState.PENDING_APPROVAL: "SUBMITTED",
+            OrderState.APPROVED: "SUBMITTED",
+            OrderState.CREATED: "SUBMITTED",
+            OrderState.COMPLETED: "FILLED",
+        }
+        return status_mapping.get(order_state, "SUBMITTED")
+
+    async def _sync_orders_to_database(self, connector: ConnectorBase, account_name: str, connector_name: str):
+        """
+        Sync connector's in_flight_orders state to database and cleanup closed orders.
+
+        This method ensures that the database reflects the current state of orders
+        as reported by the exchange, and removes terminal orders from in_flight_orders.
+
+        :param connector: The connector instance
+        :param account_name: The name of the account
+        :param connector_name: The name of the connector
+        """
+        if not self.db_manager:
+            return
+
+        terminal_states = [OrderState.FILLED, OrderState.CANCELED, OrderState.FAILED, OrderState.COMPLETED]
+        orders_to_remove = []
+
+        # Create a copy of keys to iterate safely while potentially modifying the dict
+        order_ids = list(connector.in_flight_orders.keys())
+
+        for client_order_id in order_ids:
+            order = connector.in_flight_orders.get(client_order_id)
+            if not order:
+                continue
+
+            try:
+                # Import OrderRepository dynamically to avoid circular imports
+                from database import OrderRepository
+
+                async with self.db_manager.get_session_context() as session:
+                    order_repo = OrderRepository(session)
+                    db_order = await order_repo.get_order_by_client_id(client_order_id)
+
+                    if db_order:
+                        # Map connector state to database status
+                        new_status = self._map_order_state_to_status(order.current_state)
+
+                        # Only update if status changed
+                        if db_order.status != new_status:
+                            await order_repo.update_order_status(client_order_id, new_status)
+                            logger.info(f"Synced order {client_order_id} status: {db_order.status} -> {new_status}")
+
+                    # Mark terminal orders for removal from in_flight_orders
+                    if order.current_state in terminal_states:
+                        orders_to_remove.append(client_order_id)
+
+            except Exception as e:
+                logger.error(f"Error syncing order {client_order_id} to database: {e}")
+
+        # Remove terminal orders from in_flight_orders
+        for order_id in orders_to_remove:
+            connector.in_flight_orders.pop(order_id, None)
+            logger.debug(f"Removed closed order {order_id} from in_flight_orders")
+
+        if orders_to_remove:
+            logger.info(f"Cleaned up {len(orders_to_remove)} terminal orders from {account_name}/{connector_name}")
 
     def _convert_db_order_to_in_flight_order(self, order_record) -> InFlightOrder:
         """

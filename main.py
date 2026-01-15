@@ -24,13 +24,15 @@ def patched_save_to_yml(yml_path, cm):
 from hummingbot.client.config import config_helpers
 config_helpers.save_to_yml = patched_save_to_yml
 
-from hummingbot.core.rate_oracle.rate_oracle import RateOracle
+from hummingbot.core.rate_oracle.rate_oracle import RateOracle, RATE_ORACLE_SOURCES
 from hummingbot.core.gateway.gateway_http_client import GatewayHttpClient
 from hummingbot.client.config.client_config_map import GatewayConfigMap
 
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from hummingbot.data_feed.market_data_provider import MarketDataProvider
 from hummingbot.client.config.config_crypt import ETHKeyFileSecretManger
 
@@ -40,6 +42,7 @@ from services.accounts_service import AccountsService
 from services.docker_service import DockerService
 from services.gateway_service import GatewayService
 from services.market_data_feed_manager import MarketDataFeedManager
+# from services.executor_service import ExecutorService
 from utils.bot_archiver import BotArchiver
 from routers import (
     accounts,
@@ -49,11 +52,13 @@ from routers import (
     connectors,
     controllers,
     docker,
+    # executors,
     gateway,
     gateway_swap,
     gateway_clmm,
     market_data,
     portfolio,
+    rate_oracle,
     scripts,
     trading
 )
@@ -107,10 +112,47 @@ async def lifespan(app: FastAPI):
     # Initialize MarketDataProvider with empty connectors (will use non-trading connectors)
     market_data_provider = MarketDataProvider(connectors={})
 
+    # Read rate oracle configuration from conf_client.yml
+    from utils.file_system import FileSystemUtil
+    fs_util = FileSystemUtil()
+
+    try:
+        conf_client_path = "credentials/master_account/conf_client.yml"
+        config_data = fs_util.read_yaml_file(conf_client_path)
+
+        # Get rate_oracle_source configuration
+        rate_oracle_source_data = config_data.get("rate_oracle_source", {})
+        source_name = rate_oracle_source_data.get("name", "binance")
+
+        # Get global_token configuration
+        global_token_data = config_data.get("global_token", {})
+        quote_token = global_token_data.get("global_token_name", "USDT")
+
+        # Create rate source instance
+        if source_name in RATE_ORACLE_SOURCES:
+            rate_source = RATE_ORACLE_SOURCES[source_name]()
+            logging.info(f"Configured RateOracle with source: {source_name}, quote_token: {quote_token}")
+        else:
+            logging.warning(f"Unknown rate oracle source '{source_name}', defaulting to binance")
+            rate_source = RATE_ORACLE_SOURCES["binance"]()
+            source_name = "binance"
+
+        # Initialize RateOracle with configured source and quote token
+        rate_oracle_instance = RateOracle.get_instance()
+        rate_oracle_instance.source = rate_source
+        rate_oracle_instance.quote_token = quote_token
+
+    except FileNotFoundError:
+        logging.warning("conf_client.yml not found, using default RateOracle configuration (binance, USDT)")
+        rate_oracle_instance = RateOracle.get_instance()
+    except Exception as e:
+        logging.warning(f"Error reading conf_client.yml: {e}, using default RateOracle configuration")
+        rate_oracle_instance = RateOracle.get_instance()
+
     # Initialize MarketDataFeedManager with lifecycle management
     market_data_feed_manager = MarketDataFeedManager(
         market_data_provider=market_data_provider,
-        rate_oracle=RateOracle.get_instance(),
+        rate_oracle=rate_oracle_instance,
         cleanup_interval=settings.market_data.cleanup_interval,
         feed_timeout=settings.market_data.feed_timeout
     )
@@ -139,6 +181,18 @@ async def lifespan(app: FastAPI):
     # Initialize database
     await accounts_service.ensure_db_initialized()
 
+    # # Initialize ExecutorService for running executors directly via API
+    # executor_service = ExecutorService(
+    #     connector_manager=accounts_service.connector_manager,
+    #     market_data_feed_manager=market_data_feed_manager,
+    #     db_manager=accounts_service.db_manager,
+    #     default_account="master_account",
+    #     update_interval=1.0,
+    #     max_retries=10
+    # )
+    # # Store reference in accounts_service for router access
+    # accounts_service._executor_service = executor_service
+
     # Store services in app state
     app.state.bots_orchestrator = bots_orchestrator
     app.state.accounts_service = accounts_service
@@ -146,17 +200,22 @@ async def lifespan(app: FastAPI):
     app.state.gateway_service = gateway_service
     app.state.bot_archiver = bot_archiver
     app.state.market_data_feed_manager = market_data_feed_manager
+    # app.state.executor_service = executor_service
 
     # Start services
     bots_orchestrator.start()
     accounts_service.start()
     market_data_feed_manager.start()
+    # executor_service.start()
 
     yield
 
     # Shutdown services
     bots_orchestrator.stop()
     await accounts_service.stop()
+
+    # Stop executor service
+    # await executor_service.stop()
 
     # Stop market data feed manager (which will stop all feeds)
     market_data_feed_manager.stop()
@@ -184,6 +243,31 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """
+    Custom handler for validation errors to log detailed error messages.
+    """
+    # Build a readable error message from validation errors
+    error_messages = []
+    for error in exc.errors():
+        loc = " -> ".join(str(l) for l in error.get("loc", []))
+        msg = error.get("msg", "Validation error")
+        error_messages.append(f"{loc}: {msg}")
+
+    # Log the validation error with details
+    logging.warning(
+        f"Validation error on {request.method} {request.url.path}: {'; '.join(error_messages)}"
+    )
+
+    # Return standard FastAPI validation error response
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={"detail": exc.errors()},
+    )
+
 
 logfire.configure(send_to_logfire="if-token-present", environment=settings.app.logfire_environment, service_name="hummingbot-api")
 logfire.instrument_fastapi(app)
@@ -223,8 +307,10 @@ app.include_router(bot_orchestration.router, dependencies=[Depends(auth_user)])
 app.include_router(controllers.router, dependencies=[Depends(auth_user)])
 app.include_router(scripts.router, dependencies=[Depends(auth_user)])
 app.include_router(market_data.router, dependencies=[Depends(auth_user)])
+app.include_router(rate_oracle.router, dependencies=[Depends(auth_user)])
 app.include_router(backtesting.router, dependencies=[Depends(auth_user)])
 app.include_router(archived_bots.router, dependencies=[Depends(auth_user)])
+# app.include_router(executors.router, dependencies=[Depends(auth_user)])
 
 @app.get("/")
 async def root():
