@@ -1,7 +1,7 @@
 import json
-import yaml
 from typing import Dict, List
 
+import yaml
 from fastapi import APIRouter, HTTPException
 from starlette import status
 
@@ -23,7 +23,7 @@ async def list_scripts():
 
 
 # Script Configuration endpoints (must come before script name routes)
-@router.get("/configs/", response_model=List[Dict])
+@router.get("/configs", response_model=List[Dict])
 async def list_script_configs():
     """
     List all script configurations with metadata.
