@@ -1,11 +1,11 @@
 import os
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
+from deps import get_bot_archiver, get_docker_service
 from models import DockerImage
-from utils.bot_archiver import BotArchiver
 from services.docker_service import DockerService
-from deps import get_docker_service, get_bot_archiver
+from utils.bot_archiver import BotArchiver
 
 router = APIRouter(tags=["Docker"], prefix="/docker")
 
@@ -24,7 +24,7 @@ async def is_docker_running(docker_service: DockerService = Depends(get_docker_s
     return  docker_service.is_docker_running()
 
 
-@router.get("/available-images/")
+@router.get("/available-images")
 async def available_images(image_name: str = None, docker_service: DockerService = Depends(get_docker_service)):
     """
     Get available Docker images matching the specified name.
@@ -161,7 +161,7 @@ async def start_container(container_name: str, docker_service: DockerService = D
     return docker_service.start_container(container_name)
 
 
-@router.post("/pull-image/")
+@router.post("/pull-image")
 async def pull_image(image: DockerImage, docker_service: DockerService = Depends(get_docker_service)):
     """
     Initiate Docker image pull as background task.
@@ -178,7 +178,7 @@ async def pull_image(image: DockerImage, docker_service: DockerService = Depends
     return result
 
 
-@router.get("/pull-status/")
+@router.get("/pull-status")
 async def get_pull_status(docker_service: DockerService = Depends(get_docker_service)):
     """
     Get status of all pull operations.
