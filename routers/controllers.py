@@ -1,7 +1,7 @@
 import json
-import yaml
 from typing import Dict, List
 
+import yaml
 from fastapi import APIRouter, HTTPException
 from starlette import status
 
@@ -33,7 +33,7 @@ async def list_controllers():
 
 
 # Controller Configuration endpoints (must come before controller type routes)
-@router.get("/configs/", response_model=List[Dict])
+@router.get("/configs", response_model=List[Dict])
 async def list_controller_configs():
     """
     List all controller configurations with metadata.
