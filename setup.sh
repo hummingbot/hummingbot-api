@@ -2,11 +2,20 @@
 # Hummingbot API Setup - Creates .env with sensible defaults (Mac/Linux/WSL2)
 # - On Linux (apt-based): installs build deps (gcc, build-essential)
 # - Ensures Docker + Docker Compose are available (auto-installs on Linux via get.docker.com)
+# - Idempotent: safe to run multiple times, skips already-completed steps
+# - Verbose output: shows all installation progress directly
 
 set -euo pipefail
 
 echo "Hummingbot API Setup"
 echo ""
+
+# --------------------------
+# State Tracking Variables
+# --------------------------
+APT_CACHE_UPDATED=false
+DOCKER_ALREADY_PRESENT=false
+COMPOSE_ALREADY_PRESENT=false
 
 has_cmd() { command -v "$1" >/dev/null 2>&1; }
 
@@ -22,18 +31,6 @@ resolve_script_dir() {
 }
 
 SCRIPT_DIR="$(resolve_script_dir)"
-
-# Log file defaults to the script folder (fallback to /tmp if not writable)
-LOG_FILE="${LOG_FILE:-${SCRIPT_DIR}/hummingbot-api-setup.log}"
-if ! ( : >>"$LOG_FILE" ) 2>/dev/null; then
-  LOG_FILE="/tmp/hummingbot-api-setup.log"
-fi
-
-run_quiet() {
-  # Usage: run_quiet <command...>
-  # Writes detailed output to LOG_FILE, but keeps terminal clean
-  "$@" >>"$LOG_FILE" 2>&1
-}
 
 # --------------------------
 # OS / Environment Detection
@@ -65,18 +62,51 @@ need_sudo_or_die() {
 }
 
 # --------------------------
+# APT Cache Management (Linux)
+# --------------------------
+safe_apt_update() {
+  # Only run apt-get update once per script execution
+  if [ "$APT_CACHE_UPDATED" = false ]; then
+    echo "[INFO] Updating apt cache..."
+    sudo env DEBIAN_FRONTEND=noninteractive apt-get update
+    APT_CACHE_UPDATED=true
+  fi
+}
+
+# --------------------------
+# Package Check Utilities
+# --------------------------
+is_package_installed() {
+  # Check if a Debian package is installed
+  # Usage: is_package_installed package-name
+  dpkg -l "$1" 2>/dev/null | grep -q "^ii"
+}
+
+# --------------------------
 # Linux Dependencies
 # --------------------------
 install_linux_build_deps() {
   if has_cmd apt-get; then
+    # Check if build dependencies are already installed
+    if is_package_installed build-essential && has_cmd gcc; then
+      echo "[OK] Build dependencies (gcc, build-essential) already installed. Skipping."
+      return 0
+    fi
+    
     need_sudo_or_die
-    echo "[INFO] Detected Linux. Installing build dependencies (gcc, build-essential)... (logging to $LOG_FILE)"
+    echo "[INFO] Installing build dependencies (gcc, build-essential)..."
 
-    run_quiet sudo env DEBIAN_FRONTEND=noninteractive apt-get update -qq
-    run_quiet sudo env DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -qq
-    run_quiet sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq gcc build-essential
+    safe_apt_update
+    
+    # Only upgrade if we're actually installing new packages
+    if ! is_package_installed build-essential; then
+      echo "[INFO] Upgrading existing packages..."
+      sudo env DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
+    fi
+    
+    sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y gcc build-essential
 
-    echo "[OK] Build dependencies checked/installed."
+    echo "[OK] Build dependencies installed."
   else
     echo "[WARN] Detected Linux, but 'apt-get' is not available. Skipping build dependency install."
   fi
@@ -84,14 +114,15 @@ install_linux_build_deps() {
 
 ensure_curl_on_linux() {
   if has_cmd curl; then
+    echo "[OK] curl is already installed."
     return 0
   fi
 
   if has_cmd apt-get; then
     need_sudo_or_die
-    echo "[INFO] Installing curl (required for Docker install script)... (logging to $LOG_FILE)"
-    run_quiet sudo env DEBIAN_FRONTEND=noninteractive apt-get update -qq
-    run_quiet sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl ca-certificates
+    echo "[INFO] Installing curl (required for Docker install script)..."
+    safe_apt_update
+    sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y curl ca-certificates
     echo "[OK] curl installed."
     return 0
   fi
@@ -103,58 +134,130 @@ ensure_curl_on_linux() {
 # --------------------------
 # Docker Install / Validation
 # --------------------------
-install_docker_linux() {
-  need_sudo_or_die
-  ensure_curl_on_linux
-
-  echo "[INFO] Docker not found. Installing Docker using get.docker.com script... (logging to $LOG_FILE)"
-  run_quiet curl -fsSL https://get.docker.com -o get-docker.sh
-  run_quiet sudo sh get-docker.sh
-  run_quiet rm -f get-docker.sh
-
-  if has_cmd systemctl; then
-    if systemctl is-system-running >/dev/null 2>&1; then
-      echo "[INFO] Enabling and starting Docker service..."
-      sudo systemctl enable docker >/dev/null 2>&1 || true
-      sudo systemctl start docker >/dev/null 2>&1 || true
+check_user_in_docker_group() {
+  # Check if current user is already in docker group
+  if [[ "${EUID}" -eq 0 ]]; then
+    # Running as root, no need for docker group
+    return 0
+  fi
+  
+  if has_cmd getent && getent group docker >/dev/null 2>&1; then
+    if id -nG "$USER" 2>/dev/null | grep -qw docker; then
+      return 0
     fi
   fi
+  
+  return 1
+}
 
+add_user_to_docker_group() {
+  # Only add user to docker group if not already a member
+  if check_user_in_docker_group; then
+    echo "[OK] User '$USER' is already in the 'docker' group."
+    return 0
+  fi
+  
   if has_cmd getent && getent group docker >/dev/null 2>&1; then
     if [[ "${EUID}" -ne 0 ]]; then
       echo "[INFO] Adding current user to 'docker' group (may require re-login)..."
       sudo usermod -aG docker "$USER" >/dev/null 2>&1 || true
+      echo "[OK] User added to docker group. You may need to log out and back in for this to take effect."
     fi
   fi
 }
 
+install_docker_linux() {
+  need_sudo_or_die
+  ensure_curl_on_linux
+
+  echo "[INFO] Docker not found. Installing Docker using get.docker.com script..."
+  curl -fsSL https://get.docker.com -o get-docker.sh
+  sudo sh get-docker.sh
+  rm -f get-docker.sh
+
+  if has_cmd systemctl; then
+    if systemctl is-system-running >/dev/null 2>&1; then
+      echo "[INFO] Enabling and starting Docker service..."
+      sudo systemctl enable docker 2>/dev/null || true
+      sudo systemctl start docker 2>/dev/null || true
+    fi
+  fi
+
+  add_user_to_docker_group
+}
+
 ensure_docker_and_compose() {
   if is_linux; then
-    if ! docker_ok; then
-      install_docker_linux
+    # Check Docker installation
+    if docker_ok; then
+      echo "[OK] Docker already installed: $(docker --version 2>/dev/null || echo 'version unknown')"
+      DOCKER_ALREADY_PRESENT=true
+      
+      # Even if Docker is installed, ensure user is in docker group
+      add_user_to_docker_group
+    else
+      # Check if Docker binary exists but isn't in PATH
+      if [ -x "/usr/bin/docker" ] || [ -x "/usr/local/bin/docker" ]; then
+        echo "[INFO] Docker found but not in current PATH. Adding to PATH..."
+        export PATH="/usr/bin:/usr/local/bin:$PATH"
+        
+        if docker_ok; then
+          echo "[OK] Docker is now accessible: $(docker --version 2>/dev/null || echo 'version unknown')"
+          DOCKER_ALREADY_PRESENT=true
+          add_user_to_docker_group
+        else
+          install_docker_linux
+        fi
+      else
+        install_docker_linux
+      fi
     fi
 
+    # Verify Docker is actually working
     if ! docker_ok; then
       echo "ERROR: Docker installation did not succeed or 'docker' is still not on PATH."
       echo "       Try opening a new shell and re-running, or verify Docker installation."
       exit 1
     fi
 
-    if ! docker_compose_ok; then
+    # Check Docker Compose installation
+    if docker_compose_ok; then
+      echo "[OK] Docker Compose already available"
+      COMPOSE_ALREADY_PRESENT=true
+      
+      # Show which version we detected
+      if docker compose version >/dev/null 2>&1; then
+        echo "[OK] Using Docker Compose plugin: $(docker compose version 2>/dev/null || echo 'version unknown')"
+      else
+        echo "[OK] Using standalone docker-compose: $(docker-compose version 2>/dev/null || echo 'version unknown')"
+      fi
+    else
+      # Try to install docker-compose-plugin
       if has_cmd apt-get; then
-        need_sudo_or_die
-        echo "[INFO] Docker Compose not found. Attempting to install docker-compose-plugin... (logging to $LOG_FILE)"
-        run_quiet sudo env DEBIAN_FRONTEND=noninteractive apt-get update -qq
-        run_quiet sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker-compose-plugin || true
+        # Check if plugin package is already installed but not working
+        if is_package_installed docker-compose-plugin; then
+          echo "[WARN] docker-compose-plugin package is installed but not functioning properly."
+          echo "[INFO] Attempting to reinstall docker-compose-plugin..."
+          need_sudo_or_die
+          safe_apt_update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install --reinstall -y docker-compose-plugin || true
+        else
+          need_sudo_or_die
+          echo "[INFO] Docker Compose not found. Attempting to install docker-compose-plugin..."
+          safe_apt_update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y docker-compose-plugin || true
+        fi
       fi
     fi
 
+    # Final verification of Docker Compose
     if ! docker_compose_ok; then
       echo "ERROR: Docker Compose is not available."
       echo "       Expected either 'docker compose' (v2) or 'docker-compose' (v1)."
       echo "       On Ubuntu/Debian, try: sudo apt-get install -y docker-compose-plugin"
       exit 1
     fi
+    
   elif is_macos; then
     if ! docker_ok || ! docker_compose_ok; then
       echo "ERROR: Docker and/or Docker Compose not found on macOS."
@@ -162,19 +265,27 @@ ensure_docker_and_compose() {
       echo "       After installation, ensure 'docker' works in this terminal (you may need a new shell)."
       exit 1
     fi
+    
+    echo "[OK] Docker detected: $(docker --version 2>/dev/null || echo 'version unknown')"
+    if docker compose version >/dev/null 2>&1; then
+      echo "[OK] Docker Compose detected: $(docker compose version 2>/dev/null || echo 'version unknown')"
+    else
+      echo "[OK] Docker Compose detected: $(docker-compose version 2>/dev/null || echo 'version unknown')"
+    fi
+    
   else
     echo "[WARN] Unsupported/unknown OS '${OS}'. Proceeding without installing OS-level dependencies."
     if ! docker_ok || ! docker_compose_ok; then
       echo "ERROR: Docker and/or Docker Compose not found."
       exit 1
     fi
-  fi
-
-  echo "[OK] Docker detected: $(docker --version 2>/dev/null || true)"
-  if docker compose version >/dev/null 2>&1; then
-    echo "[OK] Docker Compose detected: $(docker compose version 2>/dev/null || true)"
-  else
-    echo "[OK] Docker Compose detected: $(docker-compose version 2>/dev/null || true)"
+    
+    echo "[OK] Docker detected: $(docker --version 2>/dev/null || echo 'version unknown')"
+    if docker compose version >/dev/null 2>&1; then
+      echo "[OK] Docker Compose detected: $(docker compose version 2>/dev/null || echo 'version unknown')"
+    else
+      echo "[OK] Docker Compose detected: $(docker-compose version 2>/dev/null || echo 'version unknown')"
+    fi
   fi
 }
 
@@ -182,11 +293,25 @@ ensure_docker_and_compose() {
 # Pre-flight (deps + docker)
 # --------------------------
 echo "[INFO] OS=${OS} ARCH=${ARCH}"
+
 if is_linux; then
   install_linux_build_deps
 fi
 
 ensure_docker_and_compose
+
+# Show summary of what was done
+echo ""
+if [ "$DOCKER_ALREADY_PRESENT" = true ] && [ "$COMPOSE_ALREADY_PRESENT" = true ]; then
+  echo "[OK] All dependencies were already installed. No changes made."
+elif [ "$DOCKER_ALREADY_PRESENT" = true ]; then
+  echo "[OK] Docker was already installed. Docker Compose has been set up."
+elif [ "$COMPOSE_ALREADY_PRESENT" = true ]; then
+  echo "[OK] Docker has been installed. Docker Compose was already available."
+else
+  echo "[OK] Docker and Docker Compose have been installed."
+fi
+
 echo ""
 
 # --------------------------
@@ -195,6 +320,12 @@ echo ""
 if [ -f ".env" ]; then
   echo ".env file already exists. Skipping setup."
   echo ""
+  
+  # Ensure sentinel file exists
+  if [ ! -f ".setup-complete" ]; then
+    touch .setup-complete
+  fi
+  
   exit 0
 fi
 
