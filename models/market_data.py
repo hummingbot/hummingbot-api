@@ -166,3 +166,28 @@ class OrderBookQueryResult(BaseModel):
     result_quote_volume: Optional[float] = Field(default=None, description="Resulting quote volume")
     average_price: Optional[float] = Field(default=None, description="Average/VWAP price")
     timestamp: float = Field(description="Query timestamp")
+
+
+# Trading Pair Management Models
+
+class AddTradingPairRequest(BaseModel):
+    """Request model for adding a trading pair to order book tracking"""
+    connector_name: str = Field(description="Name of the connector (e.g., 'binance', 'binance_perpetual')")
+    trading_pair: str = Field(description="Trading pair to add (e.g., 'BTC-USDT')")
+    account_name: Optional[str] = Field(default=None, description="Optional account name for trading connector preference")
+    timeout: float = Field(default=30.0, ge=1.0, le=120.0, description="Timeout in seconds for order book initialization")
+
+
+class RemoveTradingPairRequest(BaseModel):
+    """Request model for removing a trading pair from order book tracking"""
+    connector_name: str = Field(description="Name of the connector")
+    trading_pair: str = Field(description="Trading pair to remove")
+    account_name: Optional[str] = Field(default=None, description="Optional account name for trading connector preference")
+
+
+class TradingPairResponse(BaseModel):
+    """Response model for trading pair management operations"""
+    success: bool = Field(description="Whether the operation succeeded")
+    connector_name: str = Field(description="Name of the connector")
+    trading_pair: str = Field(description="Trading pair that was added/removed")
+    message: str = Field(description="Status message")

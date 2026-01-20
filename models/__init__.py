@@ -88,6 +88,10 @@ from .market_data import (
     PriceForQuoteVolumeRequest,
     VWAPForVolumeRequest,
     OrderBookQueryResult,
+    # Trading pair management models
+    AddTradingPairRequest,
+    RemoveTradingPairRequest,
+    TradingPairResponse,
 )
 
 # Account models
@@ -205,6 +209,19 @@ from .rate_oracle import (
     SingleRateResponse,
 )
 
+# Executor models
+from .executors import (
+    CreateExecutorRequest,
+    CreateExecutorResponse,
+    StopExecutorRequest,
+    StopExecutorResponse,
+    DeleteExecutorResponse,
+    ExecutorFilterRequest,
+    ExecutorResponse,
+    ExecutorDetailResponse,
+    ExecutorsSummaryResponse,
+)
+
 __all__ = [
     # Bot orchestration models
     "BotAction",
@@ -275,6 +292,10 @@ __all__ = [
     "PriceForQuoteVolumeRequest",
     "VWAPForVolumeRequest",
     "OrderBookQueryResult",
+    # Trading pair management models
+    "AddTradingPairRequest",
+    "RemoveTradingPairRequest",
+    "TradingPairResponse",
     # Account models
     "LeverageRequest",
     "PositionModeRequest",
@@ -363,4 +384,14 @@ __all__ = [
     "RateRequest",
     "RateResponse",
     "SingleRateResponse",
+    # Executor models
+    "CreateExecutorRequest",
+    "CreateExecutorResponse",
+    "StopExecutorRequest",
+    "StopExecutorResponse",
+    "DeleteExecutorResponse",
+    "ExecutorFilterRequest",
+    "ExecutorResponse",
+    "ExecutorDetailResponse",
+    "ExecutorsSummaryResponse",
 ]
