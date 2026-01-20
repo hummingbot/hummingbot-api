@@ -4,9 +4,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from hummingbot.client.settings import AllConnectorSettings
 
 from deps import get_accounts_service
-from models import AddTokenRequest
 from services.accounts_service import AccountsService
-from services.market_data_feed_manager import MarketDataFeedManager
+from services.market_data_service import MarketDataService
 
 router = APIRouter(tags=["Connectors"], prefix="/connectors")
 
@@ -48,25 +47,25 @@ async def get_trading_rules(
     """
     Get trading rules for a connector, optionally filtered by trading pairs.
     
-    This endpoint uses the MarketDataFeedManager to access non-trading connector instances,
+    This endpoint uses the MarketDataService to access non-trading connector instances,
     which means no authentication or account setup is required.
-    
+
     Args:
         request: FastAPI request object
         connector_name: Name of the connector (e.g., 'binance', 'binance_perpetual')
         trading_pairs: Optional list of trading pairs to filter by (e.g., ['BTC-USDT', 'ETH-USDT'])
-        
+
     Returns:
         Dictionary mapping trading pairs to their trading rules
-        
+
     Raises:
         HTTPException: 404 if connector not found, 500 for other errors
     """
     try:
-        market_data_feed_manager: MarketDataFeedManager = request.app.state.market_data_feed_manager
-        
+        market_data_service: MarketDataService = request.app.state.market_data_service
+
         # Get trading rules (filtered by trading pairs if provided)
-        rules = await market_data_feed_manager.get_trading_rules(connector_name, trading_pairs)
+        rules = await market_data_service.get_trading_rules(connector_name, trading_pairs)
         
         if "error" in rules:
             raise HTTPException(status_code=404, detail=f"Connector '{connector_name}' not found or error: {rules['error']}")
@@ -84,7 +83,7 @@ async def get_supported_order_types(request: Request, connector_name: str):
     """
     Get order types supported by a specific connector.
 
-    This endpoint uses the MarketDataFeedManager to access non-trading connector instances,
+    This endpoint uses the MarketDataService to access non-trading connector instances,
     which means no authentication or account setup is required.
 
     Args:
@@ -98,12 +97,12 @@ async def get_supported_order_types(request: Request, connector_name: str):
         HTTPException: 404 if connector not found, 500 for other errors
     """
     try:
-        market_data_feed_manager: MarketDataFeedManager = request.app.state.market_data_feed_manager
+        market_data_service: MarketDataService = request.app.state.market_data_service
 
-        # Access connector through MarketDataProvider's _non_trading_connectors LazyDict
-        # This lazily creates the connector if it doesn't exist
+        # Access connector through UnifiedConnectorService
+        # This creates a data connector if it doesn't exist
         try:
-            connector_instance = market_data_feed_manager.market_data_provider._non_trading_connectors[connector_name]
+            connector_instance = market_data_service.connector_service.get_data_connector(connector_name)
         except (KeyError, ValueError) as e:
             raise HTTPException(status_code=404, detail=f"Connector '{connector_name}' not found: {str(e)}")
 
