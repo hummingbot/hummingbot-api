@@ -1,0 +1,1252 @@
+"""
+UnifiedConnectorService - Single source of truth for all connector instances.
+
+This service consolidates connector management from:
+- ConnectorManager (trading connectors)
+- MarketDataProvider._non_trading_connectors (data-only connectors)
+
+Key features:
+- Trading connectors: authenticated, per-account, with order tracking
+- Data connectors: non-authenticated, shared, for public market data
+- get_best_connector_for_market(): prefers trading connector (has order book tracker)
+"""
+import asyncio
+import logging
+import time
+from decimal import Decimal
+from typing import Dict, List, Optional
+
+from hummingbot.client.config.config_crypt import ETHKeyFileSecretManger
+from hummingbot.client.config.config_helpers import (
+    api_keys_from_connector_config_map,
+    get_connector_class,
+    ClientConfigAdapter,
+)
+from hummingbot.client.settings import AllConnectorSettings
+from hummingbot.connector.connector_base import ConnectorBase
+from hummingbot.connector.connector_metrics_collector import TradeVolumeMetricCollector
+from hummingbot.connector.perpetual_derivative_py_base import PerpetualDerivativePyBase
+from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, TradeType
+from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderState
+from hummingbot.core.rate_oracle.rate_oracle import RateOracle
+from hummingbot.core.utils.async_utils import safe_ensure_future
+
+from utils.file_system import fs_util
+from utils.hummingbot_api_config_adapter import HummingbotAPIConfigAdapter
+from utils.security import BackendAPISecurity
+
+logger = logging.getLogger(__name__)
+
+
+class UnifiedConnectorService:
+    """
+    Single source of truth for ALL connector instances.
+
+    Manages two types of connectors:
+    1. Trading connectors: authenticated, per-account, with full trading capabilities
+    2. Data connectors: non-authenticated, shared, for public market data only
+
+    The key method `get_best_connector_for_market()` ensures that order book
+    operations use the trading connector when available (which already has
+    order_book_tracker running), falling back to data connector otherwise.
+    """
+
+    METRICS_ACTIVATION_INTERVAL = Decimal("900")  # 15 minutes
+    METRICS_VALUATION_TOKEN = "USDT"
+
+    def __init__(self, secrets_manager: ETHKeyFileSecretManger, db_manager=None):
+        self.secrets_manager = secrets_manager
+        self.db_manager = db_manager
+
+        # Trading connectors: account_name -> connector_name -> ConnectorBase
+        self._trading_connectors: Dict[str, Dict[str, ConnectorBase]] = {}
+
+        # Data-only connectors: connector_name -> ConnectorBase (shared, non-authenticated)
+        self._data_connectors: Dict[str, ConnectorBase] = {}
+        self._data_connectors_started: Dict[str, bool] = {}
+
+        # Order and funding recorders (for trading connectors)
+        self._orders_recorders: Dict[str, any] = {}
+        self._funding_recorders: Dict[str, any] = {}
+        self._metrics_collectors: Dict[str, TradeVolumeMetricCollector] = {}
+
+        # Connector settings cache
+        self._conn_settings = AllConnectorSettings.get_connector_settings()
+
+    # =========================================================================
+    # Trading Pairs Type-Normalizer Helpers
+    # =========================================================================
+
+    def _add_to_trading_pairs(self, trading_pairs_attr, trading_pair: str) -> bool:
+        """Add trading pair to a _trading_pairs attribute regardless of its type.
+
+        Args:
+            trading_pairs_attr: The _trading_pairs attribute (set, list, or dict)
+            trading_pair: The trading pair to add
+
+        Returns:
+            True if added, False if already present or unsupported type
+        """
+        if isinstance(trading_pairs_attr, set):
+            if trading_pair not in trading_pairs_attr:
+                trading_pairs_attr.add(trading_pair)
+                return True
+            return False
+        elif isinstance(trading_pairs_attr, list):
+            if trading_pair not in trading_pairs_attr:
+                trading_pairs_attr.append(trading_pair)
+                return True
+            return False
+        return False
+
+    def _remove_from_trading_pairs(self, trading_pairs_attr, trading_pair: str) -> bool:
+        """Remove trading pair from a _trading_pairs attribute regardless of its type.
+
+        Args:
+            trading_pairs_attr: The _trading_pairs attribute (set, list, or dict)
+            trading_pair: The trading pair to remove
+
+        Returns:
+            True if removed, False if not present or unsupported type
+        """
+        if isinstance(trading_pairs_attr, set):
+            if trading_pair in trading_pairs_attr:
+                trading_pairs_attr.discard(trading_pair)
+                return True
+            return False
+        elif isinstance(trading_pairs_attr, list):
+            if trading_pair in trading_pairs_attr:
+                trading_pairs_attr.remove(trading_pair)
+                return True
+            return False
+        return False
+
+    def _is_perpetual_connector(self, connector: ConnectorBase) -> bool:
+        """Check if connector is a perpetual derivative connector.
+
+        Args:
+            connector: The connector instance to check
+
+        Returns:
+            True if perpetual connector, False otherwise
+        """
+        return isinstance(connector, PerpetualDerivativePyBase)
+
+    # =========================================================================
+    # Trading Connector Management (authenticated, per-account)
+    # =========================================================================
+
+    async def get_trading_connector(
+        self,
+        account_name: str,
+        connector_name: str
+    ) -> ConnectorBase:
+        """
+        Get or create an authenticated trading connector for a specific account.
+
+        Trading connectors have:
+        - API key authentication
+        - Order tracking (OrdersRecorder)
+        - Funding tracking for perpetuals (FundingRecorder)
+        - Metrics collection
+        - Full trading capabilities
+
+        Args:
+            account_name: The account name
+            connector_name: The connector name (e.g., "binance", "binance_perpetual")
+
+        Returns:
+            Initialized trading connector
+        """
+        if account_name not in self._trading_connectors:
+            self._trading_connectors[account_name] = {}
+
+        if connector_name not in self._trading_connectors[account_name]:
+            connector = await self._create_and_initialize_trading_connector(
+                account_name, connector_name
+            )
+            self._trading_connectors[account_name][connector_name] = connector
+
+        return self._trading_connectors[account_name][connector_name]
+
+    def get_all_trading_connectors(self) -> Dict[str, Dict[str, ConnectorBase]]:
+        """
+        Get all trading connectors organized by account.
+
+        Returns:
+            Dict mapping account_name -> connector_name -> ConnectorBase
+        """
+        return self._trading_connectors
+
+    def get_account_connectors(self, account_name: str) -> Dict[str, ConnectorBase]:
+        """
+        Get all connectors for a specific account.
+
+        Args:
+            account_name: Account name
+
+        Returns:
+            Dict mapping connector_name -> ConnectorBase for this account
+        """
+        return self._trading_connectors.get(account_name, {})
+
+    def is_trading_connector_initialized(
+        self,
+        account_name: str,
+        connector_name: str
+    ) -> bool:
+        """Check if a trading connector is already initialized."""
+        return (
+            account_name in self._trading_connectors and
+            connector_name in self._trading_connectors[account_name]
+        )
+
+    # =========================================================================
+    # Data Connector Management (non-authenticated, shared)
+    # =========================================================================
+
+    def get_data_connector(self, connector_name: str) -> ConnectorBase:
+        """
+        Get or create a non-authenticated data connector for public market data.
+
+        Data connectors:
+        - No API keys required (public endpoints only)
+        - Shared across accounts
+        - Used for: trading rules, prices, order books, candles
+        - NOT used for: trading, balance queries
+
+        Args:
+            connector_name: The connector name
+
+        Returns:
+            Non-authenticated connector instance
+        """
+        if connector_name not in self._data_connectors:
+            self._data_connectors[connector_name] = self._create_data_connector(
+                connector_name
+            )
+        return self._data_connectors[connector_name]
+
+    async def ensure_data_connector_started(
+        self,
+        connector_name: str,
+        trading_pair: str
+    ) -> bool:
+        """
+        Ensure a data connector's network is started with at least one trading pair.
+
+        This is needed because exchanges close WebSocket connections without subscriptions.
+
+        Args:
+            connector_name: The connector name
+            trading_pair: Initial trading pair to subscribe to
+
+        Returns:
+            True if started successfully
+        """
+        if self._data_connectors_started.get(connector_name, False):
+            return True
+
+        connector = self.get_data_connector(connector_name)
+
+        try:
+            # Add trading pair before starting network
+            if hasattr(connector, '_trading_pairs'):
+                self._add_to_trading_pairs(connector._trading_pairs, trading_pair)
+
+            # Start network
+            await connector.start_network()
+            self._data_connectors_started[connector_name] = True
+            logger.info(f"Started data connector: {connector_name} with pair {trading_pair}")
+
+            # Wait for order book tracker to be ready
+            max_wait = 30
+            waited = 0
+            tracker = connector.order_book_tracker
+            while waited < max_wait:
+                if tracker._order_book_stream_listener_task is not None:
+                    await asyncio.sleep(2.0)
+                    break
+                await asyncio.sleep(0.5)
+                waited += 0.5
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Error starting data connector {connector_name}: {e}")
+            return False
+
+    # =========================================================================
+    # Best Connector Selection (THE KEY FIX)
+    # =========================================================================
+
+    def get_best_connector_for_market(
+        self,
+        connector_name: str,
+        account_name: Optional[str] = None
+    ) -> Optional[ConnectorBase]:
+        """
+        Get the best available connector for market operations (order books, prices).
+
+        CRITICAL: This method ensures order book initialization uses the correct
+        connector. It prefers trading connectors because they already have
+        order_book_tracker running with WebSocket connections.
+
+        Priority:
+        1. Specific account's trading connector (if account_name provided)
+        2. Any trading connector for this connector_name
+        3. Data connector (creates new if needed)
+
+        Args:
+            connector_name: The connector name
+            account_name: Optional account to prefer
+
+        Returns:
+            Best available connector for market operations
+        """
+        # 1. Try specific account's trading connector
+        if account_name:
+            trading = self._trading_connectors.get(account_name, {}).get(connector_name)
+            if trading:
+                logger.debug(
+                    f"Using trading connector for {connector_name} "
+                    f"(account: {account_name})"
+                )
+                return trading
+
+        # 2. Try ANY trading connector for this connector_name
+        for acc_name, acc_connectors in self._trading_connectors.items():
+            if connector_name in acc_connectors:
+                logger.debug(
+                    f"Using trading connector for {connector_name} "
+                    f"(found in account: {acc_name})"
+                )
+                return acc_connectors[connector_name]
+
+        # 3. Fall back to data connector
+        logger.debug(f"Using data connector for {connector_name} (no trading connector)")
+        return self.get_data_connector(connector_name)
+
+    # =========================================================================
+    # Order Book Initialization
+    # =========================================================================
+
+    async def initialize_order_book(
+        self,
+        connector_name: str,
+        trading_pair: str,
+        account_name: Optional[str] = None,
+        timeout: float = 30.0
+    ) -> bool:
+        """
+        Initialize order book for a trading pair using the best available connector.
+
+        This method:
+        1. Gets the best connector (prefers trading over data)
+        2. Adds trading pair to order book tracker
+        3. Waits for order book to have valid data
+
+        Args:
+            connector_name: The connector name
+            trading_pair: The trading pair
+            account_name: Optional account to prefer
+            timeout: Timeout in seconds
+
+        Returns:
+            True if order book initialized successfully
+        """
+        connector = self.get_best_connector_for_market(connector_name, account_name)
+
+        if not connector:
+            logger.error(f"No connector available for {connector_name}")
+            return False
+
+        if not hasattr(connector, 'order_book_tracker'):
+            logger.warning(f"Connector {connector_name} has no order_book_tracker")
+            return False
+
+        tracker = connector.order_book_tracker
+
+        # Check if already initialized
+        if trading_pair in tracker.order_books:
+            ob = tracker.order_books[trading_pair]
+            try:
+                bids, asks = ob.snapshot
+                if len(bids) > 0 and len(asks) > 0:
+                    logger.info(f"Order book for {trading_pair} already initialized")
+                    return True
+            except Exception:
+                pass
+
+        # For data connectors, ensure network is started
+        if connector_name in self._data_connectors:
+            if not self._data_connectors_started.get(connector_name, False):
+                success = await self.ensure_data_connector_started(
+                    connector_name, trading_pair
+                )
+                if not success:
+                    return False
+                # Wait for order book after starting
+                return await self._wait_for_order_book(tracker, trading_pair, timeout)
+            else:
+                # Connector started, dynamically add trading pair
+                success = await self._add_trading_pair_to_tracker(
+                    connector, trading_pair
+                )
+                if not success:
+                    return False
+
+        # For trading connectors, dynamically add trading pair
+        else:
+            success = await self._add_trading_pair_to_tracker(connector, trading_pair)
+            if not success:
+                return False
+
+        # Wait for order book to have data
+        return await self._wait_for_order_book(tracker, trading_pair, timeout)
+
+    def _ensure_order_book_tracker_started(self, connector: ConnectorBase) -> bool:
+        """Ensure the order book tracker is started for a connector.
+
+        This is called lazily when the first trading pair is added, not at
+        connector initialization. Exchanges like Binance disconnect WebSocket
+        connections that have no subscriptions, so we must wait until we have
+        at least one trading pair before starting the tracker.
+
+        Returns:
+            True if tracker is running (or was started), False if no tracker available
+        """
+        if not hasattr(connector, 'order_book_tracker') or not connector.order_book_tracker:
+            return False
+
+        tracker = connector.order_book_tracker
+
+        # Check if already running
+        if hasattr(tracker, '_order_book_stream_listener_task') and tracker._order_book_stream_listener_task:
+            return True
+
+        # Start the tracker
+        if hasattr(tracker, 'start'):
+            try:
+                tracker.start()
+                logger.info(f"Started order book tracker for {type(connector).__name__}")
+                return True
+            except Exception as e:
+                logger.error(f"Failed to start order book tracker: {e}")
+                return False
+
+        return False
+
+    async def _add_trading_pair_to_tracker(
+        self,
+        connector: ConnectorBase,
+        trading_pair: str
+    ) -> bool:
+        """Add a trading pair to connector's order book tracker.
+
+        Uses the connector's add_trading_pair method which is now available on
+        ExchangePyBase (and PerpetualDerivativePyBase). This method handles:
+        - Order book initialization via order_book_tracker
+        - Funding info initialization for perpetual connectors
+
+        IMPORTANT: This method ensures trading pairs are added BEFORE starting
+        the order book tracker. Exchanges like Binance disconnect WebSockets
+        that have no subscriptions, so we must register the trading pair first.
+        """
+        try:
+            # CRITICAL: First register the trading pair with the tracker's internal set
+            # This must happen BEFORE starting the tracker so it knows what to subscribe to
+            if hasattr(connector, 'order_book_tracker') and connector.order_book_tracker:
+                tracker = connector.order_book_tracker
+                if hasattr(tracker, '_trading_pairs'):
+                    was_added = self._add_to_trading_pairs(tracker._trading_pairs, trading_pair)
+                    if was_added:
+                        logger.debug(f"Registered {trading_pair} with order book tracker's _trading_pairs")
+
+            # Now ensure order book tracker is started (lazy initialization)
+            # The tracker will use _trading_pairs to know what to subscribe to
+            tracker_started = self._ensure_order_book_tracker_started(connector)
+            if not tracker_started:
+                logger.warning(f"Could not start order book tracker for {type(connector).__name__}")
+
+            # FIX: Check if order book was initialized during tracker startup.
+            # This happens for the FIRST trading pair when tracker.start() calls _init_order_books().
+            # Without this check, the code would continue to connector.add_trading_pair() which
+            # returns False (pair already exists), then fall through to the data source fallback
+            # which OVERWRITES the order book unnecessarily.
+            tracker = None
+            if hasattr(connector, 'order_book_tracker') and connector.order_book_tracker:
+                tracker = connector.order_book_tracker
+                if hasattr(tracker, 'order_books') and trading_pair in tracker.order_books:
+                    try:
+                        ob = tracker.order_books[trading_pair]
+                        bids, asks = ob.snapshot
+                        if len(bids) > 0 or len(asks) > 0:
+                            logger.info(f"Order book for {trading_pair} initialized during tracker startup")
+                            return True
+                    except Exception:
+                        pass  # Order book exists but may not have data yet, continue
+
+            # Try connector.add_trading_pair() first - available on ExchangePyBase
+            # and PerpetualDerivativePyBase (handles funding info automatically)
+            if hasattr(connector, 'add_trading_pair'):
+                try:
+                    result = await connector.add_trading_pair(trading_pair)
+                    if result:
+                        logger.info(f"Added trading pair {trading_pair} via connector.add_trading_pair()")
+                        return True
+                except Exception as e:
+                    logger.debug(f"connector.add_trading_pair failed: {e}")
+
+            # Fallback: Try order_book_tracker.add_trading_pair directly
+            # (for older connectors that don't have the base class method)
+            if hasattr(connector, 'order_book_tracker') and hasattr(connector.order_book_tracker, 'add_trading_pair'):
+                try:
+                    result = await connector.order_book_tracker.add_trading_pair(trading_pair)
+                    if result:
+                        logger.info(f"Added trading pair {trading_pair} via order_book_tracker.add_trading_pair()")
+                        return True
+                except Exception as e:
+                    logger.debug(f"order_book_tracker.add_trading_pair failed: {e}")
+
+            # Last resort fallback: Use orderbook data source to initialize order book directly
+            if hasattr(connector, '_orderbook_ds') and connector._orderbook_ds:
+                try:
+                    orderbook_ds = connector._orderbook_ds
+                    tracker = connector.order_book_tracker
+
+                    # Get initial order book from data source
+                    order_book = await orderbook_ds.get_new_order_book(trading_pair)
+
+                    # Add to tracker's order_books dict
+                    if hasattr(tracker, 'order_books'):
+                        tracker.order_books[trading_pair] = order_book
+
+                        # Also add to trading pairs tracking
+                        if hasattr(tracker, '_trading_pairs'):
+                            self._add_to_trading_pairs(tracker._trading_pairs, trading_pair)
+
+                        logger.info(f"Initialized order book for {trading_pair} via data source fallback")
+                        return True
+
+                except Exception as e:
+                    logger.error(f"Failed to initialize order book via data source: {e}")
+
+            logger.warning(
+                f"Connector {type(connector).__name__} doesn't support "
+                f"dynamic trading pair addition"
+            )
+            return False
+
+        except Exception as e:
+            logger.error(f"Error adding trading pair {trading_pair}: {e}")
+            return False
+
+    async def remove_trading_pair(
+        self,
+        connector_name: str,
+        trading_pair: str,
+        account_name: Optional[str] = None
+    ) -> bool:
+        """
+        Remove a trading pair from a connector's order book tracker.
+
+        This method cleans up order book resources for a trading pair that is
+        no longer needed. Useful for:
+        - Executor cleanup when stopping
+        - Memory management for unused pairs
+        - Account cleanup operations
+
+        Args:
+            connector_name: The connector name
+            trading_pair: The trading pair to remove
+            account_name: Optional account to target specific trading connector
+
+        Returns:
+            True if successfully removed, False otherwise
+        """
+        connector = self.get_best_connector_for_market(connector_name, account_name)
+
+        if not connector:
+            logger.warning(f"No connector available for {connector_name} to remove {trading_pair}")
+            return False
+
+        return await self._remove_trading_pair_from_tracker(connector, trading_pair)
+
+    async def _remove_trading_pair_from_tracker(
+        self,
+        connector: ConnectorBase,
+        trading_pair: str
+    ) -> bool:
+        """Remove a trading pair from connector's order book tracker.
+
+        Uses the connector's remove_trading_pair method which is now available on
+        ExchangePyBase (and PerpetualDerivativePyBase). This method handles:
+        - Order book cleanup via order_book_tracker
+        - Funding info cleanup for perpetual connectors
+        """
+        try:
+            # Try connector.remove_trading_pair() first - available on ExchangePyBase
+            # and PerpetualDerivativePyBase (handles funding info cleanup automatically)
+            if hasattr(connector, 'remove_trading_pair'):
+                try:
+                    result = await connector.remove_trading_pair(trading_pair)
+                    if result:
+                        logger.info(f"Removed trading pair {trading_pair} via connector.remove_trading_pair()")
+                        return True
+                except Exception as e:
+                    logger.debug(f"connector.remove_trading_pair failed: {e}")
+
+            # Fallback: Try order_book_tracker.remove_trading_pair directly
+            if hasattr(connector, 'order_book_tracker') and hasattr(connector.order_book_tracker, 'remove_trading_pair'):
+                try:
+                    result = await connector.order_book_tracker.remove_trading_pair(trading_pair)
+                    if result:
+                        logger.info(f"Removed trading pair {trading_pair} via order_book_tracker.remove_trading_pair()")
+                        return True
+                except Exception as e:
+                    logger.debug(f"order_book_tracker.remove_trading_pair failed: {e}")
+
+            # Last resort fallback: Manual removal from tracker
+            if hasattr(connector, 'order_book_tracker'):
+                tracker = connector.order_book_tracker
+                removed = False
+
+                # Remove from order_books dict
+                if hasattr(tracker, 'order_books') and trading_pair in tracker.order_books:
+                    del tracker.order_books[trading_pair]
+                    removed = True
+
+                # Remove from trading pairs tracking
+                if hasattr(tracker, '_trading_pairs'):
+                    self._remove_from_trading_pairs(tracker._trading_pairs, trading_pair)
+
+                if removed:
+                    logger.info(f"Removed trading pair {trading_pair} via manual fallback")
+                    return True
+
+            logger.warning(
+                f"Connector {type(connector).__name__} doesn't support "
+                f"dynamic trading pair removal or pair not found"
+            )
+            return False
+
+        except Exception as e:
+            logger.error(f"Error removing trading pair {trading_pair}: {e}")
+            return False
+
+    async def _wait_for_order_book(
+        self,
+        tracker,
+        trading_pair: str,
+        timeout: float
+    ) -> bool:
+        """Wait for order book to have valid bid/ask data."""
+        waited = 0
+        interval = 0.5
+
+        while waited < timeout:
+            if trading_pair in tracker.order_books:
+                ob = tracker.order_books[trading_pair]
+                try:
+                    bids, asks = ob.snapshot
+                    if len(bids) > 0 and len(asks) > 0:
+                        logger.info(
+                            f"Order book for {trading_pair} ready with "
+                            f"{len(bids)} bids and {len(asks)} asks"
+                        )
+                        return True
+                except Exception:
+                    pass
+            await asyncio.sleep(interval)
+            waited += interval
+
+        logger.warning(f"Timeout waiting for {trading_pair} order book")
+        return False
+
+    # =========================================================================
+    # Trading Connector Creation (internal)
+    # =========================================================================
+
+    async def _create_and_initialize_trading_connector(
+        self,
+        account_name: str,
+        connector_name: str
+    ) -> ConnectorBase:
+        """Create and fully initialize a trading connector."""
+        # Authenticate and create connector
+        connector = self._create_trading_connector(account_name, connector_name)
+
+        # Initialize symbol map and trading rules
+        await connector._initialize_trading_pair_symbol_map()
+        await connector._update_trading_rules()
+        await connector._update_balances()
+
+        # Perpetual-specific setup
+        if self._is_perpetual_connector(connector):
+            if PositionMode.HEDGE in connector.supported_position_modes():
+                connector.set_position_mode(PositionMode.HEDGE)
+            await connector._update_positions()
+
+        # Load existing orders from database
+        if self.db_manager:
+            await self._load_existing_orders(connector, account_name, connector_name)
+
+        # Setup order and funding recorders
+        cache_key = f"{account_name}:{connector_name}"
+        if self.db_manager and cache_key not in self._orders_recorders:
+            from services.orders_recorder import OrdersRecorder
+            orders_recorder = OrdersRecorder(self.db_manager, account_name, connector_name)
+            orders_recorder.start(connector)
+            self._orders_recorders[cache_key] = orders_recorder
+
+            if self._is_perpetual_connector(connector):
+                from services.funding_recorder import FundingRecorder
+                funding_recorder = FundingRecorder(self.db_manager, account_name, connector_name)
+                funding_recorder.start(connector)
+                self._funding_recorders[cache_key] = funding_recorder
+
+        # Initialize metrics
+        self._initialize_metrics(connector, account_name, connector_name, cache_key)
+
+        # Start network tasks
+        await self._start_connector_network(connector)
+
+        # Initial state update
+        await self._update_connector_state(connector, connector_name, account_name)
+
+        logger.info(f"Initialized trading connector {connector_name} for {account_name}")
+        return connector
+
+    def _create_trading_connector(
+        self,
+        account_name: str,
+        connector_name: str
+    ) -> ConnectorBase:
+        """Create a trading connector with API keys."""
+        BackendAPISecurity.login_account(
+            account_name=account_name,
+            secrets_manager=self.secrets_manager
+        )
+
+        conn_setting = self._conn_settings[connector_name]
+        keys = BackendAPISecurity.api_keys(connector_name)
+
+        init_params = conn_setting.conn_init_parameters(
+            trading_pairs=[],
+            trading_required=True,
+            api_keys=keys,
+        )
+
+        connector_class = get_connector_class(connector_name)
+        return connector_class(**init_params)
+
+    def _create_data_connector(self, connector_name: str) -> ConnectorBase:
+        """Create a non-authenticated data connector."""
+        conn_setting = self._conn_settings.get(connector_name)
+        if not conn_setting:
+            raise ValueError(f"Connector {connector_name} not found")
+
+        # Get config keys but don't use real API keys
+        connector_config = AllConnectorSettings.get_connector_config_keys(connector_name)
+        if getattr(connector_config, "use_auth_for_public_endpoints", False):
+            api_keys = api_keys_from_connector_config_map(
+                ClientConfigAdapter(connector_config)
+            )
+        elif connector_config is not None:
+            api_keys = {
+                key: ""
+                for key in connector_config.__class__.model_fields.keys()
+                if key != "connector"
+            }
+        else:
+            api_keys = {}
+
+        init_params = conn_setting.conn_init_parameters(
+            trading_pairs=[],
+            trading_required=False,
+            api_keys=api_keys,
+        )
+
+        connector_class = get_connector_class(connector_name)
+        connector = connector_class(**init_params)
+
+        logger.info(f"Created data connector: {connector_name}")
+        return connector
+
+    # =========================================================================
+    # Network and State Management
+    # =========================================================================
+
+    async def _start_connector_network(self, connector: ConnectorBase):
+        """Start connector network tasks."""
+        try:
+            await self._stop_connector_network(connector)
+
+            connector._trading_rules_polling_task = safe_ensure_future(
+                connector._trading_rules_polling_loop()
+            )
+            connector._trading_fees_polling_task = safe_ensure_future(
+                connector._trading_fees_polling_loop()
+            )
+            connector._user_stream_tracker_task = connector._create_user_stream_tracker_task()
+            connector._user_stream_event_listener_task = safe_ensure_future(
+                connector._user_stream_event_listener()
+            )
+            connector._lost_orders_update_task = safe_ensure_future(
+                connector._lost_orders_update_polling_loop()
+            )
+
+            # NOTE: Order book tracker is started lazily when first trading pair is added
+            # (in _add_trading_pair_to_tracker). Starting it here with no subscriptions
+            # causes exchanges like Binance to immediately disconnect (close code 1008).
+
+            logger.debug(f"Started network tasks for connector")
+
+        except Exception as e:
+            logger.error(f"Error starting connector network: {e}")
+            raise
+
+    async def _stop_connector_network(self, connector: ConnectorBase):
+        """Stop connector network tasks."""
+        tasks = [
+            '_trading_rules_polling_task',
+            '_trading_fees_polling_task',
+            '_status_polling_task',
+            '_user_stream_tracker_task',
+            '_user_stream_event_listener_task',
+            '_lost_orders_update_task',
+        ]
+
+        for task_name in tasks:
+            task = getattr(connector, task_name, None)
+            if task:
+                task.cancel()
+                setattr(connector, task_name, None)
+
+        # Stop the order book tracker
+        if hasattr(connector, 'order_book_tracker') and connector.order_book_tracker:
+            tracker = connector.order_book_tracker
+            if hasattr(tracker, 'stop'):
+                tracker.stop()
+
+    async def _update_connector_state(
+        self,
+        connector: ConnectorBase,
+        connector_name: str,
+        account_name: str = None
+    ):
+        """Update connector state (balances, rules, positions)."""
+        try:
+            connector._set_current_timestamp(time.time())
+            await connector._update_balances()
+            await connector._update_trading_rules()
+
+            if self._is_perpetual_connector(connector):
+                await connector._update_positions()
+
+            if hasattr(connector, '_update_order_status') and connector.in_flight_orders:
+                await connector._update_order_status()
+                if account_name:
+                    await self._sync_orders_to_database(
+                        connector, account_name, connector_name
+                    )
+
+        except Exception as e:
+            logger.error(f"Error updating connector state: {e}")
+
+    async def update_all_trading_connector_states(self):
+        """Update state for all trading connectors."""
+        for account_name, connectors in self._trading_connectors.items():
+            for connector_name, connector in connectors.items():
+                try:
+                    await self._update_connector_state(
+                        connector, connector_name, account_name
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"Error updating {account_name}/{connector_name}: {e}"
+                    )
+
+    async def initialize_all_trading_connectors(self):
+        """
+        Initialize all trading connectors for all accounts at startup.
+
+        This ensures that:
+        1. All connectors are ready to use immediately
+        2. Existing orders from database are loaded into in_flight_orders
+        3. Order tracking and cancellation work without needing manual initialization
+        """
+        # Get list of all accounts
+        accounts = fs_util.list_folders('credentials')
+
+        total_initialized = 0
+        for account_name in accounts:
+            # Get all connector credentials for this account
+            connector_names = self.list_available_credentials(account_name)
+
+            for connector_name in connector_names:
+                try:
+                    logger.info(f"Initializing connector: {account_name}/{connector_name}")
+                    await self.get_trading_connector(account_name, connector_name)
+                    total_initialized += 1
+                except Exception as e:
+                    logger.error(f"Failed to initialize {account_name}/{connector_name}: {e}")
+                    # Continue with other connectors even if one fails
+                    continue
+
+        logger.info(f"Initialized {total_initialized} trading connectors across {len(accounts)} accounts")
+
+    # =========================================================================
+    # Order Management
+    # =========================================================================
+
+    async def _load_existing_orders(
+        self,
+        connector: ConnectorBase,
+        account_name: str,
+        connector_name: str
+    ):
+        """Load existing orders from database into connector."""
+        try:
+            from database import OrderRepository
+
+            async with self.db_manager.get_session_context() as session:
+                order_repo = OrderRepository(session)
+                active_orders = await order_repo.get_active_orders(
+                    account_name=account_name,
+                    connector_name=connector_name
+                )
+
+                for order_record in active_orders:
+                    try:
+                        in_flight_order = self._convert_db_order_to_in_flight(order_record)
+                        connector.in_flight_orders[in_flight_order.client_order_id] = in_flight_order
+                    except Exception as e:
+                        logger.error(f"Error loading order {order_record.client_order_id}: {e}")
+
+                logger.info(
+                    f"Loaded {len(connector.in_flight_orders)} orders for "
+                    f"{account_name}/{connector_name}"
+                )
+
+        except Exception as e:
+            logger.error(f"Error loading orders from database: {e}")
+
+    async def _sync_orders_to_database(
+        self,
+        connector: ConnectorBase,
+        account_name: str,
+        connector_name: str
+    ):
+        """Sync connector's in_flight_orders state to database."""
+        if not self.db_manager:
+            return
+
+        terminal_states = [
+            OrderState.FILLED, OrderState.CANCELED,
+            OrderState.FAILED, OrderState.COMPLETED
+        ]
+        orders_to_remove = []
+
+        for client_order_id, order in list(connector.in_flight_orders.items()):
+            try:
+                from database import OrderRepository
+
+                async with self.db_manager.get_session_context() as session:
+                    order_repo = OrderRepository(session)
+                    db_order = await order_repo.get_order_by_client_id(client_order_id)
+
+                    if db_order:
+                        new_status = self._map_order_state_to_status(order.current_state)
+                        if db_order.status != new_status:
+                            await order_repo.update_order_status(client_order_id, new_status)
+
+                    if order.current_state in terminal_states:
+                        orders_to_remove.append(client_order_id)
+
+            except Exception as e:
+                logger.error(f"Error syncing order {client_order_id}: {e}")
+
+        for order_id in orders_to_remove:
+            connector.in_flight_orders.pop(order_id, None)
+
+    async def sync_all_orders_to_database(self):
+        """
+        Sync connector's in_flight_orders state to database for all trading connectors.
+
+        The connector's built-in polling already updates in_flight_orders from the exchange.
+        This method syncs that state to our database and cleans up closed orders.
+        """
+        for account_name, connectors in self._trading_connectors.items():
+            for connector_name, connector in connectors.items():
+                try:
+                    if not connector.in_flight_orders:
+                        continue
+                    await self._sync_orders_to_database(connector, account_name, connector_name)
+                    logger.debug(f"Synced order state to DB for {account_name}/{connector_name}")
+                except Exception as e:
+                    logger.error(f"Error syncing order state for {account_name}/{connector_name}: {e}")
+
+    def _convert_db_order_to_in_flight(self, order_record) -> InFlightOrder:
+        """Convert database order to InFlightOrder."""
+        status_mapping = {
+            "SUBMITTED": OrderState.PENDING_CREATE,
+            "OPEN": OrderState.OPEN,
+            "PARTIALLY_FILLED": OrderState.PARTIALLY_FILLED,
+            "FILLED": OrderState.FILLED,
+            "CANCELLED": OrderState.CANCELED,
+            "FAILED": OrderState.FAILED,
+        }
+
+        order_state = status_mapping.get(order_record.status, OrderState.PENDING_CREATE)
+
+        try:
+            order_type = OrderType[order_record.order_type]
+        except (KeyError, ValueError):
+            order_type = OrderType.LIMIT
+
+        try:
+            trade_type = TradeType[order_record.trade_type]
+        except (KeyError, ValueError):
+            trade_type = TradeType.BUY
+
+        creation_timestamp = (
+            order_record.created_at.timestamp()
+            if order_record.created_at else time.time()
+        )
+
+        in_flight_order = InFlightOrder(
+            client_order_id=order_record.client_order_id,
+            trading_pair=order_record.trading_pair,
+            order_type=order_type,
+            trade_type=trade_type,
+            amount=Decimal(str(order_record.amount)),
+            creation_timestamp=creation_timestamp,
+            price=Decimal(str(order_record.price)) if order_record.price else None,
+            exchange_order_id=order_record.exchange_order_id,
+            initial_state=order_state,
+            leverage=1,
+            position=PositionAction.NIL,
+        )
+
+        in_flight_order.current_state = order_state
+        if order_record.filled_amount:
+            in_flight_order.executed_amount_base = Decimal(str(order_record.filled_amount))
+
+        return in_flight_order
+
+    def _map_order_state_to_status(self, order_state: OrderState) -> str:
+        """Map OrderState to database status string."""
+        mapping = {
+            OrderState.PENDING_CREATE: "SUBMITTED",
+            OrderState.OPEN: "OPEN",
+            OrderState.PENDING_CANCEL: "PENDING_CANCEL",
+            OrderState.CANCELED: "CANCELLED",
+            OrderState.PARTIALLY_FILLED: "PARTIALLY_FILLED",
+            OrderState.FILLED: "FILLED",
+            OrderState.FAILED: "FAILED",
+            OrderState.PENDING_APPROVAL: "SUBMITTED",
+            OrderState.APPROVED: "SUBMITTED",
+            OrderState.CREATED: "SUBMITTED",
+            OrderState.COMPLETED: "FILLED",
+        }
+        return mapping.get(order_state, "SUBMITTED")
+
+    # =========================================================================
+    # Metrics
+    # =========================================================================
+
+    def _initialize_metrics(
+        self,
+        connector: ConnectorBase,
+        account_name: str,
+        connector_name: str,
+        cache_key: str
+    ):
+        """Initialize trade volume metrics collector."""
+        if cache_key in self._metrics_collectors:
+            return
+
+        if "_paper_trade" in connector_name:
+            return
+
+        try:
+            instance_id = f"{account_name}_hbotapi"
+            rate_provider = RateOracle.get_instance()
+
+            metrics_collector = TradeVolumeMetricCollector(
+                connector=connector,
+                activation_interval=self.METRICS_ACTIVATION_INTERVAL,
+                rate_provider=rate_provider,
+                instance_id=instance_id,
+                valuation_token=self.METRICS_VALUATION_TOKEN
+            )
+            metrics_collector.start()
+            self._metrics_collectors[cache_key] = metrics_collector
+
+        except Exception as e:
+            logger.warning(f"Failed to init metrics for {connector_name}: {e}")
+
+    # =========================================================================
+    # Credentials and Configuration
+    # =========================================================================
+
+    async def update_connector_keys(
+        self,
+        account_name: str,
+        connector_name: str,
+        keys: dict
+    ) -> ConnectorBase:
+        """Update API keys and recreate connector."""
+        if not BackendAPISecurity.login_account(
+            account_name=account_name,
+            secrets_manager=self.secrets_manager
+        ):
+            raise ValueError(f"Failed to authenticate for {account_name}")
+
+        connector_config = HummingbotAPIConfigAdapter(
+            AllConnectorSettings.get_connector_config_keys(connector_name)
+        )
+
+        for key, value in keys.items():
+            setattr(connector_config, key, value)
+
+        BackendAPISecurity.update_connector_keys(account_name, connector_config)
+        BackendAPISecurity.decrypt_all(account_name=account_name)
+
+        # Clear old connector
+        self.clear_trading_connector(account_name, connector_name)
+
+        # Create new connector
+        return await self.get_trading_connector(account_name, connector_name)
+
+    def clear_trading_connector(
+        self,
+        account_name: Optional[str] = None,
+        connector_name: Optional[str] = None
+    ):
+        """Clear trading connector from cache."""
+        if account_name and connector_name:
+            if account_name in self._trading_connectors:
+                self._trading_connectors[account_name].pop(connector_name, None)
+        elif account_name:
+            self._trading_connectors.pop(account_name, None)
+        else:
+            self._trading_connectors.clear()
+
+    def list_account_connectors(self, account_name: str) -> List[str]:
+        """List initialized connectors for an account."""
+        return list(self._trading_connectors.get(account_name, {}).keys())
+
+    def list_available_credentials(self, account_name: str) -> List[str]:
+        """List connector credentials available for an account."""
+        try:
+            files = fs_util.list_files(f"credentials/{account_name}/connectors")
+            return [f.replace(".yml", "") for f in files if f.endswith(".yml")]
+        except FileNotFoundError:
+            return []
+
+    @staticmethod
+    def get_connector_config_map(connector_name: str):
+        """Get connector config field info."""
+        from typing import Literal, get_args, get_origin
+
+        connector_config = HummingbotAPIConfigAdapter(
+            AllConnectorSettings.get_connector_config_keys(connector_name)
+        )
+        fields_info = {}
+
+        for key, field in connector_config.hb_config.model_fields.items():
+            if key == "connector":
+                continue
+
+            field_type = field.annotation
+            type_name = getattr(field_type, "__name__", str(field_type))
+            allowed_values = None
+
+            origin = get_origin(field_type)
+            args = get_args(field_type)
+
+            if origin is Literal:
+                type_name = "Literal"
+                allowed_values = list(args)
+            elif origin is not None:
+                if type(None) in args:
+                    actual_types = [arg for arg in args if arg is not type(None)]
+                    if actual_types:
+                        inner_type = actual_types[0]
+                        inner_origin = get_origin(inner_type)
+                        inner_args = get_args(inner_type)
+                        if inner_origin is Literal:
+                            type_name = "Literal"
+                            allowed_values = list(inner_args)
+                        else:
+                            type_name = getattr(inner_type, "__name__", str(inner_type))
+                else:
+                    type_name = str(field_type)
+
+            field_info = {"type": type_name, "required": field.is_required()}
+            if allowed_values is not None:
+                field_info["allowed_values"] = allowed_values
+            fields_info[key] = field_info
+
+        return fields_info
+
+    # =========================================================================
+    # Cleanup
+    # =========================================================================
+
+    async def stop_trading_connector(self, account_name: str, connector_name: str):
+        """Stop a trading connector and its services."""
+        cache_key = f"{account_name}:{connector_name}"
+
+        # Stop recorders
+        if cache_key in self._orders_recorders:
+            try:
+                await self._orders_recorders[cache_key].stop()
+                del self._orders_recorders[cache_key]
+            except Exception as e:
+                logger.error(f"Error stopping orders recorder: {e}")
+
+        if cache_key in self._funding_recorders:
+            try:
+                await self._funding_recorders[cache_key].stop()
+                del self._funding_recorders[cache_key]
+            except Exception as e:
+                logger.error(f"Error stopping funding recorder: {e}")
+
+        if cache_key in self._metrics_collectors:
+            try:
+                self._metrics_collectors[cache_key].stop()
+                del self._metrics_collectors[cache_key]
+            except Exception as e:
+                logger.error(f"Error stopping metrics: {e}")
+
+        # Stop connector network
+        if account_name in self._trading_connectors:
+            connector = self._trading_connectors[account_name].get(connector_name)
+            if connector:
+                await self._stop_connector_network(connector)
+                del self._trading_connectors[account_name][connector_name]
+
+        logger.info(f"Stopped trading connector {account_name}/{connector_name}")
+
+    async def stop_all(self):
+        """Stop all connectors and services."""
+        # Stop all trading connectors
+        for account_name, connectors in list(self._trading_connectors.items()):
+            for connector_name in list(connectors.keys()):
+                await self.stop_trading_connector(account_name, connector_name)
+
+        # Stop data connectors
+        for connector_name, connector in self._data_connectors.items():
+            try:
+                await connector.stop_network()
+            except Exception as e:
+                logger.error(f"Error stopping data connector {connector_name}: {e}")
+
+        self._data_connectors.clear()
+        self._data_connectors_started.clear()
+
+        logger.info("Stopped all connectors")
