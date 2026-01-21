@@ -1,10 +1,10 @@
+import logging
 import secrets
 from contextlib import asynccontextmanager
 from typing import Annotated
 from urllib.parse import urlparse
 
 import logfire
-import logging
 from dotenv import load_dotenv
 
 # Load environment variables early
@@ -22,29 +22,22 @@ def patched_save_to_yml(yml_path, cm):
 
 # Apply the patch before importing hummingbot components
 from hummingbot.client.config import config_helpers
+
 config_helpers.save_to_yml = patched_save_to_yml
 
-from hummingbot.core.rate_oracle.rate_oracle import RateOracle, RATE_ORACLE_SOURCES
-from hummingbot.core.gateway.gateway_http_client import GatewayHttpClient
-from hummingbot.client.config.client_config_map import GatewayConfigMap
-
 from fastapi import Depends, FastAPI, HTTPException, Request, status
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from hummingbot.data_feed.market_data_provider import MarketDataProvider
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from hummingbot.client.config.client_config_map import GatewayConfigMap
 from hummingbot.client.config.config_crypt import ETHKeyFileSecretManger
+from hummingbot.core.gateway.gateway_http_client import GatewayHttpClient
+from hummingbot.core.rate_oracle.rate_oracle import RATE_ORACLE_SOURCES, RateOracle
+from hummingbot.data_feed.market_data_provider import MarketDataProvider
 
-from utils.security import BackendAPISecurity
-from services.bots_orchestrator import BotsOrchestrator
-from services.accounts_service import AccountsService
-from services.docker_service import DockerService
-from services.gateway_service import GatewayService
-from services.market_data_feed_manager import MarketDataFeedManager
-# from services.executor_service import ExecutorService
-from utils.bot_archiver import BotArchiver
-from routers import (
+from config import settings
+from routers import (  # executors,
     accounts,
     archived_bots,
     backtesting,
@@ -52,19 +45,25 @@ from routers import (
     connectors,
     controllers,
     docker,
-    # executors,
     gateway,
-    gateway_swap,
     gateway_clmm,
+    gateway_proxy,
+    gateway_swap,
     market_data,
     portfolio,
     rate_oracle,
     scripts,
-    trading
+    trading,
 )
+from services.accounts_service import AccountsService
+from services.bots_orchestrator import BotsOrchestrator
+from services.docker_service import DockerService
+from services.gateway_service import GatewayService
+from services.market_data_feed_manager import MarketDataFeedManager
 
-from config import settings
-
+# from services.executor_service import ExecutorService
+from utils.bot_archiver import BotArchiver
+from utils.security import BackendAPISecurity
 
 # Set up logging configuration
 logging.basicConfig(
@@ -233,6 +232,7 @@ app = FastAPI(
     description="API for managing Hummingbot trading instances",
     version=VERSION,
     lifespan=lifespan,
+    redirect_slashes=False,
 )
 
 # Add CORS middleware
@@ -311,6 +311,7 @@ app.include_router(rate_oracle.router, dependencies=[Depends(auth_user)])
 app.include_router(backtesting.router, dependencies=[Depends(auth_user)])
 app.include_router(archived_bots.router, dependencies=[Depends(auth_user)])
 # app.include_router(executors.router, dependencies=[Depends(auth_user)])
+app.include_router(gateway_proxy.router, dependencies=[Depends(auth_user)])
 
 @app.get("/")
 async def root():
