@@ -539,3 +539,75 @@ async def remove_trading_pair(
         )
 
 
+# Order Book Tracker Diagnostics Endpoints
+
+@router.get("/order-book/diagnostics/{connector_name}")
+async def get_order_book_diagnostics(
+    connector_name: str,
+    account_name: str = None,
+    market_data_service: MarketDataService = Depends(get_market_data_service)
+):
+    """
+    Get diagnostics for a connector's order book tracker.
+
+    Returns detailed information about the order book tracker status including:
+    - Task status (running/crashed)
+    - WebSocket connection status
+    - Metrics (messages processed, latency, etc.)
+    - Current order book state
+
+    Args:
+        connector_name: The connector to diagnose (e.g., "binance")
+        account_name: Optional account name for trading connectors
+
+    Returns:
+        Diagnostic information dictionary
+    """
+    try:
+        diagnostics = market_data_service.get_order_book_tracker_diagnostics(
+            connector_name=connector_name,
+            account_name=account_name
+        )
+        return diagnostics
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error getting diagnostics: {str(e)}"
+        )
+
+
+@router.post("/order-book/restart/{connector_name}")
+async def restart_order_book_tracker(
+    connector_name: str,
+    account_name: str = None,
+    market_data_service: MarketDataService = Depends(get_market_data_service)
+):
+    """
+    Restart the order book tracker for a connector.
+
+    Use this endpoint when the order book is stale (WebSocket disconnected).
+    This will:
+    1. Stop the existing order book tracker
+    2. Restart it with the same trading pairs
+    3. Wait for the WebSocket to reconnect
+
+    Args:
+        connector_name: The connector to restart (e.g., "binance")
+        account_name: Optional account name for trading connectors
+
+    Returns:
+        Restart status with success/failure and trading pairs
+    """
+    try:
+        result = await market_data_service.restart_order_book_tracker(
+            connector_name=connector_name,
+            account_name=account_name
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error restarting order book tracker: {str(e)}"
+        )
+
+
