@@ -405,36 +405,17 @@ class UnifiedConnectorService:
         # Wait for order book to have data
         return await self._wait_for_order_book(tracker, trading_pair, timeout)
 
-    def _ensure_order_book_tracker_started(self, connector: ConnectorBase) -> bool:
-        """Ensure the order book tracker is started for a connector.
-
-        This is called lazily when the first trading pair is added, not at
-        connector initialization. Exchanges like Binance disconnect WebSocket
-        connections that have no subscriptions, so we must wait until we have
-        at least one trading pair before starting the tracker.
-
-        Returns:
-            True if tracker is running (or was started), False if no tracker available
-        """
-        if not hasattr(connector, 'order_book_tracker') or not connector.order_book_tracker:
+    def _is_tracker_running(self, tracker) -> bool:
+        """Check if the order book tracker is running."""
+        if not tracker:
             return False
-
-        tracker = connector.order_book_tracker
-
-        # Check if already running
-        if hasattr(tracker, '_order_book_stream_listener_task') and tracker._order_book_stream_listener_task:
+        # Check if any of the main tasks exist and are not done
+        task = getattr(tracker, '_order_book_stream_listener_task', None)
+        if task and not task.done():
             return True
-
-        # Start the tracker
-        if hasattr(tracker, 'start'):
-            try:
-                tracker.start()
-                logger.info(f"Started order book tracker for {type(connector).__name__}")
-                return True
-            except Exception as e:
-                logger.error(f"Failed to start order book tracker: {e}")
-                return False
-
+        task = getattr(tracker, '_init_order_books_task', None)
+        if task and not task.done():
+            return True
         return False
 
     async def _add_trading_pair_to_tracker(
@@ -444,102 +425,82 @@ class UnifiedConnectorService:
     ) -> bool:
         """Add a trading pair to connector's order book tracker.
 
-        Uses the connector's add_trading_pair method which is now available on
-        ExchangePyBase (and PerpetualDerivativePyBase). This method handles:
-        - Order book initialization via order_book_tracker
-        - Funding info initialization for perpetual connectors
+        Simplified approach:
+        1. If tracker is already running, use connector.add_trading_pair()
+        2. Otherwise, register the pair first, then start the tracker
 
-        IMPORTANT: This method ensures trading pairs are added BEFORE starting
-        the order book tracker. Exchanges like Binance disconnect WebSockets
-        that have no subscriptions, so we must register the trading pair first.
+        The connector's add_trading_pair() method (from ExchangePyBase) handles:
+        - WebSocket subscription
+        - Order book snapshot fetching
+        - Tracking task creation
         """
         try:
-            # CRITICAL: First register the trading pair with the tracker's internal set
-            # This must happen BEFORE starting the tracker so it knows what to subscribe to
-            if hasattr(connector, 'order_book_tracker') and connector.order_book_tracker:
-                tracker = connector.order_book_tracker
-                if hasattr(tracker, '_trading_pairs'):
-                    was_added = self._add_to_trading_pairs(tracker._trading_pairs, trading_pair)
-                    if was_added:
-                        logger.debug(f"Registered {trading_pair} with order book tracker's _trading_pairs")
+            if not hasattr(connector, 'order_book_tracker') or not connector.order_book_tracker:
+                logger.warning(f"Connector {type(connector).__name__} has no order_book_tracker")
+                return False
 
-            # Now ensure order book tracker is started (lazy initialization)
-            # The tracker will use _trading_pairs to know what to subscribe to
-            tracker_started = self._ensure_order_book_tracker_started(connector)
-            if not tracker_started:
-                logger.warning(f"Could not start order book tracker for {type(connector).__name__}")
+            tracker = connector.order_book_tracker
 
-            # FIX: Check if order book was initialized during tracker startup.
-            # This happens for the FIRST trading pair when tracker.start() calls _init_order_books().
-            # Without this check, the code would continue to connector.add_trading_pair() which
-            # returns False (pair already exists), then fall through to the data source fallback
-            # which OVERWRITES the order book unnecessarily.
-            tracker = None
-            if hasattr(connector, 'order_book_tracker') and connector.order_book_tracker:
-                tracker = connector.order_book_tracker
-                if hasattr(tracker, 'order_books') and trading_pair in tracker.order_books:
-                    try:
-                        ob = tracker.order_books[trading_pair]
-                        bids, asks = ob.snapshot
-                        if len(bids) > 0 or len(asks) > 0:
-                            logger.info(f"Order book for {trading_pair} initialized during tracker startup")
-                            return True
-                    except Exception:
-                        pass  # Order book exists but may not have data yet, continue
+            # Case 1: Tracker is already running and ready
+            if self._is_tracker_running(tracker) and tracker.ready:
+                # Check if pair is already tracked
+                if trading_pair in tracker.order_books:
+                    logger.debug(f"Order book for {trading_pair} already exists")
+                    return True
 
-            # Try connector.add_trading_pair() first - available on ExchangePyBase
-            # and PerpetualDerivativePyBase (handles funding info automatically)
-            if hasattr(connector, 'add_trading_pair'):
-                try:
+                # Use connector's add_trading_pair method for dynamic addition
+                if hasattr(connector, 'add_trading_pair'):
+                    logger.info(f"Adding {trading_pair} to running tracker via connector.add_trading_pair()")
                     result = await connector.add_trading_pair(trading_pair)
                     if result:
-                        logger.info(f"Added trading pair {trading_pair} via connector.add_trading_pair()")
+                        logger.info(f"Successfully added {trading_pair} via connector.add_trading_pair()")
                         return True
-                except Exception as e:
-                    logger.debug(f"connector.add_trading_pair failed: {e}")
+                    else:
+                        logger.warning(f"connector.add_trading_pair() returned False for {trading_pair}")
 
-            # Fallback: Try order_book_tracker.add_trading_pair directly
-            # (for older connectors that don't have the base class method)
-            if hasattr(connector, 'order_book_tracker') and hasattr(connector.order_book_tracker, 'add_trading_pair'):
-                try:
-                    result = await connector.order_book_tracker.add_trading_pair(trading_pair)
-                    if result:
-                        logger.info(f"Added trading pair {trading_pair} via order_book_tracker.add_trading_pair()")
+            # Case 2: Tracker not running - need to start it with this trading pair
+            else:
+                logger.info(f"Starting order book tracker for {type(connector).__name__} with {trading_pair}")
+
+                # Register the trading pair FIRST (before starting tracker)
+                if hasattr(tracker, '_trading_pairs'):
+                    self._add_to_trading_pairs(tracker._trading_pairs, trading_pair)
+                    logger.debug(f"Registered {trading_pair} with tracker._trading_pairs")
+
+                # Start the tracker - it will initialize order books for registered pairs
+                if hasattr(tracker, 'start'):
+                    tracker.start()
+                    logger.info(f"Called tracker.start() for {type(connector).__name__}")
+
+                    # Wait for tracker to be ready
+                    try:
+                        await asyncio.wait_for(tracker.wait_ready(), timeout=30.0)
+                        logger.info(f"Order book tracker ready for {type(connector).__name__}")
+                    except asyncio.TimeoutError:
+                        logger.warning(f"Timeout waiting for tracker to be ready, checking order book directly")
+
+                    # Verify order book was initialized
+                    if trading_pair in tracker.order_books:
+                        logger.info(f"Order book for {trading_pair} initialized during tracker startup")
                         return True
-                except Exception as e:
-                    logger.debug(f"order_book_tracker.add_trading_pair failed: {e}")
 
-            # Last resort fallback: Use orderbook data source to initialize order book directly
+            # Fallback: Try to get order book snapshot directly
+            logger.info(f"Attempting fallback order book initialization for {trading_pair}")
             if hasattr(connector, '_orderbook_ds') and connector._orderbook_ds:
                 try:
-                    orderbook_ds = connector._orderbook_ds
-                    tracker = connector.order_book_tracker
-
-                    # Get initial order book from data source
-                    order_book = await orderbook_ds.get_new_order_book(trading_pair)
-
-                    # Add to tracker's order_books dict
-                    if hasattr(tracker, 'order_books'):
-                        tracker.order_books[trading_pair] = order_book
-
-                        # Also add to trading pairs tracking
-                        if hasattr(tracker, '_trading_pairs'):
-                            self._add_to_trading_pairs(tracker._trading_pairs, trading_pair)
-
-                        logger.info(f"Initialized order book for {trading_pair} via data source fallback")
-                        return True
-
+                    order_book = await connector._orderbook_ds.get_new_order_book(trading_pair)
+                    tracker.order_books[trading_pair] = order_book
+                    self._add_to_trading_pairs(tracker._trading_pairs, trading_pair)
+                    logger.info(f"Initialized order book for {trading_pair} via REST fallback")
+                    return True
                 except Exception as e:
-                    logger.error(f"Failed to initialize order book via data source: {e}")
+                    logger.error(f"Fallback order book initialization failed: {e}")
 
-            logger.warning(
-                f"Connector {type(connector).__name__} doesn't support "
-                f"dynamic trading pair addition"
-            )
+            logger.error(f"Failed to add {trading_pair} to order book tracker")
             return False
 
         except Exception as e:
-            logger.error(f"Error adding trading pair {trading_pair}: {e}")
+            logger.error(f"Error adding trading pair {trading_pair}: {e}", exc_info=True)
             return False
 
     async def remove_trading_pair(
@@ -634,6 +595,46 @@ class UnifiedConnectorService:
         except Exception as e:
             logger.error(f"Error removing trading pair {trading_pair}: {e}")
             return False
+
+    async def _wait_for_websocket_ready(
+        self,
+        connector: ConnectorBase,
+        timeout: float = 10.0
+    ) -> bool:
+        """Wait for the order book data source WebSocket to be connected.
+
+        The tracker.start() method launches listen_for_subscriptions() which:
+        1. Connects to WebSocket via _connected_websocket_assistant()
+        2. Sets _ws_assistant reference
+        3. Subscribes to channels
+
+        We need to wait for _ws_assistant to be set before trying to
+        subscribe to new trading pairs dynamically.
+
+        Args:
+            connector: The connector to check
+            timeout: Maximum time to wait in seconds
+
+        Returns:
+            True if WebSocket is ready, False if timeout
+        """
+        if not hasattr(connector, '_orderbook_ds') or not connector._orderbook_ds:
+            # No order book data source, can't check WebSocket
+            return True
+
+        data_source = connector._orderbook_ds
+        waited = 0
+        interval = 0.2
+
+        while waited < timeout:
+            if hasattr(data_source, '_ws_assistant') and data_source._ws_assistant is not None:
+                logger.debug(f"WebSocket ready for {type(connector).__name__}")
+                return True
+            await asyncio.sleep(interval)
+            waited += interval
+
+        logger.warning(f"Timeout waiting for WebSocket connection on {type(connector).__name__}")
+        return False
 
     async def _wait_for_order_book(
         self,
@@ -1250,3 +1251,191 @@ class UnifiedConnectorService:
         self._data_connectors_started.clear()
 
         logger.info("Stopped all connectors")
+
+    # =========================================================================
+    # Order Book Tracker Diagnostics & Restart
+    # =========================================================================
+
+    def get_order_book_tracker_diagnostics(
+        self,
+        connector_name: str,
+        account_name: Optional[str] = None
+    ) -> Dict:
+        """Get diagnostics for a connector's order book tracker.
+
+        Returns information about:
+        - Whether the tracker is running
+        - Task status (alive/crashed)
+        - Metrics (diffs processed, last update, etc.)
+        - WebSocket status
+
+        Args:
+            connector_name: The connector to diagnose
+            account_name: Optional account for trading connector
+
+        Returns:
+            Dictionary with diagnostic information
+        """
+        connector = self.get_best_connector_for_market(connector_name, account_name)
+
+        if not connector:
+            return {"error": f"No connector found for {connector_name}"}
+
+        diagnostics = {
+            "connector_type": type(connector).__name__,
+            "connector_name": connector_name,
+            "has_order_book_tracker": False,
+            "tracker_ready": False,
+            "tasks": {},
+            "trading_pairs": [],
+            "order_books": {},
+            "metrics": None,
+            "websocket_status": "unknown",
+        }
+
+        if not hasattr(connector, 'order_book_tracker') or not connector.order_book_tracker:
+            return diagnostics
+
+        tracker = connector.order_book_tracker
+        diagnostics["has_order_book_tracker"] = True
+        diagnostics["tracker_ready"] = tracker.ready if hasattr(tracker, 'ready') else False
+
+        # Get trading pairs
+        if hasattr(tracker, '_trading_pairs'):
+            diagnostics["trading_pairs"] = list(tracker._trading_pairs) if isinstance(tracker._trading_pairs, (list, set)) else []
+
+        # Check task status
+        task_names = [
+            '_order_book_stream_listener_task',
+            '_order_book_diff_listener_task',
+            '_order_book_trade_listener_task',
+            '_order_book_snapshot_listener_task',
+            '_order_book_diff_router_task',
+            '_order_book_snapshot_router_task',
+            '_init_order_books_task',
+            '_emit_trade_event_task',
+        ]
+
+        for task_name in task_names:
+            task = getattr(tracker, task_name, None)
+            if task is not None:
+                diagnostics["tasks"][task_name] = {
+                    "exists": True,
+                    "done": task.done(),
+                    "cancelled": task.cancelled(),
+                    "exception": str(task.exception()) if task.done() and not task.cancelled() and task.exception() else None,
+                }
+            else:
+                diagnostics["tasks"][task_name] = {"exists": False}
+
+        # Check order books
+        if hasattr(tracker, 'order_books'):
+            for trading_pair, order_book in tracker.order_books.items():
+                try:
+                    bids, asks = order_book.snapshot
+                    best_bid = float(bids.iloc[0]['price']) if len(bids) > 0 else None
+                    best_ask = float(asks.iloc[0]['price']) if len(asks) > 0 else None
+                    diagnostics["order_books"][trading_pair] = {
+                        "best_bid": best_bid,
+                        "best_ask": best_ask,
+                        "bid_count": len(bids),
+                        "ask_count": len(asks),
+                        "snapshot_uid": order_book.snapshot_uid if hasattr(order_book, 'snapshot_uid') else None,
+                        "last_diff_uid": order_book.last_diff_uid if hasattr(order_book, 'last_diff_uid') else None,
+                    }
+                except Exception as e:
+                    diagnostics["order_books"][trading_pair] = {"error": str(e)}
+
+        # Get metrics if available
+        if hasattr(tracker, 'metrics'):
+            try:
+                diagnostics["metrics"] = tracker.metrics.to_dict()
+            except Exception as e:
+                diagnostics["metrics"] = {"error": str(e)}
+
+        # Check WebSocket status
+        if hasattr(connector, '_orderbook_ds') and connector._orderbook_ds:
+            data_source = connector._orderbook_ds
+            if hasattr(data_source, '_ws_assistant') and data_source._ws_assistant is not None:
+                diagnostics["websocket_status"] = "connected"
+            else:
+                diagnostics["websocket_status"] = "not_connected"
+
+        return diagnostics
+
+    async def restart_order_book_tracker(
+        self,
+        connector_name: str,
+        account_name: Optional[str] = None
+    ) -> Dict:
+        """Restart the order book tracker for a connector.
+
+        This method:
+        1. Stops the existing order book tracker
+        2. Restarts it with the same trading pairs
+
+        Args:
+            connector_name: The connector to restart
+            account_name: Optional account for trading connector
+
+        Returns:
+            Dictionary with restart status
+        """
+        connector = self.get_best_connector_for_market(connector_name, account_name)
+
+        if not connector:
+            return {"success": False, "error": f"No connector found for {connector_name}"}
+
+        if not hasattr(connector, 'order_book_tracker') or not connector.order_book_tracker:
+            return {"success": False, "error": "Connector has no order book tracker"}
+
+        tracker = connector.order_book_tracker
+
+        # Get existing trading pairs before stopping
+        trading_pairs = []
+        if hasattr(tracker, '_trading_pairs'):
+            trading_pairs = list(tracker._trading_pairs) if isinstance(tracker._trading_pairs, (list, set)) else []
+
+        if not trading_pairs:
+            return {"success": False, "error": "No trading pairs to restart"}
+
+        try:
+            # Stop the tracker
+            logger.info(f"Stopping order book tracker for {connector_name}...")
+            tracker.stop()
+
+            # Wait a moment for cleanup
+            await asyncio.sleep(0.5)
+
+            # Re-add trading pairs to tracker before restarting
+            if hasattr(tracker, '_trading_pairs'):
+                if isinstance(tracker._trading_pairs, set):
+                    tracker._trading_pairs.clear()
+                    for tp in trading_pairs:
+                        tracker._trading_pairs.add(tp)
+                elif isinstance(tracker._trading_pairs, list):
+                    tracker._trading_pairs.clear()
+                    tracker._trading_pairs.extend(trading_pairs)
+
+            # Restart the tracker
+            logger.info(f"Restarting order book tracker for {connector_name} with pairs: {trading_pairs}")
+            tracker.start()
+
+            # Wait for initialization
+            try:
+                await asyncio.wait_for(tracker.wait_ready(), timeout=30.0)
+            except asyncio.TimeoutError:
+                logger.warning(f"Timeout waiting for tracker to be ready, continuing anyway...")
+
+            # Wait for WebSocket to be ready
+            await self._wait_for_websocket_ready(connector, timeout=10.0)
+
+            return {
+                "success": True,
+                "message": f"Order book tracker restarted for {connector_name}",
+                "trading_pairs": trading_pairs,
+            }
+
+        except Exception as e:
+            logger.error(f"Error restarting order book tracker: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}

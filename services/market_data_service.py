@@ -699,3 +699,45 @@ class MarketDataService:
     def connector_service(self) -> "UnifiedConnectorService":
         """Get the connector service instance."""
         return self._connector_service
+
+    # ==================== Order Book Tracker Diagnostics ====================
+
+    def get_order_book_tracker_diagnostics(
+        self,
+        connector_name: str,
+        account_name: Optional[str] = None
+    ) -> Dict:
+        """
+        Get diagnostics for a connector's order book tracker.
+
+        Args:
+            connector_name: Exchange connector name
+            account_name: Optional account name for trading connector preference
+
+        Returns:
+            Dictionary with diagnostic information
+        """
+        return self._connector_service.get_order_book_tracker_diagnostics(
+            connector_name=connector_name,
+            account_name=account_name
+        )
+
+    async def restart_order_book_tracker(
+        self,
+        connector_name: str,
+        account_name: Optional[str] = None
+    ) -> Dict:
+        """
+        Restart the order book tracker for a connector.
+
+        Args:
+            connector_name: Exchange connector name
+            account_name: Optional account name for trading connector preference
+
+        Returns:
+            Dictionary with restart status
+        """
+        return await self._connector_service.restart_order_book_tracker(
+            connector_name=connector_name,
+            account_name=account_name
+        )

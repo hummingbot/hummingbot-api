@@ -13,15 +13,6 @@ from typing import Any, Dict, List, Optional, Type
 
 from fastapi import HTTPException
 
-def _json_default(obj):
-    """JSON serializer for objects not serializable by default (used for DB persistence)."""
-    if isinstance(obj, Decimal):
-        return float(obj)
-    if isinstance(obj, Enum):
-        return obj.name
-    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
-
-
 from hummingbot.strategy_v2.executors.arbitrage_executor.arbitrage_executor import ArbitrageExecutor
 from hummingbot.strategy_v2.executors.arbitrage_executor.data_types import ArbitrageExecutorConfig
 from hummingbot.strategy_v2.executors.data_types import ExecutorConfigBase
@@ -39,11 +30,33 @@ from hummingbot.strategy_v2.executors.twap_executor.twap_executor import TWAPExe
 from hummingbot.strategy_v2.executors.xemm_executor.data_types import XEMMExecutorConfig
 from hummingbot.strategy_v2.executors.xemm_executor.xemm_executor import XEMMExecutor
 from hummingbot.strategy_v2.models.base import RunnableStatus
+from hummingbot.strategy_v2.models.executors import TrackedOrder
 
 from database import AsyncDatabaseManager
 from services.trading_service import TradingService, AccountTradingInterface
 
 logger = logging.getLogger(__name__)
+
+
+def _json_default(obj):
+    """JSON serializer for objects not serializable by default."""
+    if isinstance(obj, Decimal):
+        return float(obj)
+    if isinstance(obj, Enum):
+        return obj.name
+    if isinstance(obj, TrackedOrder):
+        return {
+            "order_id": obj.order_id,
+            "price": float(obj.price) if obj.price else None,
+            "executed_amount_base": float(obj.executed_amount_base) if obj.executed_amount_base else 0.0,
+            "executed_amount_quote": float(obj.executed_amount_quote) if obj.executed_amount_quote else 0.0,
+            "is_filled": obj.is_filled if hasattr(obj, 'is_filled') else False,
+            "is_open": obj.is_open if hasattr(obj, 'is_open') else False,
+        }
+    # Handle Pydantic models
+    if hasattr(obj, 'model_dump'):
+        return obj.model_dump(mode='json')
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 
 class ExecutorService:
@@ -437,9 +450,9 @@ class ExecutorService:
         metadata = self._executor_metadata.get(executor_id, {})
 
         try:
-            # Use Pydantic's built-in JSON serialization
+            # Use model_dump() then our custom serializer to handle TrackedOrder etc.
             executor_info = executor.executor_info
-            result = executor_info.model_dump(mode='json')
+            result = json.loads(json.dumps(executor_info.model_dump(), default=_json_default))
 
             # Add our metadata (not part of ExecutorInfo model)
             result["executor_id"] = executor_id
@@ -457,7 +470,35 @@ class ExecutorService:
 
         except Exception as e:
             # Fallback when executor_info validation fails (e.g., timestamp=None)
-            logger.debug(f"Error accessing executor_info for {executor_id}: {e}")
+            logger.warning(f"Error accessing executor_info for {executor_id}: {e}")
+
+            # Try to get real values directly from executor
+            try:
+                is_trading = executor.is_trading if hasattr(executor, 'is_trading') else False
+            except Exception:
+                is_trading = False
+
+            try:
+                raw_custom_info = executor.get_custom_info() if hasattr(executor, 'get_custom_info') else None
+                # Convert to JSON-safe format (handles Decimals, Enums, etc.)
+                if raw_custom_info:
+                    custom_info = json.loads(json.dumps(raw_custom_info, default=_json_default))
+                else:
+                    custom_info = None
+            except Exception:
+                custom_info = None
+
+            try:
+                net_pnl_quote = float(executor.net_pnl_quote) if hasattr(executor, 'net_pnl_quote') else 0.0
+                net_pnl_pct = float(executor.net_pnl_pct) if hasattr(executor, 'net_pnl_pct') else 0.0
+                cum_fees_quote = float(executor.cum_fees_quote) if hasattr(executor, 'cum_fees_quote') else 0.0
+                filled_amount_quote = float(executor.filled_amount_quote) if hasattr(executor, 'filled_amount_quote') else 0.0
+            except Exception:
+                net_pnl_quote = 0.0
+                net_pnl_pct = 0.0
+                cum_fees_quote = 0.0
+                filled_amount_quote = 0.0
+
             return {
                 "executor_id": executor_id,
                 "executor_type": metadata.get("executor_type"),
@@ -467,18 +508,18 @@ class ExecutorService:
                 "side": None,
                 "status": executor.status.name if hasattr(executor, 'status') else "UNKNOWN",
                 "is_active": not executor.is_closed if hasattr(executor, 'is_closed') else True,
-                "is_trading": False,
+                "is_trading": is_trading,
                 "timestamp": None,
                 "created_at": metadata.get("created_at").isoformat() if metadata.get("created_at") else None,
                 "close_type": executor.close_type.name if hasattr(executor, 'close_type') and executor.close_type else None,
                 "close_timestamp": None,
                 "controller_id": None,
-                "net_pnl_quote": 0.0,
-                "net_pnl_pct": 0.0,
-                "cum_fees_quote": 0.0,
-                "filled_amount_quote": 0.0,
+                "net_pnl_quote": net_pnl_quote,
+                "net_pnl_pct": net_pnl_pct,
+                "cum_fees_quote": cum_fees_quote,
+                "filled_amount_quote": filled_amount_quote,
                 "config": metadata.get("config"),
-                "custom_info": None,
+                "custom_info": custom_info,
             }
 
     def get_summary(self) -> Dict[str, Any]:
