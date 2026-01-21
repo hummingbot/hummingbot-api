@@ -58,7 +58,7 @@ async def forward_to_gateway(
 
     # Get request body if present
     body = None
-    if request.method in ["POST", "PUT", "PATCH"]:
+    if request.method in ["POST", "PUT", "PATCH", "DELETE"]:
         try:
             body = await request.json()
         except Exception:
