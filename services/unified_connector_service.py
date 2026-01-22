@@ -25,6 +25,7 @@ from hummingbot.client.config.config_helpers import (
 from hummingbot.client.settings import AllConnectorSettings
 from hummingbot.connector.connector_base import ConnectorBase
 from hummingbot.connector.connector_metrics_collector import TradeVolumeMetricCollector
+from hummingbot.connector.exchange_py_base import ExchangePyBase
 from hummingbot.connector.perpetual_derivative_py_base import PerpetualDerivativePyBase
 from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, TradeType
 from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderState
@@ -72,54 +73,6 @@ class UnifiedConnectorService:
 
         # Connector settings cache
         self._conn_settings = AllConnectorSettings.get_connector_settings()
-
-    # =========================================================================
-    # Trading Pairs Type-Normalizer Helpers
-    # =========================================================================
-
-    def _add_to_trading_pairs(self, trading_pairs_attr, trading_pair: str) -> bool:
-        """Add trading pair to a _trading_pairs attribute regardless of its type.
-
-        Args:
-            trading_pairs_attr: The _trading_pairs attribute (set, list, or dict)
-            trading_pair: The trading pair to add
-
-        Returns:
-            True if added, False if already present or unsupported type
-        """
-        if isinstance(trading_pairs_attr, set):
-            if trading_pair not in trading_pairs_attr:
-                trading_pairs_attr.add(trading_pair)
-                return True
-            return False
-        elif isinstance(trading_pairs_attr, list):
-            if trading_pair not in trading_pairs_attr:
-                trading_pairs_attr.append(trading_pair)
-                return True
-            return False
-        return False
-
-    def _remove_from_trading_pairs(self, trading_pairs_attr, trading_pair: str) -> bool:
-        """Remove trading pair from a _trading_pairs attribute regardless of its type.
-
-        Args:
-            trading_pairs_attr: The _trading_pairs attribute (set, list, or dict)
-            trading_pair: The trading pair to remove
-
-        Returns:
-            True if removed, False if not present or unsupported type
-        """
-        if isinstance(trading_pairs_attr, set):
-            if trading_pair in trading_pairs_attr:
-                trading_pairs_attr.discard(trading_pair)
-                return True
-            return False
-        elif isinstance(trading_pairs_attr, list):
-            if trading_pair in trading_pairs_attr:
-                trading_pairs_attr.remove(trading_pair)
-                return True
-            return False
-        return False
 
     def _is_perpetual_connector(self, connector: ConnectorBase) -> bool:
         """Check if connector is a perpetual derivative connector.
@@ -251,8 +204,8 @@ class UnifiedConnectorService:
 
         try:
             # Add trading pair before starting network
-            if hasattr(connector, '_trading_pairs'):
-                self._add_to_trading_pairs(connector._trading_pairs, trading_pair)
+            if trading_pair not in connector._trading_pairs:
+                connector._trading_pairs.append(trading_pair)
 
             # Start network
             await connector.start_network()
@@ -361,10 +314,6 @@ class UnifiedConnectorService:
             logger.error(f"No connector available for {connector_name}")
             return False
 
-        if not hasattr(connector, 'order_book_tracker'):
-            logger.warning(f"Connector {connector_name} has no order_book_tracker")
-            return False
-
         tracker = connector.order_book_tracker
 
         # Check if already initialized
@@ -409,92 +358,75 @@ class UnifiedConnectorService:
         """Check if the order book tracker is running."""
         if not tracker:
             return False
-        # Check if any of the main tasks exist and are not done
-        task = getattr(tracker, '_order_book_stream_listener_task', None)
+        task = tracker._order_book_stream_listener_task
         if task and not task.done():
             return True
-        task = getattr(tracker, '_init_order_books_task', None)
+        task = tracker._init_order_books_task
         if task and not task.done():
             return True
         return False
 
     async def _add_trading_pair_to_tracker(
         self,
-        connector: ConnectorBase,
+        connector: ExchangePyBase,
         trading_pair: str
     ) -> bool:
         """Add a trading pair to connector's order book tracker.
 
-        Simplified approach:
-        1. If tracker is already running, use connector.add_trading_pair()
-        2. Otherwise, register the pair first, then start the tracker
+        ExchangePyBase connectors have:
+        - order_book_tracker with _trading_pairs, start(), _orderbook_ds
+        - add_trading_pair() for dynamic addition
 
-        The connector's add_trading_pair() method (from ExchangePyBase) handles:
-        - WebSocket subscription
-        - Order book snapshot fetching
-        - Tracking task creation
+        Approach:
+        1. If tracker is running, use connector.add_trading_pair()
+        2. Otherwise, register the pair and start the tracker
         """
         try:
-            if not hasattr(connector, 'order_book_tracker') or not connector.order_book_tracker:
-                logger.warning(f"Connector {type(connector).__name__} has no order_book_tracker")
-                return False
-
             tracker = connector.order_book_tracker
 
             # Case 1: Tracker is already running and ready
             if self._is_tracker_running(tracker) and tracker.ready:
-                # Check if pair is already tracked
                 if trading_pair in tracker.order_books:
                     logger.debug(f"Order book for {trading_pair} already exists")
                     return True
 
-                # Use connector's add_trading_pair method for dynamic addition
-                if hasattr(connector, 'add_trading_pair'):
-                    logger.info(f"Adding {trading_pair} to running tracker via connector.add_trading_pair()")
-                    result = await connector.add_trading_pair(trading_pair)
-                    if result:
-                        logger.info(f"Successfully added {trading_pair} via connector.add_trading_pair()")
-                        return True
-                    else:
-                        logger.warning(f"connector.add_trading_pair() returned False for {trading_pair}")
+                logger.info(f"Adding {trading_pair} to running tracker")
+                result = await connector.add_trading_pair(trading_pair)
+                if result:
+                    logger.info(f"Successfully added {trading_pair}")
+                    return True
+                logger.warning(f"add_trading_pair() returned False for {trading_pair}")
 
-            # Case 2: Tracker not running - need to start it with this trading pair
+            # Case 2: Tracker not running - start it with this trading pair
             else:
                 logger.info(f"Starting order book tracker for {type(connector).__name__} with {trading_pair}")
 
-                # Register the trading pair FIRST (before starting tracker)
-                if hasattr(tracker, '_trading_pairs'):
-                    self._add_to_trading_pairs(tracker._trading_pairs, trading_pair)
-                    logger.debug(f"Registered {trading_pair} with tracker._trading_pairs")
+                # Register the trading pair before starting tracker
+                if trading_pair not in tracker._trading_pairs:
+                    tracker._trading_pairs.append(trading_pair)
 
-                # Start the tracker - it will initialize order books for registered pairs
-                if hasattr(tracker, 'start'):
-                    tracker.start()
-                    logger.info(f"Called tracker.start() for {type(connector).__name__}")
-
-                    # Wait for tracker to be ready
-                    try:
-                        await asyncio.wait_for(tracker.wait_ready(), timeout=30.0)
-                        logger.info(f"Order book tracker ready for {type(connector).__name__}")
-                    except asyncio.TimeoutError:
-                        logger.warning(f"Timeout waiting for tracker to be ready, checking order book directly")
-
-                    # Verify order book was initialized
-                    if trading_pair in tracker.order_books:
-                        logger.info(f"Order book for {trading_pair} initialized during tracker startup")
-                        return True
-
-            # Fallback: Try to get order book snapshot directly
-            logger.info(f"Attempting fallback order book initialization for {trading_pair}")
-            if hasattr(connector, '_orderbook_ds') and connector._orderbook_ds:
+                tracker.start()
                 try:
-                    order_book = await connector._orderbook_ds.get_new_order_book(trading_pair)
-                    tracker.order_books[trading_pair] = order_book
-                    self._add_to_trading_pairs(tracker._trading_pairs, trading_pair)
-                    logger.info(f"Initialized order book for {trading_pair} via REST fallback")
+                    await asyncio.wait_for(tracker.wait_ready(), timeout=30.0)
+                    logger.info(f"Order book tracker ready for {type(connector).__name__}")
+                except asyncio.TimeoutError:
+                    logger.warning(f"Timeout waiting for tracker to be ready")
+
+                if trading_pair in tracker.order_books:
+                    logger.info(f"Order book for {trading_pair} initialized")
                     return True
-                except Exception as e:
-                    logger.error(f"Fallback order book initialization failed: {e}")
+
+            # Fallback: Get order book snapshot directly via REST
+            logger.info(f"Fallback order book initialization for {trading_pair}")
+            try:
+                order_book = await connector._orderbook_ds.get_new_order_book(trading_pair)
+                tracker.order_books[trading_pair] = order_book
+                if trading_pair not in tracker._trading_pairs:
+                    tracker._trading_pairs.append(trading_pair)
+                logger.info(f"Initialized order book for {trading_pair} via REST fallback")
+                return True
+            except Exception as e:
+                logger.error(f"Fallback order book initialization failed: {e}")
 
             logger.error(f"Failed to add {trading_pair} to order book tracker")
             return False
@@ -536,60 +468,31 @@ class UnifiedConnectorService:
 
     async def _remove_trading_pair_from_tracker(
         self,
-        connector: ConnectorBase,
+        connector: ExchangePyBase,
         trading_pair: str
     ) -> bool:
         """Remove a trading pair from connector's order book tracker.
 
-        Uses the connector's remove_trading_pair method which is now available on
-        ExchangePyBase (and PerpetualDerivativePyBase). This method handles:
+        ExchangePyBase.remove_trading_pair() handles:
         - Order book cleanup via order_book_tracker
         - Funding info cleanup for perpetual connectors
         """
         try:
-            # Try connector.remove_trading_pair() first - available on ExchangePyBase
-            # and PerpetualDerivativePyBase (handles funding info cleanup automatically)
-            if hasattr(connector, 'remove_trading_pair'):
-                try:
-                    result = await connector.remove_trading_pair(trading_pair)
-                    if result:
-                        logger.info(f"Removed trading pair {trading_pair} via connector.remove_trading_pair()")
-                        return True
-                except Exception as e:
-                    logger.debug(f"connector.remove_trading_pair failed: {e}")
+            result = await connector.remove_trading_pair(trading_pair)
+            if result:
+                logger.info(f"Removed trading pair {trading_pair}")
+                return True
 
-            # Fallback: Try order_book_tracker.remove_trading_pair directly
-            if hasattr(connector, 'order_book_tracker') and hasattr(connector.order_book_tracker, 'remove_trading_pair'):
-                try:
-                    result = await connector.order_book_tracker.remove_trading_pair(trading_pair)
-                    if result:
-                        logger.info(f"Removed trading pair {trading_pair} via order_book_tracker.remove_trading_pair()")
-                        return True
-                except Exception as e:
-                    logger.debug(f"order_book_tracker.remove_trading_pair failed: {e}")
+            # Fallback: Manual removal from tracker
+            tracker = connector.order_book_tracker
+            if trading_pair in tracker.order_books:
+                del tracker.order_books[trading_pair]
+                if trading_pair in tracker._trading_pairs:
+                    tracker._trading_pairs.remove(trading_pair)
+                logger.info(f"Removed trading pair {trading_pair} via manual fallback")
+                return True
 
-            # Last resort fallback: Manual removal from tracker
-            if hasattr(connector, 'order_book_tracker'):
-                tracker = connector.order_book_tracker
-                removed = False
-
-                # Remove from order_books dict
-                if hasattr(tracker, 'order_books') and trading_pair in tracker.order_books:
-                    del tracker.order_books[trading_pair]
-                    removed = True
-
-                # Remove from trading pairs tracking
-                if hasattr(tracker, '_trading_pairs'):
-                    self._remove_from_trading_pairs(tracker._trading_pairs, trading_pair)
-
-                if removed:
-                    logger.info(f"Removed trading pair {trading_pair} via manual fallback")
-                    return True
-
-            logger.warning(
-                f"Connector {type(connector).__name__} doesn't support "
-                f"dynamic trading pair removal or pair not found"
-            )
+            logger.warning(f"Trading pair {trading_pair} not found")
             return False
 
         except Exception as e:
@@ -598,36 +501,16 @@ class UnifiedConnectorService:
 
     async def _wait_for_websocket_ready(
         self,
-        connector: ConnectorBase,
+        connector: ExchangePyBase,
         timeout: float = 10.0
     ) -> bool:
-        """Wait for the order book data source WebSocket to be connected.
-
-        The tracker.start() method launches listen_for_subscriptions() which:
-        1. Connects to WebSocket via _connected_websocket_assistant()
-        2. Sets _ws_assistant reference
-        3. Subscribes to channels
-
-        We need to wait for _ws_assistant to be set before trying to
-        subscribe to new trading pairs dynamically.
-
-        Args:
-            connector: The connector to check
-            timeout: Maximum time to wait in seconds
-
-        Returns:
-            True if WebSocket is ready, False if timeout
-        """
-        if not hasattr(connector, '_orderbook_ds') or not connector._orderbook_ds:
-            # No order book data source, can't check WebSocket
-            return True
-
+        """Wait for the order book data source WebSocket to be connected."""
         data_source = connector._orderbook_ds
         waited = 0
         interval = 0.2
 
         while waited < timeout:
-            if hasattr(data_source, '_ws_assistant') and data_source._ws_assistant is not None:
+            if data_source._ws_assistant is not None:
                 logger.debug(f"WebSocket ready for {type(connector).__name__}")
                 return True
             await asyncio.sleep(interval)
@@ -826,10 +709,8 @@ class UnifiedConnectorService:
                 setattr(connector, task_name, None)
 
         # Stop the order book tracker
-        if hasattr(connector, 'order_book_tracker') and connector.order_book_tracker:
-            tracker = connector.order_book_tracker
-            if hasattr(tracker, 'stop'):
-                tracker.stop()
+        if connector.order_book_tracker:
+            connector.order_book_tracker.stop()
 
     async def _update_connector_state(
         self,
@@ -846,7 +727,7 @@ class UnifiedConnectorService:
             if self._is_perpetual_connector(connector):
                 await connector._update_positions()
 
-            if hasattr(connector, '_update_order_status') and connector.in_flight_orders:
+            if connector.in_flight_orders:
                 await connector._update_order_status()
                 if account_name:
                     await self._sync_orders_to_database(
@@ -1386,15 +1267,8 @@ class UnifiedConnectorService:
         if not connector:
             return {"success": False, "error": f"No connector found for {connector_name}"}
 
-        if not hasattr(connector, 'order_book_tracker') or not connector.order_book_tracker:
-            return {"success": False, "error": "Connector has no order book tracker"}
-
         tracker = connector.order_book_tracker
-
-        # Get existing trading pairs before stopping
-        trading_pairs = []
-        if hasattr(tracker, '_trading_pairs'):
-            trading_pairs = list(tracker._trading_pairs) if isinstance(tracker._trading_pairs, (list, set)) else []
+        trading_pairs = list(tracker._trading_pairs)
 
         if not trading_pairs:
             return {"success": False, "error": "No trading pairs to restart"}
@@ -1408,14 +1282,9 @@ class UnifiedConnectorService:
             await asyncio.sleep(0.5)
 
             # Re-add trading pairs to tracker before restarting
-            if hasattr(tracker, '_trading_pairs'):
-                if isinstance(tracker._trading_pairs, set):
-                    tracker._trading_pairs.clear()
-                    for tp in trading_pairs:
-                        tracker._trading_pairs.add(tp)
-                elif isinstance(tracker._trading_pairs, list):
-                    tracker._trading_pairs.clear()
-                    tracker._trading_pairs.extend(trading_pairs)
+            tracker._trading_pairs.clear()
+            for tp in trading_pairs:
+                tracker._trading_pairs.append(tp)
 
             # Restart the tracker
             logger.info(f"Restarting order book tracker for {connector_name} with pairs: {trading_pairs}")
