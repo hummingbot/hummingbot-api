@@ -165,10 +165,10 @@ class AccountTradingInterface:
             timeout=order_book_timeout
         )
 
-        if success:
-            logger.info(f"Order book initialized successfully for {connector_name}/{trading_pair}")
-        else:
-            logger.warning(f"Order book initialization failed for {connector_name}/{trading_pair}")
+        if not success:
+            raise ValueError(f"Failed to initialize order book for {connector_name}/{trading_pair}")
+
+        logger.info(f"Order book initialized successfully for {connector_name}/{trading_pair}")
 
         # Register trading pair with connector
         self._register_trading_pair_with_connector(connector, trading_pair)
@@ -218,31 +218,12 @@ class AccountTradingInterface:
         Register a trading pair with the connector's internal structures.
 
         Args:
-            connector: The connector instance
+            connector: The connector instance (ExchangePyBase)
             trading_pair: Trading pair to register
         """
-        logger.debug(f"Registering {trading_pair} with connector {type(connector).__name__}")
-
-        if hasattr(connector, '_trading_pairs'):
-            tp_type = type(connector._trading_pairs).__name__
-
-            if isinstance(connector._trading_pairs, set):
-                connector._trading_pairs.add(trading_pair)
-            elif isinstance(connector._trading_pairs, list):
-                if trading_pair not in connector._trading_pairs:
-                    connector._trading_pairs.append(trading_pair)
-            elif isinstance(connector._trading_pairs, dict):
-                if trading_pair not in connector._trading_pairs:
-                    base, quote = trading_pair.split("-")
-                    try:
-                        from hummingbot.connector.exchange.paper_trade.trading_pair import TradingPair
-                        connector._trading_pairs[trading_pair] = TradingPair(
-                            trading_pair=f"{base}{quote}",
-                            base_asset=base,
-                            quote_asset=quote
-                        )
-                    except ImportError:
-                        connector._trading_pairs[trading_pair] = trading_pair
+        if trading_pair not in connector._trading_pairs:
+            connector._trading_pairs.append(trading_pair)
+            logger.debug(f"Registered {trading_pair} with connector {type(connector).__name__}")
 
     # ========================================
     # ScriptStrategyBase-compatible methods

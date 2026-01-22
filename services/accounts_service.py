@@ -227,44 +227,9 @@ class AccountTradingInterface:
             connector: The connector instance
             trading_pair: Trading pair to register
         """
-        logger.info(f"Registering {trading_pair} with connector {type(connector).__name__}")
-
-        # Add to connector's _trading_pairs if it exists
-        if hasattr(connector, '_trading_pairs'):
-            tp_type = type(connector._trading_pairs).__name__
-            logger.info(f"Connector has _trading_pairs of type: {tp_type}")
-
-            if isinstance(connector._trading_pairs, set):
-                connector._trading_pairs.add(trading_pair)
-                logger.info(f"Added {trading_pair} to connector._trading_pairs (set)")
-            elif isinstance(connector._trading_pairs, list):
-                if trading_pair not in connector._trading_pairs:
-                    connector._trading_pairs.append(trading_pair)
-                    logger.info(f"Added {trading_pair} to connector._trading_pairs (list)")
-            elif isinstance(connector._trading_pairs, dict):
-                # For paper trade or similar connectors that use a dict
-                if trading_pair not in connector._trading_pairs:
-                    base, quote = trading_pair.split("-")
-                    # Import TradingPair if needed for paper trade
-                    try:
-                        from hummingbot.connector.exchange.paper_trade.trading_pair import TradingPair
-                        connector._trading_pairs[trading_pair] = TradingPair(
-                            trading_pair=f"{base}{quote}",
-                            base_asset=base,
-                            quote_asset=quote
-                        )
-                        logger.info(f"Added {trading_pair} to connector._trading_pairs (dict)")
-                    except ImportError:
-                        connector._trading_pairs[trading_pair] = trading_pair
-                        logger.info(f"Added {trading_pair} to connector._trading_pairs (dict, simple)")
-        else:
-            logger.warning(f"Connector {type(connector).__name__} does not have _trading_pairs attribute")
-
-        # Also check if order_book_tracker has the pair
-        if hasattr(connector, 'order_book_tracker'):
-            tracker = connector.order_book_tracker
-            has_ob = trading_pair in tracker.order_books if hasattr(tracker, 'order_books') else False
-            logger.info(f"Order book tracker has {trading_pair}: {has_ob}")
+        if trading_pair not in connector._trading_pairs:
+            connector._trading_pairs.append(trading_pair)
+            logger.debug(f"Registered {trading_pair} with connector {type(connector).__name__}")
 
     async def remove_market(
         self,
