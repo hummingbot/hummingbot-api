@@ -30,9 +30,10 @@ from hummingbot.strategy_v2.executors.twap_executor.twap_executor import TWAPExe
 from hummingbot.strategy_v2.executors.xemm_executor.data_types import XEMMExecutorConfig
 from hummingbot.strategy_v2.executors.xemm_executor.xemm_executor import XEMMExecutor
 from hummingbot.strategy_v2.models.base import RunnableStatus
-from hummingbot.strategy_v2.models.executors import TrackedOrder
+from hummingbot.strategy_v2.models.executors import CloseType, TrackedOrder
 
 from database import AsyncDatabaseManager
+from models.executors import PositionHold
 from services.trading_service import TradingService, AccountTradingInterface
 
 logger = logging.getLogger(__name__)
@@ -116,6 +117,10 @@ class ExecutorService:
 
         # Completed executors (kept for a period for queries)
         self._completed_executors: Dict[str, Dict[str, Any]] = {}
+
+        # Position holds: key = "account_name|connector_name|trading_pair"
+        # Tracks aggregated positions from executors stopped with keep_position=True
+        self._positions_held: Dict[str, PositionHold] = {}
 
         # Control loop task
         self._control_loop_task: Optional[asyncio.Task] = None
@@ -426,6 +431,10 @@ class ExecutorService:
         # Store in completed executors
         self._completed_executors[executor_id] = final_info
 
+        # Check if this is a POSITION_HOLD close type (keep_position=True)
+        if executor.close_type == CloseType.POSITION_HOLD:
+            await self._aggregate_position_hold(executor_id, executor, metadata)
+
         # Persist final state to database
         await self._persist_executor_completed(executor_id, executor)
 
@@ -647,3 +656,239 @@ class ExecutorService:
             del self._completed_executors[executor_id]
             return True
         return False
+
+    # ========================================
+    # Position Hold Tracking Methods
+    # ========================================
+
+    def _get_position_key(
+        self,
+        account_name: str,
+        connector_name: str,
+        trading_pair: str
+    ) -> str:
+        """Generate a unique key for position tracking."""
+        return f"{account_name}|{connector_name}|{trading_pair}"
+
+    async def _aggregate_position_hold(
+        self,
+        executor_id: str,
+        executor: ExecutorBase,
+        metadata: Dict[str, Any]
+    ):
+        """
+        Aggregate position data from an executor stopped with keep_position=True.
+
+        This extracts the filled amounts from the executor and adds them to
+        the aggregated position tracking.
+        """
+        account_name = metadata.get("account_name", self.default_account)
+        connector_name = metadata.get("connector_name", "")
+        trading_pair = metadata.get("trading_pair", "")
+
+        if not connector_name or not trading_pair:
+            logger.warning(f"Cannot aggregate position for executor {executor_id}: missing connector/pair info")
+            return
+
+        position_key = self._get_position_key(account_name, connector_name, trading_pair)
+
+        # Get or create position hold
+        if position_key not in self._positions_held:
+            self._positions_held[position_key] = PositionHold(
+                trading_pair=trading_pair,
+                connector_name=connector_name,
+                account_name=account_name
+            )
+
+        position = self._positions_held[position_key]
+
+        # Extract filled amounts from executor
+        try:
+            # Try to get executor info
+            try:
+                executor_info = executor.executor_info
+                custom_info = executor_info.custom_info or {}
+            except Exception:
+                custom_info = executor.get_custom_info() if hasattr(executor, 'get_custom_info') else {}
+
+            # Get side from config or custom_info
+            config = metadata.get("config", {})
+            side = config.get("side", custom_info.get("side", "BUY"))
+
+            # Extract filled amounts - try different sources
+            filled_amount_base = Decimal("0")
+            filled_amount_quote = Decimal("0")
+
+            # Try from executor attributes directly
+            if hasattr(executor, 'filled_amount_base'):
+                filled_amount_base = Decimal(str(executor.filled_amount_base or 0))
+            if hasattr(executor, 'filled_amount_quote'):
+                filled_amount_quote = Decimal(str(executor.filled_amount_quote or 0))
+
+            # Fallback to custom_info
+            if filled_amount_base == 0 and custom_info:
+                filled_amount_base = Decimal(str(custom_info.get("filled_amount_base", 0)))
+            if filled_amount_quote == 0 and custom_info:
+                filled_amount_quote = Decimal(str(custom_info.get("filled_amount_quote", 0)))
+
+            # For grid executors, aggregate from held_position_orders
+            if metadata.get("executor_type") == "grid_executor" and custom_info:
+                buy_filled_base = Decimal("0")
+                buy_filled_quote = Decimal("0")
+                sell_filled_base = Decimal("0")
+                sell_filled_quote = Decimal("0")
+
+                # held_position_orders contains the orders kept when keep_position=True
+                held_orders = custom_info.get("held_position_orders", [])
+
+                for order in held_orders:
+                    if isinstance(order, dict):
+                        trade_type = order.get("trade_type", "BUY")
+                        exec_base = Decimal(str(order.get("executed_amount_base", 0)))
+                        exec_quote = Decimal(str(order.get("executed_amount_quote", 0)))
+
+                        if trade_type == "BUY":
+                            buy_filled_base += exec_base
+                            buy_filled_quote += exec_quote
+                        else:
+                            sell_filled_base += exec_base
+                            sell_filled_quote += exec_quote
+
+                # Add buy and sell fills separately
+                if buy_filled_base > 0:
+                    position.add_fill("BUY", buy_filled_base, buy_filled_quote, executor_id)
+                if sell_filled_base > 0:
+                    position.add_fill("SELL", sell_filled_base, sell_filled_quote, executor_id)
+
+                logger.info(
+                    f"Aggregated grid executor {executor_id} to position {position_key}: "
+                    f"buy={buy_filled_base} base, sell={sell_filled_base} base"
+                )
+
+            elif filled_amount_base > 0:
+                # For non-grid executors with a single side
+                position.add_fill(side, filled_amount_base, filled_amount_quote, executor_id)
+                logger.info(
+                    f"Aggregated executor {executor_id} to position {position_key}: "
+                    f"{side} {filled_amount_base} base @ {filled_amount_quote} quote"
+                )
+            else:
+                logger.debug(f"Executor {executor_id} has no filled amounts to aggregate")
+
+        except Exception as e:
+            logger.error(f"Error aggregating position for executor {executor_id}: {e}", exc_info=True)
+
+    def get_positions_held(
+        self,
+        account_name: Optional[str] = None,
+        connector_name: Optional[str] = None,
+        trading_pair: Optional[str] = None
+    ) -> List[PositionHold]:
+        """
+        Get held positions with optional filtering.
+
+        Args:
+            account_name: Filter by account name
+            connector_name: Filter by connector name
+            trading_pair: Filter by trading pair
+
+        Returns:
+            List of PositionHold objects matching the filters
+        """
+        positions = []
+
+        for position in self._positions_held.values():
+            # Apply filters
+            if account_name and position.account_name != account_name:
+                continue
+            if connector_name and position.connector_name != connector_name:
+                continue
+            if trading_pair and position.trading_pair != trading_pair:
+                continue
+
+            # Only include positions with actual volume
+            if position.buy_amount_base > 0 or position.sell_amount_base > 0:
+                positions.append(position)
+
+        return positions
+
+    def get_position_held(
+        self,
+        account_name: str,
+        connector_name: str,
+        trading_pair: str
+    ) -> Optional[PositionHold]:
+        """
+        Get a specific held position.
+
+        Args:
+            account_name: Account name
+            connector_name: Connector name
+            trading_pair: Trading pair
+
+        Returns:
+            PositionHold or None if not found
+        """
+        position_key = self._get_position_key(account_name, connector_name, trading_pair)
+        return self._positions_held.get(position_key)
+
+    def clear_position_held(
+        self,
+        account_name: str,
+        connector_name: str,
+        trading_pair: str
+    ) -> bool:
+        """
+        Clear a specific held position (after manual close or full exit).
+
+        Args:
+            account_name: Account name
+            connector_name: Connector name
+            trading_pair: Trading pair
+
+        Returns:
+            True if cleared, False if not found
+        """
+        position_key = self._get_position_key(account_name, connector_name, trading_pair)
+        if position_key in self._positions_held:
+            del self._positions_held[position_key]
+            logger.info(f"Cleared position hold for {position_key}")
+            return True
+        return False
+
+    def get_positions_summary(self) -> Dict[str, Any]:
+        """
+        Get summary of all held positions.
+
+        Returns:
+            Dictionary with total positions, PnL, and position list
+        """
+        positions = self.get_positions_held()
+        total_realized_pnl = sum(float(p.realized_pnl_quote) for p in positions)
+
+        return {
+            "total_positions": len(positions),
+            "total_realized_pnl": total_realized_pnl,
+            "positions": [
+                {
+                    "trading_pair": p.trading_pair,
+                    "connector_name": p.connector_name,
+                    "account_name": p.account_name,
+                    "buy_amount_base": float(p.buy_amount_base),
+                    "buy_amount_quote": float(p.buy_amount_quote),
+                    "sell_amount_base": float(p.sell_amount_base),
+                    "sell_amount_quote": float(p.sell_amount_quote),
+                    "net_amount_base": float(p.net_amount_base),
+                    "buy_breakeven_price": float(p.buy_breakeven_price) if p.buy_breakeven_price else None,
+                    "sell_breakeven_price": float(p.sell_breakeven_price) if p.sell_breakeven_price else None,
+                    "matched_amount_base": float(p.matched_amount_base),
+                    "unmatched_amount_base": float(p.unmatched_amount_base),
+                    "position_side": p.position_side,
+                    "realized_pnl_quote": float(p.realized_pnl_quote),
+                    "executor_count": len(p.executor_ids),
+                    "executor_ids": p.executor_ids,
+                    "last_updated": p.last_updated.isoformat() if p.last_updated else None
+                }
+                for p in positions
+            ]
+        }

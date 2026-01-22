@@ -5,11 +5,195 @@ These models wrap Hummingbot's executor configuration types and provide
 validation for the REST API.
 """
 from datetime import datetime
+from decimal import Decimal
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 from .pagination import PaginationParams
+
+
+# ========================================
+# Position Hold for Aggregated Tracking
+# ========================================
+
+class PositionHold(BaseModel):
+    """
+    Tracks aggregated position from executors stopped with keep_position=True.
+
+    Similar to hummingbot's PositionHold, this tracks:
+    - Separate buy/sell amounts for proper breakeven calculation
+    - Matched volume (realized PnL) vs unmatched volume (unrealized PnL)
+    - Aggregation across multiple executors on the same trading pair
+    """
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    trading_pair: str = Field(description="Trading pair (e.g., 'BTC-USDT')")
+    connector_name: str = Field(description="Connector name")
+    account_name: str = Field(description="Account name")
+
+    # Buy side tracking
+    buy_amount_base: Decimal = Field(default=Decimal("0"), description="Total bought amount in base currency")
+    buy_amount_quote: Decimal = Field(default=Decimal("0"), description="Total spent on buys in quote currency")
+
+    # Sell side tracking
+    sell_amount_base: Decimal = Field(default=Decimal("0"), description="Total sold amount in base currency")
+    sell_amount_quote: Decimal = Field(default=Decimal("0"), description="Total received from sells in quote currency")
+
+    # Realized PnL from matched positions
+    realized_pnl_quote: Decimal = Field(default=Decimal("0"), description="Realized PnL from matched buy/sell pairs")
+
+    # Tracking
+    executor_ids: List[str] = Field(default_factory=list, description="IDs of executors contributing to this position")
+    last_updated: Optional[datetime] = Field(default=None, description="Last update timestamp")
+
+    @computed_field
+    @property
+    def net_amount_base(self) -> Decimal:
+        """Net position in base currency (positive = long, negative = short)."""
+        return self.buy_amount_base - self.sell_amount_base
+
+    @computed_field
+    @property
+    def buy_breakeven_price(self) -> Optional[Decimal]:
+        """Average buy price (breakeven for long position)."""
+        if self.buy_amount_base > 0:
+            return self.buy_amount_quote / self.buy_amount_base
+        return None
+
+    @computed_field
+    @property
+    def sell_breakeven_price(self) -> Optional[Decimal]:
+        """Average sell price (breakeven for short position)."""
+        if self.sell_amount_base > 0:
+            return self.sell_amount_quote / self.sell_amount_base
+        return None
+
+    @computed_field
+    @property
+    def matched_amount_base(self) -> Decimal:
+        """Amount that has been matched (min of buy/sell)."""
+        return min(self.buy_amount_base, self.sell_amount_base)
+
+    @computed_field
+    @property
+    def unmatched_amount_base(self) -> Decimal:
+        """Absolute unmatched position size."""
+        return abs(self.net_amount_base)
+
+    @computed_field
+    @property
+    def position_side(self) -> Optional[str]:
+        """Current position side: LONG, SHORT, or FLAT."""
+        if self.net_amount_base > 0:
+            return "LONG"
+        elif self.net_amount_base < 0:
+            return "SHORT"
+        return "FLAT"
+
+    def add_fill(
+        self,
+        side: str,
+        amount_base: Decimal,
+        amount_quote: Decimal,
+        executor_id: Optional[str] = None
+    ):
+        """
+        Add a fill to the position tracking.
+
+        Args:
+            side: "BUY" or "SELL"
+            amount_base: Amount in base currency
+            amount_quote: Amount in quote currency
+            executor_id: Optional executor ID to track
+        """
+        if side.upper() == "BUY":
+            self.buy_amount_base += amount_base
+            self.buy_amount_quote += amount_quote
+        else:
+            self.sell_amount_base += amount_base
+            self.sell_amount_quote += amount_quote
+
+        # Calculate realized PnL when we have matched volume
+        self._calculate_realized_pnl()
+
+        if executor_id and executor_id not in self.executor_ids:
+            self.executor_ids.append(executor_id)
+
+        self.last_updated = datetime.utcnow()
+
+    def _calculate_realized_pnl(self):
+        """Calculate realized PnL from matched buy/sell pairs using FIFO."""
+        matched = self.matched_amount_base
+        if matched > 0 and self.buy_amount_base > 0 and self.sell_amount_base > 0:
+            # Average prices
+            avg_buy = self.buy_amount_quote / self.buy_amount_base
+            avg_sell = self.sell_amount_quote / self.sell_amount_base
+            # Realized PnL = matched_amount * (avg_sell - avg_buy)
+            self.realized_pnl_quote = matched * (avg_sell - avg_buy)
+
+    def get_unrealized_pnl(self, current_price: Decimal) -> Decimal:
+        """
+        Calculate unrealized PnL for unmatched position.
+
+        Args:
+            current_price: Current market price
+
+        Returns:
+            Unrealized PnL in quote currency
+        """
+        if self.net_amount_base > 0:
+            # Long position: profit if price goes up
+            avg_buy = self.buy_breakeven_price or Decimal("0")
+            return self.net_amount_base * (current_price - avg_buy)
+        elif self.net_amount_base < 0:
+            # Short position: profit if price goes down
+            avg_sell = self.sell_breakeven_price or Decimal("0")
+            return abs(self.net_amount_base) * (avg_sell - current_price)
+        return Decimal("0")
+
+    def merge(self, other: "PositionHold"):
+        """Merge another PositionHold into this one."""
+        self.buy_amount_base += other.buy_amount_base
+        self.buy_amount_quote += other.buy_amount_quote
+        self.sell_amount_base += other.sell_amount_base
+        self.sell_amount_quote += other.sell_amount_quote
+
+        for eid in other.executor_ids:
+            if eid not in self.executor_ids:
+                self.executor_ids.append(eid)
+
+        self._calculate_realized_pnl()
+        self.last_updated = datetime.utcnow()
+
+
+class PositionHoldResponse(BaseModel):
+    """API response model for PositionHold."""
+    trading_pair: str
+    connector_name: str
+    account_name: str
+    buy_amount_base: float
+    buy_amount_quote: float
+    sell_amount_base: float
+    sell_amount_quote: float
+    net_amount_base: float
+    buy_breakeven_price: Optional[float]
+    sell_breakeven_price: Optional[float]
+    matched_amount_base: float
+    unmatched_amount_base: float
+    position_side: Optional[str]
+    realized_pnl_quote: float
+    unrealized_pnl_quote: Optional[float] = None
+    executor_count: int
+    executor_ids: List[str]
+    last_updated: Optional[str]
+
+
+class PositionsSummaryResponse(BaseModel):
+    """Summary of all held positions."""
+    total_positions: int = Field(description="Number of active position holds")
+    total_realized_pnl: float = Field(description="Total realized PnL across all positions")
+    positions: List[PositionHoldResponse] = Field(description="List of position holds")
 
 
 # ========================================
