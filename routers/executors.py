@@ -18,6 +18,8 @@ from models.executors import (
     ExecutorFilterRequest,
     ExecutorResponse,
     ExecutorsSummaryResponse,
+    PositionHoldResponse,
+    PositionsSummaryResponse,
     StopExecutorRequest,
     StopExecutorResponse,
 )
@@ -252,6 +254,122 @@ async def delete_executor(
     except Exception as e:
         logger.error(f"Error deleting executor {executor_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error deleting executor: {str(e)}")
+
+
+# ========================================
+# Position Hold Endpoints
+# ========================================
+
+@router.get("/positions/summary", response_model=PositionsSummaryResponse)
+async def get_positions_summary(
+    executor_service: ExecutorService = Depends(get_executor_service)
+):
+    """
+    Get summary of all held positions from executors stopped with keep_position=True.
+
+    Returns aggregate information including:
+    - Total number of active position holds
+    - Total realized PnL across all positions
+    - List of all positions with breakeven prices and PnL
+    """
+    try:
+        summary = executor_service.get_positions_summary()
+        return PositionsSummaryResponse(**summary)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting positions summary: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error getting positions summary: {str(e)}")
+
+
+@router.get("/positions/{connector_name}/{trading_pair}", response_model=PositionHoldResponse)
+async def get_position_held(
+    connector_name: str,
+    trading_pair: str,
+    account_name: str = "master_account",
+    executor_service: ExecutorService = Depends(get_executor_service)
+):
+    """
+    Get held position for a specific connector/trading pair.
+
+    Returns the aggregated position from executors stopped with keep_position=True,
+    including breakeven prices, matched/unmatched volume, and realized PnL.
+    """
+    try:
+        position = executor_service.get_position_held(
+            account_name=account_name,
+            connector_name=connector_name,
+            trading_pair=trading_pair
+        )
+
+        if not position:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No position hold found for {connector_name}/{trading_pair}"
+            )
+
+        return PositionHoldResponse(
+            trading_pair=position.trading_pair,
+            connector_name=position.connector_name,
+            account_name=position.account_name,
+            buy_amount_base=float(position.buy_amount_base),
+            buy_amount_quote=float(position.buy_amount_quote),
+            sell_amount_base=float(position.sell_amount_base),
+            sell_amount_quote=float(position.sell_amount_quote),
+            net_amount_base=float(position.net_amount_base),
+            buy_breakeven_price=float(position.buy_breakeven_price) if position.buy_breakeven_price else None,
+            sell_breakeven_price=float(position.sell_breakeven_price) if position.sell_breakeven_price else None,
+            matched_amount_base=float(position.matched_amount_base),
+            unmatched_amount_base=float(position.unmatched_amount_base),
+            position_side=position.position_side,
+            realized_pnl_quote=float(position.realized_pnl_quote),
+            executor_count=len(position.executor_ids),
+            executor_ids=position.executor_ids,
+            last_updated=position.last_updated.isoformat() if position.last_updated else None
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting position: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error getting position: {str(e)}")
+
+
+@router.delete("/positions/{connector_name}/{trading_pair}")
+async def clear_position_held(
+    connector_name: str,
+    trading_pair: str,
+    account_name: str = "master_account",
+    executor_service: ExecutorService = Depends(get_executor_service)
+):
+    """
+    Clear a held position (after manual close or full exit).
+
+    This removes the position from tracking but preserves historical data
+    in completed executors.
+    """
+    try:
+        cleared = executor_service.clear_position_held(
+            account_name=account_name,
+            connector_name=connector_name,
+            trading_pair=trading_pair
+        )
+
+        if not cleared:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No position hold found for {connector_name}/{trading_pair}"
+            )
+
+        return {
+            "message": f"Position hold for {connector_name}/{trading_pair} cleared",
+            "connector_name": connector_name,
+            "trading_pair": trading_pair
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error clearing position: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error clearing position: {str(e)}")
 
 
 @router.get("/types/available")
