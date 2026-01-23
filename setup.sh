@@ -4,6 +4,7 @@
 # - Ensures Docker + Docker Compose are available (auto-installs on Linux via get.docker.com)
 # - Idempotent: safe to run multiple times, skips already-completed steps
 # - Verbose output: shows all installation progress directly
+# - Fixed: Removed apt-get upgrade, uses /dev/tty for prompts
 
 set -euo pipefail
 
@@ -98,11 +99,9 @@ install_linux_build_deps() {
 
     safe_apt_update
     
-    # Only upgrade if we're actually installing new packages
-    if ! is_package_installed build-essential; then
-      echo "[INFO] Upgrading existing packages..."
-      sudo env DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
-    fi
+    # REMOVED: apt-get upgrade -y 
+    # This was causing failures due to system-wide package upgrades
+    # apt-get install will get the latest available versions anyway
     
     sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y gcc build-essential
 
@@ -329,20 +328,31 @@ if [ -f ".env" ]; then
   exit 0
 fi
 
-# Clear screen before prompting user
-if has_cmd clear; then
-  clear
-else
-  printf "\033c"
+# Clear screen before prompting user (only if running interactively)
+if [[ -t 0 ]] && [[ -c /dev/tty ]]; then
+  if has_cmd clear; then
+    clear
+  else
+    printf "\033c"
+  fi
 fi
 
 echo "Hummingbot API Setup"
 echo ""
 
-read -p "API password [default: admin]: " PASSWORD
+# Use /dev/tty for prompts to work correctly when called from parent scripts
+if [[ -c /dev/tty ]] && [[ -r /dev/tty ]]; then
+  read -p "API password [default: admin]: " PASSWORD < /dev/tty
+else
+  read -p "API password [default: admin]: " PASSWORD
+fi
 PASSWORD=${PASSWORD:-admin}
 
-read -p "Config password [default: admin]: " CONFIG_PASSWORD
+if [[ -c /dev/tty ]] && [[ -r /dev/tty ]]; then
+  read -p "Config password [default: admin]: " CONFIG_PASSWORD < /dev/tty
+else
+  read -p "Config password [default: admin]: " CONFIG_PASSWORD
+fi
 CONFIG_PASSWORD=${CONFIG_PASSWORD:-admin}
 
 cat > .env << EOF
