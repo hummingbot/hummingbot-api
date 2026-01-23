@@ -254,6 +254,7 @@ async def lifespan(app: FastAPI):
     accounts_service.start()
     market_data_service.start()
     executor_service.start()
+    await executor_service.recover_positions_from_db()
 
     # Initialize all trading connectors at startup
     # This ensures orders are loaded into in_flight_orders and ready for management

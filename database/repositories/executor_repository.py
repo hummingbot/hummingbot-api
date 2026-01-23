@@ -142,6 +142,31 @@ class ExecutorRepository:
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
+    async def get_position_hold_executors(
+        self,
+        account_name: Optional[str] = None,
+        connector_name: Optional[str] = None,
+        trading_pair: Optional[str] = None
+    ) -> List[ExecutorRecord]:
+        """Get executors that closed with POSITION_HOLD (keep_position=True)."""
+        stmt = select(ExecutorRecord).where(ExecutorRecord.close_type == "POSITION_HOLD")
+
+        conditions = []
+        if account_name:
+            conditions.append(ExecutorRecord.account_name == account_name)
+        if connector_name:
+            conditions.append(ExecutorRecord.connector_name == connector_name)
+        if trading_pair:
+            conditions.append(ExecutorRecord.trading_pair == trading_pair)
+
+        if conditions:
+            stmt = stmt.where(and_(*conditions))
+
+        stmt = stmt.order_by(desc(ExecutorRecord.created_at))
+
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     async def get_executor_stats(self) -> Dict[str, Any]:
         """Get statistics about executors."""
         # Total executors

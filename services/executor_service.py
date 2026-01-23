@@ -133,6 +133,70 @@ class ExecutorService:
             self._control_loop_task = asyncio.create_task(self._control_loop())
             logger.info("ExecutorService started")
 
+    async def recover_positions_from_db(self):
+        """
+        Recover position holds from database on startup.
+
+        This loads executors that closed with POSITION_HOLD (keep_position=True)
+        and reconstructs the _positions_held tracking from their final state.
+        """
+        if not self.db_manager:
+            return
+
+        try:
+            async with self.db_manager.get_session_context() as session:
+                from database.repositories.executor_repository import ExecutorRepository
+                repo = ExecutorRepository(session)
+
+                position_hold_executors = await repo.get_position_hold_executors()
+
+                for executor_record in position_hold_executors:
+                    # Build position key
+                    position_key = self._get_position_key(
+                        executor_record.account_name,
+                        executor_record.connector_name,
+                        executor_record.trading_pair
+                    )
+
+                    # Initialize position if needed
+                    if position_key not in self._positions_held:
+                        self._positions_held[position_key] = PositionHold(
+                            trading_pair=executor_record.trading_pair,
+                            connector_name=executor_record.connector_name,
+                            account_name=executor_record.account_name,
+                        )
+
+                    position = self._positions_held[position_key]
+
+                    # Try to extract fill data from final_state
+                    if executor_record.final_state:
+                        try:
+                            final_state = json.loads(executor_record.final_state)
+                            # Extract buy/sell amounts from final state if available
+                            if 'realized_buy_size_quote' in final_state:
+                                buy_quote = Decimal(str(final_state.get('realized_buy_size_quote', 0)))
+                                sell_quote = Decimal(str(final_state.get('realized_sell_size_quote', 0)))
+                                # Estimate base amounts from quote (rough approximation)
+                                # The actual fill data would be more accurate but this is a fallback
+                                if buy_quote > 0 or sell_quote > 0:
+                                    position.buy_amount_quote += buy_quote
+                                    position.sell_amount_quote += sell_quote
+                                    if executor_record.executor_id not in position.executor_ids:
+                                        position.executor_ids.append(executor_record.executor_id)
+                        except (json.JSONDecodeError, TypeError) as e:
+                            logger.debug(f"Could not parse final_state for {executor_record.executor_id}: {e}")
+
+                    # Use filled_amount_quote as fallback
+                    elif executor_record.filled_amount_quote:
+                        if executor_record.executor_id not in position.executor_ids:
+                            position.executor_ids.append(executor_record.executor_id)
+
+                if self._positions_held:
+                    logger.info(f"Recovered {len(self._positions_held)} position holds from database")
+
+        except Exception as e:
+            logger.error(f"Error recovering positions from database: {e}", exc_info=True)
+
     async def stop(self):
         """Stop the executor service and all active executors."""
         self._is_running = False
