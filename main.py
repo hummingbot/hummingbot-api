@@ -250,16 +250,16 @@ async def lifespan(app: FastAPI):
     # 7. Start services
     # =========================================================================
 
+    # Initialize all trading connectors FIRST (before any service that might use them)
+    # This ensures OrdersRecorder is properly attached before any concurrent access
+    logging.info("Initializing all trading connectors...")
+    await connector_service.initialize_all_trading_connectors()
+
     bots_orchestrator.start()
     accounts_service.start()
     market_data_service.start()
     executor_service.start()
     await executor_service.recover_positions_from_db()
-
-    # Initialize all trading connectors at startup
-    # This ensures orders are loaded into in_flight_orders and ready for management
-    logging.info("Initializing all trading connectors...")
-    await connector_service.initialize_all_trading_connectors()
 
     logging.info("All services started successfully")
 
