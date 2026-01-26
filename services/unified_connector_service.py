@@ -71,6 +71,9 @@ class UnifiedConnectorService:
         self._funding_recorders: Dict[str, any] = {}
         self._metrics_collectors: Dict[str, TradeVolumeMetricCollector] = {}
 
+        # Locks to prevent race conditions in connector creation
+        self._connector_locks: Dict[str, asyncio.Lock] = {}
+
         # Connector settings cache
         self._conn_settings = AllConnectorSettings.get_connector_settings()
 
@@ -111,16 +114,24 @@ class UnifiedConnectorService:
         Returns:
             Initialized trading connector
         """
-        if account_name not in self._trading_connectors:
-            self._trading_connectors[account_name] = {}
+        cache_key = f"{account_name}:{connector_name}"
 
-        if connector_name not in self._trading_connectors[account_name]:
-            connector = await self._create_and_initialize_trading_connector(
-                account_name, connector_name
-            )
-            self._trading_connectors[account_name][connector_name] = connector
+        # Create lock for this cache key if it doesn't exist
+        if cache_key not in self._connector_locks:
+            self._connector_locks[cache_key] = asyncio.Lock()
 
-        return self._trading_connectors[account_name][connector_name]
+        # Use lock to prevent race conditions during connector creation
+        async with self._connector_locks[cache_key]:
+            if account_name not in self._trading_connectors:
+                self._trading_connectors[account_name] = {}
+
+            if connector_name not in self._trading_connectors[account_name]:
+                connector = await self._create_and_initialize_trading_connector(
+                    account_name, connector_name
+                )
+                self._trading_connectors[account_name][connector_name] = connector
+
+            return self._trading_connectors[account_name][connector_name]
 
     def get_all_trading_connectors(self) -> Dict[str, Dict[str, ConnectorBase]]:
         """
@@ -997,10 +1008,10 @@ class UnifiedConnectorService:
         BackendAPISecurity.update_connector_keys(account_name, connector_config)
         BackendAPISecurity.decrypt_all(account_name=account_name)
 
-        # Clear old connector
-        self.clear_trading_connector(account_name, connector_name)
+        # Properly stop old connector (stops recorders, network tasks, cleans up caches)
+        await self.stop_trading_connector(account_name, connector_name)
 
-        # Create new connector
+        # Create new connector with fresh recorders
         return await self.get_trading_connector(account_name, connector_name)
 
     def clear_trading_connector(
