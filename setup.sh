@@ -342,6 +342,13 @@ echo ""
 
 # Use /dev/tty for prompts to work correctly when called from parent scripts
 if [[ -c /dev/tty ]] && [[ -r /dev/tty ]]; then
+  read -p "API username [default: admin]: " USERNAME < /dev/tty
+else
+  read -p "API username [default: admin]: " USERNAME
+fi
+USERNAME=${USERNAME:-admin}
+
+if [[ -c /dev/tty ]] && [[ -r /dev/tty ]]; then
   read -p "API password [default: admin]: " PASSWORD < /dev/tty
 else
   read -p "API password [default: admin]: " PASSWORD
@@ -357,7 +364,7 @@ CONFIG_PASSWORD=${CONFIG_PASSWORD:-admin}
 
 cat > .env << EOF
 # Hummingbot API Configuration
-USERNAME=admin
+USERNAME=$USERNAME
 PASSWORD=$PASSWORD
 CONFIG_PASSWORD=$CONFIG_PASSWORD
 DEBUG_MODE=false
