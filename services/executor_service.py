@@ -115,9 +115,6 @@ class ExecutorService:
         # Executor metadata: executor_id -> metadata dict
         self._executor_metadata: Dict[str, Dict[str, Any]] = {}
 
-        # Completed executors (kept for a period for queries)
-        self._completed_executors: Dict[str, Dict[str, Any]] = {}
-
         # Position holds: key = "account_name|connector_name|trading_pair"
         # Tracks aggregated positions from executors stopped with keep_position=True
         self._positions_held: Dict[str, PositionHold] = {}
@@ -172,24 +169,41 @@ class ExecutorService:
                     if executor_record.final_state:
                         try:
                             final_state = json.loads(executor_record.final_state)
-                            # Extract buy/sell amounts from final state if available
-                            if 'realized_buy_size_quote' in final_state:
-                                buy_quote = Decimal(str(final_state.get('realized_buy_size_quote', 0)))
-                                sell_quote = Decimal(str(final_state.get('realized_sell_size_quote', 0)))
-                                # Estimate base amounts from quote (rough approximation)
-                                # The actual fill data would be more accurate but this is a fallback
-                                if buy_quote > 0 or sell_quote > 0:
-                                    position.buy_amount_quote += buy_quote
-                                    position.sell_amount_quote += sell_quote
-                                    if executor_record.executor_id not in position.executor_ids:
-                                        position.executor_ids.append(executor_record.executor_id)
+
+                            # Process held_position_orders (most accurate source)
+                            held_orders = final_state.get("held_position_orders", [])
+                            if held_orders:
+                                buy_filled_base = Decimal("0")
+                                buy_filled_quote = Decimal("0")
+                                sell_filled_base = Decimal("0")
+                                sell_filled_quote = Decimal("0")
+
+                                for order in held_orders:
+                                    if isinstance(order, dict):
+                                        trade_type = order.get("trade_type", "BUY")
+                                        exec_base = Decimal(str(order.get("executed_amount_base", 0)))
+                                        exec_quote = Decimal(str(order.get("executed_amount_quote", 0)))
+
+                                        if trade_type == "BUY":
+                                            buy_filled_base += exec_base
+                                            buy_filled_quote += exec_quote
+                                        else:
+                                            sell_filled_base += exec_base
+                                            sell_filled_quote += exec_quote
+
+                                # Add fills using proper method
+                                if buy_filled_base > 0:
+                                    position.add_fill("BUY", buy_filled_base, buy_filled_quote, executor_record.executor_id)
+                                if sell_filled_base > 0:
+                                    position.add_fill("SELL", sell_filled_base, sell_filled_quote, executor_record.executor_id)
+
+                                logger.debug(
+                                    f"Recovered position from {executor_record.executor_id}: "
+                                    f"buy={buy_filled_base} base, sell={sell_filled_base} base"
+                                )
+
                         except (json.JSONDecodeError, TypeError) as e:
                             logger.debug(f"Could not parse final_state for {executor_record.executor_id}: {e}")
-
-                    # Use filled_amount_quote as fallback
-                    elif executor_record.filled_amount_quote:
-                        if executor_record.executor_id not in position.executor_ids:
-                            position.executor_ids.append(executor_record.executor_id)
 
                 if self._positions_held:
                     logger.info(f"Recovered {len(self._positions_held)} position holds from database")
@@ -361,17 +375,18 @@ class ExecutorService:
             "created_at": self._executor_metadata[executor_id]["created_at"].isoformat()
         }
 
-    def get_executors(
+    async def get_executors(
         self,
         account_name: Optional[str] = None,
         connector_name: Optional[str] = None,
         trading_pair: Optional[str] = None,
         executor_type: Optional[str] = None,
-        status: Optional[str] = None,
-        include_completed: bool = False
+        status: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
         Get list of executors with optional filtering.
+
+        Combines active executors from memory with completed executors from database.
 
         Args:
             account_name: Filter by account name
@@ -379,14 +394,13 @@ class ExecutorService:
             trading_pair: Filter by trading pair
             executor_type: Filter by executor type
             status: Filter by status
-            include_completed: Include recently completed executors
 
         Returns:
             List of executor information dictionaries
         """
         result = []
 
-        # Process active executors
+        # Process active executors from memory
         for executor_id, executor in self._active_executors.items():
             metadata = self._executor_metadata.get(executor_id, {})
 
@@ -404,26 +418,35 @@ class ExecutorService:
 
             result.append(self._format_executor_info(executor_id, executor))
 
-        # Include completed executors if requested
-        if include_completed:
-            for executor_id, completed_info in self._completed_executors.items():
-                # Apply same filters to completed executors
-                if account_name and completed_info.get("account_name") != account_name:
-                    continue
-                if connector_name and completed_info.get("connector_name") != connector_name:
-                    continue
-                if trading_pair and completed_info.get("trading_pair") != trading_pair:
-                    continue
-                if executor_type and completed_info.get("executor_type") != executor_type:
-                    continue
+        # Get completed executors from database
+        if self.db_manager:
+            try:
+                async with self.db_manager.get_session_context() as session:
+                    from database.repositories.executor_repository import ExecutorRepository
+                    repo = ExecutorRepository(session)
 
-                result.append(completed_info)
+                    db_executors = await repo.get_executors(
+                        account_name=account_name,
+                        connector_name=connector_name,
+                        trading_pair=trading_pair,
+                        executor_type=executor_type,
+                        status=status
+                    )
+
+                    for record in db_executors:
+                        # Skip if already in active executors (safety check)
+                        if record.executor_id not in self._active_executors:
+                            result.append(self._format_db_record(record))
+            except Exception as e:
+                logger.error(f"Error fetching executors from database: {e}")
 
         return result
 
-    def get_executor(self, executor_id: str) -> Optional[Dict[str, Any]]:
+    async def get_executor(self, executor_id: str) -> Optional[Dict[str, Any]]:
         """
         Get detailed information about a specific executor.
+
+        Checks active executors in memory first, then falls back to database.
 
         Args:
             executor_id: The executor ID
@@ -431,15 +454,23 @@ class ExecutorService:
         Returns:
             Detailed executor information or None if not found
         """
-        # Check active executors first
+        # Check active executors first (memory)
         executor = self._active_executors.get(executor_id)
         if executor:
             return self._format_executor_info(executor_id, executor)
 
-        # Check completed executors
-        completed_info = self._completed_executors.get(executor_id)
-        if completed_info:
-            return completed_info
+        # Fallback to database for completed executors
+        if self.db_manager:
+            try:
+                async with self.db_manager.get_session_context() as session:
+                    from database.repositories.executor_repository import ExecutorRepository
+                    repo = ExecutorRepository(session)
+
+                    record = await repo.get_executor_by_id(executor_id)
+                    if record:
+                        return self._format_db_record(record)
+            except Exception as e:
+                logger.error(f"Error fetching executor from database: {e}")
 
         return None
 
@@ -487,13 +518,6 @@ class ExecutorService:
             return
 
         metadata = self._executor_metadata.get(executor_id, {})
-
-        # Format final executor info
-        final_info = self._format_executor_info(executor_id, executor)
-        final_info["completed_at"] = datetime.now(timezone.utc).isoformat()
-
-        # Store in completed executors
-        self._completed_executors[executor_id] = final_info
 
         # Check if this is a POSITION_HOLD close type (keep_position=True)
         if executor.close_type == CloseType.POSITION_HOLD:
@@ -595,17 +619,46 @@ class ExecutorService:
                 "custom_info": custom_info,
             }
 
+    def _format_db_record(self, record) -> Dict[str, Any]:
+        """Format a database ExecutorRecord for API response."""
+        return {
+            "executor_id": record.executor_id,
+            "executor_type": record.executor_type,
+            "account_name": record.account_name,
+            "connector_name": record.connector_name,
+            "trading_pair": record.trading_pair,
+            "side": None,
+            "status": record.status,
+            "close_type": record.close_type,
+            "is_active": record.status == "RUNNING",
+            "is_trading": False,
+            "timestamp": None,
+            "created_at": record.created_at.isoformat() if record.created_at else None,
+            "close_timestamp": record.closed_at.timestamp() if record.closed_at else None,
+            "closed_at": record.closed_at.isoformat() if record.closed_at else None,
+            "controller_id": None,
+            "net_pnl_quote": float(record.net_pnl_quote) if record.net_pnl_quote else 0.0,
+            "net_pnl_pct": float(record.net_pnl_pct) if record.net_pnl_pct else 0.0,
+            "cum_fees_quote": float(record.cum_fees_quote) if record.cum_fees_quote else 0.0,
+            "filled_amount_quote": float(record.filled_amount_quote) if record.filled_amount_quote else 0.0,
+            "config": json.loads(record.config) if record.config else None,
+            "custom_info": json.loads(record.final_state) if record.final_state else None,
+        }
+
     def get_summary(self) -> Dict[str, Any]:
         """
-        Get summary statistics for all executors.
+        Get summary statistics for active executors.
 
         Returns:
-            Dictionary with aggregate statistics
+            Dictionary with aggregate statistics for active executors only.
         """
-        executors = self.get_executors(include_completed=True)
+        executors = []
 
-        active_count = sum(1 for e in executors if e.get("is_active", False))
-        completed_count = len(executors) - active_count
+        # Get active executors from memory
+        for executor_id, executor in self._active_executors.items():
+            executors.append(self._format_executor_info(executor_id, executor))
+
+        active_count = len(executors)
         total_pnl = sum(e.get("net_pnl_quote", 0) for e in executors)
         total_volume = sum(e.get("filled_amount_quote", 0) for e in executors)
 
@@ -624,7 +677,6 @@ class ExecutorService:
 
         return {
             "total_active": active_count,
-            "total_completed": completed_count,
             "total_pnl_quote": total_pnl,
             "total_volume_quote": total_volume,
             "by_type": by_type,
@@ -705,21 +757,6 @@ class ExecutorService:
 
         except Exception as e:
             logger.error(f"Error persisting executor completion: {e}")
-
-    def remove_completed_executor(self, executor_id: str) -> bool:
-        """
-        Remove a completed executor from tracking.
-
-        Args:
-            executor_id: The executor ID to remove
-
-        Returns:
-            True if removed, False if not found
-        """
-        if executor_id in self._completed_executors:
-            del self._completed_executors[executor_id]
-            return True
-        return False
 
     # ========================================
     # Position Hold Tracking Methods
