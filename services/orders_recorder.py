@@ -54,8 +54,13 @@ class OrdersRecorder:
         
     def start(self, connector: ConnectorBase):
         """Start recording orders for the given connector"""
+        # Idempotency guard: prevent double-registration of listeners
+        if self._connector is not None:
+            logger.warning(f"OrdersRecorder already started for {self.account_name}/{self.connector_name}, ignoring duplicate start")
+            return
+
         self._connector = connector
-        
+
         # Subscribe to order events using the same pattern as MarketsRecorder
         for event, forwarder in self._event_pairs:
             connector.add_listener(event, forwarder)
@@ -257,7 +262,9 @@ class OrdersRecorder:
                             "fee_paid": validated_fee,
                             "fee_currency": trade_fee_currency
                         }
-                        await trade_repo.create_trade(trade_data)
+                        result = await trade_repo.create_trade(trade_data)
+                        if result is None:
+                            logger.debug(f"Trade {trade_id} already exists, skipping duplicate")
                     except (ValueError, TypeError) as e:
                         logger.error(f"Error creating trade record for {event.order_id}: {e}")
                         logger.error(f"Trade data that failed: timestamp={event.timestamp}, amount={event.amount}, price={event.price}, fee={trade_fee_paid}")

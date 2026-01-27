@@ -31,8 +31,8 @@ CONF_CLIENT_PATH = "credentials/master_account/conf_client.yml"
 
 
 def get_rate_oracle(request: Request) -> RateOracle:
-    """Get RateOracle instance from the market data feed manager."""
-    return request.app.state.market_data_feed_manager.rate_oracle
+    """Get RateOracle instance from the market data service."""
+    return request.app.state.market_data_service.rate_oracle
 
 
 def get_file_system_util() -> FileSystemUtil:

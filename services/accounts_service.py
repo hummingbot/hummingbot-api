@@ -1,24 +1,434 @@
 import asyncio
 import logging
+import time
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional, Set
 
 from fastapi import HTTPException
 from hummingbot.client.config.config_crypt import ETHKeyFileSecretManger
+from hummingbot.connector.connector_base import ConnectorBase
 from hummingbot.core.data_type.common import OrderType, TradeType, PositionAction, PositionMode
-from hummingbot.strategy_v2.executors.data_types import ConnectorPair
 
 from config import settings
 from database import AsyncDatabaseManager, AccountRepository, OrderRepository, TradeRepository, FundingRepository
-from services.market_data_feed_manager import MarketDataFeedManager
 from services.gateway_client import GatewayClient
 from services.gateway_transaction_poller import GatewayTransactionPoller
-from utils.connector_manager import ConnectorManager
 from utils.file_system import fs_util
 
 # Create module-specific logger
 logger = logging.getLogger(__name__)
+
+
+class AccountTradingInterface:
+    """
+    ScriptStrategyBase-compatible interface for executor trading.
+
+    This class provides the exact interface that Hummingbot executors expect
+    from a strategy object, backed by AccountsService resources.
+
+    IMPORTANT: This class does NOT maintain its own connector cache. Instead, it
+    uses the shared ConnectorManager via AccountsService which is the single source
+    of truth for all connector instances.
+
+    Executors use the following interface from strategy:
+    - current_timestamp: float property
+    - buy(connector_name, trading_pair, amount, order_type, price, position_action) -> str
+    - sell(connector_name, trading_pair, amount, order_type, price, position_action) -> str
+    - cancel(connector_name, trading_pair, order_id) -> str
+    - get_active_orders(connector_name) -> List
+
+    ExecutorBase also accesses:
+    - connectors: Dict[str, ConnectorBase] (accessed directly in ExecutorBase.__init__)
+    """
+
+    def __init__(
+        self,
+        accounts_service: 'AccountsService',
+        account_name: str
+    ):
+        """
+        Initialize AccountTradingInterface.
+
+        Args:
+            accounts_service: AccountsService instance for connector access
+            account_name: Account to use for connectors
+        """
+        self._accounts_service = accounts_service
+        self._account_name = account_name
+
+        # Track active markets (connector_name -> set of trading_pairs)
+        self._markets: Dict[str, Set[str]] = {}
+
+        # Timestamp tracking
+        self._current_timestamp: float = time.time()
+
+        # Lock for async operations
+        self._lock = asyncio.Lock()
+
+    @property
+    def account_name(self) -> str:
+        """Return the account name for this trading interface."""
+        return self._account_name
+
+    @property
+    def connectors(self) -> Dict[str, ConnectorBase]:
+        """
+        Return connectors for this account from the connector service.
+
+        This returns the actual connectors that are already initialized and running,
+        avoiding any duplicate caching or connector management.
+        """
+        if not self._accounts_service._connector_service:
+            return {}
+        all_connectors = self._accounts_service._connector_service.get_all_trading_connectors()
+        return all_connectors.get(self._account_name, {})
+
+    @property
+    def markets(self) -> Dict[str, Set[str]]:
+        """Return active markets configuration."""
+        return self._markets
+
+    @property
+    def current_timestamp(self) -> float:
+        """Return current timestamp (updated by control loop)."""
+        return self._current_timestamp
+
+    def update_timestamp(self):
+        """Update the current timestamp. Called by ExecutorService control loop."""
+        self._current_timestamp = time.time()
+
+    async def ensure_connector(self, connector_name: str) -> ConnectorBase:
+        """
+        Ensure connector is loaded and available.
+
+        This method uses the connector service which already caches connectors.
+        It also ensures the MarketDataProvider has access to the connector for
+        order book initialization.
+
+        Args:
+            connector_name: Name of the connector
+
+        Returns:
+            The connector instance
+        """
+        # Get connector from connector service (already cached there)
+        connector = await self._accounts_service._connector_service.get_trading_connector(
+            self._account_name,
+            connector_name
+        )
+        return connector
+
+    async def add_market(
+        self,
+        connector_name: str,
+        trading_pair: str,
+        order_book_timeout: float = 10.0
+    ):
+        """
+        Add a trading pair to active markets with full order book support.
+
+        This method ensures:
+        1. Connector is loaded
+        2. Order book is initialized and has valid data
+        3. Rate sources are initialized for price feeds
+
+        Args:
+            connector_name: Name of the connector
+            trading_pair: Trading pair to add
+            order_book_timeout: Timeout in seconds to wait for order book data
+        """
+        await self.ensure_connector(connector_name)
+
+        if connector_name not in self._markets:
+            self._markets[connector_name] = set()
+
+        # Check if already tracking this pair
+        if trading_pair in self._markets[connector_name]:
+            logger.debug(f"Market {connector_name}/{trading_pair} already active")
+            return
+
+        self._markets[connector_name].add(trading_pair)
+
+        # Get connector and its order book tracker
+        connector = self.connectors.get(connector_name)
+        if not connector:
+            raise ValueError(f"Connector {connector_name} not available. Check credentials.")
+        tracker = connector.order_book_tracker
+
+        # Check if order book already exists, if not initialize it dynamically
+        if trading_pair in tracker.order_books:
+            logger.debug(f"Order book already exists for {connector_name}/{trading_pair}")
+        else:
+            logger.debug(f"Order book not found for {connector_name}/{trading_pair}, initializing dynamically")
+            market_data_service = self._accounts_service._market_data_service
+            if market_data_service:
+                try:
+                    success = await market_data_service.initialize_order_book(
+                        connector_name, trading_pair,
+                        account_name=self._account_name,
+                        timeout=order_book_timeout
+                    )
+                    if not success:
+                        logger.warning(f"Order book for {connector_name}/{trading_pair} not ready after timeout")
+                except Exception as e:
+                    logger.warning(f"Exception initializing order book: {e}")
+
+        # Register the trading pair with the connector
+        self._register_trading_pair_with_connector(connector, trading_pair)
+
+    async def _wait_for_order_book_ready(
+        self,
+        tracker,
+        trading_pair: str,
+        timeout: float = 30.0
+    ) -> bool:
+        """
+        Wait for an order book to have valid data.
+
+        Args:
+            tracker: Order book tracker instance
+            trading_pair: Trading pair to wait for
+            timeout: Maximum time to wait in seconds
+
+        Returns:
+            True if order book is ready, False if timeout
+        """
+        import asyncio
+        waited = 0
+        interval = 0.5
+        while waited < timeout:
+            if trading_pair in tracker.order_books:
+                ob = tracker.order_books[trading_pair]
+                try:
+                    bids, asks = ob.snapshot
+                    if len(bids) > 0 and len(asks) > 0:
+                        logger.info(f"Order book for {trading_pair} is ready with {len(bids)} bids and {len(asks)} asks")
+                        return True
+                except Exception:
+                    pass
+            await asyncio.sleep(interval)
+            waited += interval
+        logger.warning(f"Timeout waiting for {trading_pair} order book to be ready")
+        return False
+
+    def _register_trading_pair_with_connector(
+        self,
+        connector: ConnectorBase,
+        trading_pair: str
+    ):
+        """
+        Register a trading pair with the connector's internal structures.
+
+        This is needed for methods like get_order_book() to work properly.
+        Different connector types may store trading pairs differently.
+
+        Args:
+            connector: The connector instance
+            trading_pair: Trading pair to register
+        """
+        if trading_pair not in connector._trading_pairs:
+            connector._trading_pairs.append(trading_pair)
+            logger.debug(f"Registered {trading_pair} with connector {type(connector).__name__}")
+
+    async def remove_market(
+        self,
+        connector_name: str,
+        trading_pair: str,
+        remove_order_book: bool = True
+    ):
+        """
+        Remove a trading pair from active markets and optionally cleanup order book.
+
+        Args:
+            connector_name: Name of the connector
+            trading_pair: Trading pair to remove
+            remove_order_book: Whether to remove the order book (default True)
+        """
+        if connector_name not in self._markets:
+            return
+
+        self._markets[connector_name].discard(trading_pair)
+        if not self._markets[connector_name]:
+            del self._markets[connector_name]
+
+        # Remove order book if requested
+        if remove_order_book:
+            market_data_service = self._accounts_service._market_data_service
+            if market_data_service:
+                try:
+                    success = await market_data_service.remove_trading_pair(
+                        connector_name,
+                        trading_pair,
+                        account_name=self._account_name
+                    )
+                    if success:
+                        logger.info(f"Removed order book for {connector_name}/{trading_pair}")
+                    else:
+                        logger.debug(f"Order book for {trading_pair} was not being tracked")
+                except Exception as e:
+                    logger.warning(f"Failed to remove order book for {trading_pair}: {e}")
+
+    # ========================================
+    # ScriptStrategyBase-compatible methods
+    # These are called by executors via self._strategy.method()
+    # ========================================
+
+    def buy(
+        self,
+        connector_name: str,
+        trading_pair: str,
+        amount: Decimal,
+        order_type: OrderType,
+        price: Decimal = Decimal("NaN"),
+        position_action: PositionAction = PositionAction.NIL
+    ) -> str:
+        """
+        Place a buy order.
+
+        Args:
+            connector_name: Name of the connector
+            trading_pair: Trading pair
+            amount: Order amount in base currency
+            order_type: Type of order (LIMIT, MARKET, etc.)
+            price: Order price (for limit orders)
+            position_action: Position action for perpetuals
+
+        Returns:
+            Client order ID
+        """
+        connector = self.connectors.get(connector_name)
+        if not connector:
+            raise ValueError(f"Connector {connector_name} not loaded. Call ensure_connector first.")
+
+        return connector.buy(
+            trading_pair=trading_pair,
+            amount=amount,
+            order_type=order_type,
+            price=price,
+            position_action=position_action
+        )
+
+    def sell(
+        self,
+        connector_name: str,
+        trading_pair: str,
+        amount: Decimal,
+        order_type: OrderType,
+        price: Decimal = Decimal("NaN"),
+        position_action: PositionAction = PositionAction.NIL
+    ) -> str:
+        """
+        Place a sell order.
+
+        Args:
+            connector_name: Name of the connector
+            trading_pair: Trading pair
+            amount: Order amount in base currency
+            order_type: Type of order (LIMIT, MARKET, etc.)
+            price: Order price (for limit orders)
+            position_action: Position action for perpetuals
+
+        Returns:
+            Client order ID
+        """
+        connector = self.connectors.get(connector_name)
+        if not connector:
+            raise ValueError(f"Connector {connector_name} not loaded. Call ensure_connector first.")
+
+        return connector.sell(
+            trading_pair=trading_pair,
+            amount=amount,
+            order_type=order_type,
+            price=price,
+            position_action=position_action
+        )
+
+    def cancel(
+        self,
+        connector_name: str,
+        trading_pair: str,
+        order_id: str
+    ) -> str:
+        """
+        Cancel an order.
+
+        Args:
+            connector_name: Name of the connector
+            trading_pair: Trading pair
+            order_id: Client order ID to cancel
+
+        Returns:
+            Client order ID that was cancelled
+        """
+        connector = self.connectors.get(connector_name)
+        if not connector:
+            raise ValueError(f"Connector {connector_name} not loaded. Call ensure_connector first.")
+
+        return connector.cancel(trading_pair=trading_pair, client_order_id=order_id)
+
+    def get_active_orders(self, connector_name: str) -> List:
+        """
+        Get active orders for a connector.
+
+        Args:
+            connector_name: Name of the connector
+
+        Returns:
+            List of active in-flight orders
+        """
+        connector = self.connectors.get(connector_name)
+        if not connector:
+            return []
+        return list(connector.in_flight_orders.values())
+
+    # ========================================
+    # Additional helper methods
+    # ========================================
+
+    def get_connector(self, connector_name: str) -> Optional[ConnectorBase]:
+        """
+        Get a connector by name from the shared ConnectorManager.
+
+        Args:
+            connector_name: Name of the connector
+
+        Returns:
+            The connector instance or None if not loaded
+        """
+        return self.connectors.get(connector_name)
+
+    def is_connector_loaded(self, connector_name: str) -> bool:
+        """
+        Check if a connector is loaded in the shared ConnectorManager.
+
+        Args:
+            connector_name: Name of the connector
+
+        Returns:
+            True if connector is loaded
+        """
+        return connector_name in self.connectors
+
+    def get_all_trading_pairs(self) -> Dict[str, Set[str]]:
+        """
+        Get all active trading pairs by connector.
+
+        Returns:
+            Dictionary mapping connector names to sets of trading pairs
+        """
+        return {k: v.copy() for k, v in self._markets.items()}
+
+    async def cleanup(self):
+        """
+        Cleanup resources. Called when shutting down.
+
+        Note: This does NOT clean up connectors since they are managed by the
+        shared ConnectorManager, not by AccountTradingInterface.
+        """
+        # Clear only local state (markets tracking)
+        self._markets.clear()
+        logger.info(f"AccountTradingInterface cleanup completed for account {self._account_name}")
 
 
 class AccountsService:
@@ -45,7 +455,6 @@ class AccountsService:
     def __init__(self,
                  account_update_interval: int = 5,
                  default_quote: str = "USDT",
-                 market_data_feed_manager: Optional[MarketDataFeedManager] = None,
                  gateway_url: str = "http://localhost:15888"):
         """
         Initialize the AccountsService.
@@ -53,7 +462,6 @@ class AccountsService:
         Args:
             account_update_interval: How often to update account states in minutes (default: 5)
             default_quote: Default quote currency for trading pairs (default: "USDT")
-            market_data_feed_manager: Market data feed manager for price caching (optional)
             gateway_url: URL for Gateway service (default: "http://localhost:15888")
         """
         self.secrets_manager = ETHKeyFileSecretManger(settings.security.config_password)
@@ -61,7 +469,6 @@ class AccountsService:
         self.update_account_state_interval = account_update_interval * 60
         self.order_status_poll_interval = 60  # Poll order status every 1 minute
         self.default_quote = default_quote
-        self.market_data_feed_manager = market_data_feed_manager
         self._update_account_state_task: Optional[asyncio.Task] = None
         self._order_status_polling_task: Optional[asyncio.Task] = None
 
@@ -69,8 +476,10 @@ class AccountsService:
         self.db_manager = AsyncDatabaseManager(settings.database.url)
         self._db_initialized = False
 
-        # Initialize connector manager with db_manager
-        self.connector_manager = ConnectorManager(self.secrets_manager, self.db_manager)
+        # Services injected from main.py
+        self._connector_service = None  # UnifiedConnectorService
+        self._market_data_service = None  # MarketDataService
+        self._trading_service = None  # TradingService
 
         # Initialize Gateway client
         self.gateway_client = GatewayClient(gateway_url)
@@ -84,6 +493,29 @@ class AccountsService:
             max_retry_age=3600  # Stop retrying after 1 hour
         )
         self._gateway_poller_started = False
+
+        # Trading interfaces per account (for executor use)
+        self._trading_interfaces: Dict[str, AccountTradingInterface] = {}
+
+    def get_trading_interface(self, account_name: str) -> AccountTradingInterface:
+        """
+        Get or create a trading interface for the specified account.
+
+        This interface provides ScriptStrategyBase-compatible methods
+        that executors can use for trading operations.
+
+        Args:
+            account_name: Account to get trading interface for
+
+        Returns:
+            AccountTradingInterface instance for the account
+        """
+        if account_name not in self._trading_interfaces:
+            self._trading_interfaces[account_name] = AccountTradingInterface(
+                accounts_service=self,
+                account_name=account_name
+            )
+        return self._trading_interfaces[account_name]
 
     async def ensure_db_initialized(self):
         """Ensure database is initialized before using it."""
@@ -156,8 +588,15 @@ class AccountsService:
             except Exception as e:
                 logger.error(f"Error stopping Gateway transaction poller: {e}", exc_info=True)
 
-        # Stop all connectors through the ConnectorManager
-        await self.connector_manager.stop_all_connectors()
+        # Cleanup trading interfaces
+        for interface in self._trading_interfaces.values():
+            await interface.cleanup()
+        self._trading_interfaces.clear()
+        logger.info("Cleaned up trading interfaces")
+
+        # Stop all connectors through the connector service
+        if self._connector_service:
+            await self._connector_service.stop_all()
 
         logger.info("AccountsService stopped successfully")
 
@@ -171,7 +610,8 @@ class AccountsService:
             try:
                 await self.check_all_connectors()
                 # Update all connector states (balances, orders, positions, trading rules)
-                await self.connector_manager.update_all_connector_states()
+                if self._connector_service:
+                    await self._connector_service.update_all_trading_connector_states()
                 await self.update_account_state()
                 await self.dump_account_state()
             except Exception as e:
@@ -188,7 +628,8 @@ class AccountsService:
         """
         while True:
             try:
-                await self.connector_manager.sync_order_state_to_database_for_all_connectors()
+                if self._connector_service:
+                    await self._connector_service.sync_all_orders_to_database()
             except Exception as e:
                 logger.error(f"Error syncing order state to database: {e}")
             finally:
@@ -266,63 +707,22 @@ class AccountsService:
     async def _ensure_account_connectors_initialized(self, account_name: str):
         """
         Ensure all connectors for a specific account are initialized.
-        This delegates to ConnectorManager for actual initialization.
-        
+        This delegates to the connector service for actual initialization.
+
         :param account_name: The name of the account to initialize connectors for.
         """
+        if not self._connector_service:
+            return
+
         # Initialize missing connectors
-        for connector_name in self.connector_manager.list_available_credentials(account_name):
+        for connector_name in self._connector_service.list_available_credentials(account_name):
             try:
                 # Only initialize if connector doesn't exist
-                if not self.connector_manager.is_connector_initialized(account_name, connector_name):
+                if not self._connector_service.is_trading_connector_initialized(account_name, connector_name):
                     # Get connector will now handle all initialization
-                    await self.connector_manager.get_connector(account_name, connector_name)
+                    await self._connector_service.get_trading_connector(account_name, connector_name)
             except Exception as e:
                 logger.error(f"Error initializing connector {connector_name} for account {account_name}: {e}")
-
-    def _initialize_rate_sources_for_pairs(self, connector_name: str, trading_pairs: List[str]):
-        """
-        Helper method to initialize rate sources for trading pairs.
-        
-        :param connector_name: The name of the connector.
-        :param trading_pairs: List of trading pairs to initialize.
-        """
-        if not trading_pairs or not self.market_data_feed_manager:
-            return
-            
-        try:
-            connector_pairs = [ConnectorPair(connector_name=connector_name, trading_pair=trading_pair) 
-                             for trading_pair in trading_pairs]
-            self.market_data_feed_manager.market_data_provider.initialize_rate_sources(connector_pairs)
-            logger.info(f"Initialized rate sources for {len(trading_pairs)} trading pairs in {connector_name}")
-        except Exception as e:
-            logger.error(f"Error initializing rate sources for {connector_name}: {e}")
-
-    async def _initialize_price_tracking(self, account_name: str, connector_name: str, connector):
-        """
-        Initialize price tracking for a connector's tokens using MarketDataProvider.
-        
-        :param account_name: The name of the account.
-        :param connector_name: The name of the connector.
-        :param connector: The connector instance.
-        """
-        try:
-            # Get current balances to determine which tokens need price tracking
-            balances = connector.get_all_balances()
-            unique_tokens = [token for token, value in balances.items() if 
-                           value != Decimal("0") and token not in settings.banned_tokens and "USD" not in token]
-            
-            if unique_tokens:
-                # Create trading pairs for price tracking
-                trading_pairs = [self.get_default_market(token, connector_name) for token in unique_tokens]
-                
-                # Initialize rate sources using helper method
-                self._initialize_rate_sources_for_pairs(connector_name, trading_pairs)
-                
-                logger.info(f"Initialized price tracking for {len(trading_pairs)} trading pairs in {connector_name} (Account: {account_name})")
-                
-        except Exception as e:
-            logger.error(f"Error initializing price tracking for {connector_name} in account {account_name}: {e}")
 
     async def update_account_state(
         self,
@@ -338,7 +738,7 @@ class AccountsService:
             connector_names: If provided, only update these connectors. If None, update all connectors.
                             For Gateway, this filters by chain-network (e.g., 'solana-mainnet-beta').
         """
-        all_connectors = self.connector_manager.get_all_connectors()
+        all_connectors = self._connector_service.get_all_trading_connectors() if self._connector_service else {}
 
         # Prepare parallel tasks
         tasks = []
@@ -387,35 +787,10 @@ class AccountsService:
         unique_tokens = [balance["token"] for balance in balances]
         trading_pairs = [self.get_default_market(token, connector_name) for token in unique_tokens if "USD" not in token]
         
-        # Try to get cached prices first, fallback to live prices if needed
-        prices_from_cache = {}
-        trading_pairs_need_update = []
-        
-        if self.market_data_feed_manager:
-            for trading_pair in trading_pairs:
-                try:
-                    cached_price = self.market_data_feed_manager.market_data_provider.get_rate(trading_pair)
-                    if cached_price > 0:
-                        prices_from_cache[trading_pair] = cached_price
-                    else:
-                        trading_pairs_need_update.append(trading_pair)
-                except Exception:
-                    trading_pairs_need_update.append(trading_pair)
-        else:
-            trading_pairs_need_update = trading_pairs
-        
-        # Add new trading pairs to market data provider if they need updates
-        if trading_pairs_need_update:
-            self._initialize_rate_sources_for_pairs(connector_name, trading_pairs_need_update)
-            logger.info(f"Added {len(trading_pairs_need_update)} new trading pairs to market data provider: {trading_pairs_need_update}")
-        
-        # Get fresh prices for pairs not in cache or with stale/zero prices
-        fresh_prices = {}
-        if trading_pairs_need_update:
-            fresh_prices = await self._safe_get_last_traded_prices(connector, trading_pairs_need_update)
-        
-        # Combine cached and fresh prices
-        all_prices = {**prices_from_cache, **fresh_prices}
+        # Get fresh prices for all trading pairs
+        all_prices = {}
+        if trading_pairs:
+            all_prices = await self._safe_get_last_traded_prices(connector, trading_pairs)
         
         tokens_info = []
         for balance in balances:
@@ -471,25 +846,25 @@ class AccountsService:
         :param connector_name: The name of the connector.
         :return: The connector config map.
         """
-        return self.connector_manager.get_connector_config_map(connector_name)
+        from services.unified_connector_service import UnifiedConnectorService
+        return UnifiedConnectorService.get_connector_config_map(connector_name)
 
     async def add_credentials(self, account_name: str, connector_name: str, credentials: dict):
         """
         Add or update connector credentials and initialize the connector with validation.
-        
+
         :param account_name: The name of the account.
         :param connector_name: The name of the connector.
         :param credentials: Dictionary containing the connector credentials.
         :raises Exception: If credentials are invalid or connector cannot be initialized.
         """
+        if not self._connector_service:
+            raise HTTPException(status_code=500, detail="Connector service not initialized")
+
         try:
             # Update the connector keys (this saves the credentials to file and validates them)
-            connector = await self.connector_manager.update_connector_keys(account_name, connector_name, credentials)
-            
-            # Initialize price tracking for this connector's tokens if market data manager is available
-            if self.market_data_feed_manager:
-                await self._initialize_price_tracking(account_name, connector_name, connector)
-            
+            connector = await self._connector_service.update_connector_keys(account_name, connector_name, credentials)
+
             await self.update_account_state()
         except Exception as e:
             logger.error(f"Error adding connector credentials for account {account_name}: {e}")
@@ -529,15 +904,15 @@ class AccountsService:
             fs_util.delete_file(directory=f"credentials/{account_name}/connectors", file_name=f"{connector_name}.yml")
 
         # Always perform cleanup regardless of file existence
-        # Stop the connector if it's running
-        await self.connector_manager.stop_connector(account_name, connector_name)
+        if self._connector_service:
+            # Stop the connector if it's running
+            await self._connector_service.stop_trading_connector(account_name, connector_name)
+            # Clear the connector from cache
+            self._connector_service.clear_trading_connector(account_name, connector_name)
 
         # Remove from account state
         if account_name in self.accounts_state and connector_name in self.accounts_state[account_name]:
             self.accounts_state[account_name].pop(connector_name)
-
-        # Clear the connector from cache
-        self.connector_manager.clear_cache(account_name, connector_name)
 
     def add_account(self, account_name: str):
         """
@@ -565,18 +940,18 @@ class AccountsService:
         :return:
         """
         # Stop all connectors for this account
-        for connector_name in self.connector_manager.list_account_connectors(account_name):
-            await self.connector_manager.stop_connector(account_name, connector_name)
-        
+        if self._connector_service:
+            for connector_name in self._connector_service.list_account_connectors(account_name):
+                await self._connector_service.stop_trading_connector(account_name, connector_name)
+            # Clear all connectors for this account from cache
+            self._connector_service.clear_trading_connector(account_name)
+
         # Delete account folder
         fs_util.delete_folder('credentials', account_name)
-        
+
         # Remove from account state
         if account_name in self.accounts_state:
             self.accounts_state.pop(account_name)
-        
-        # Clear all connectors for this account from cache
-        self.connector_manager.clear_cache(account_name)
     
     async def get_account_current_state(self, account_name: str) -> Dict[str, List[Dict]]:
         """
@@ -901,13 +1276,12 @@ class AccountsService:
                 "error": str(e)
             }
     
-    async def place_trade(self, account_name: str, connector_name: str, trading_pair: str, 
-                         trade_type: TradeType, amount: Decimal, order_type: OrderType = OrderType.LIMIT, 
-                         price: Optional[Decimal] = None, position_action: PositionAction = PositionAction.OPEN, 
-                         market_data_manager: Optional[MarketDataFeedManager] = None) -> str:
+    async def place_trade(self, account_name: str, connector_name: str, trading_pair: str,
+                         trade_type: TradeType, amount: Decimal, order_type: OrderType = OrderType.LIMIT,
+                         price: Optional[Decimal] = None, position_action: PositionAction = PositionAction.OPEN) -> str:
         """
         Place a trade using the specified account and connector.
-        
+
         Args:
             account_name: Name of the account to trade with
             connector_name: Name of the connector/exchange
@@ -917,24 +1291,21 @@ class AccountsService:
             order_type: "LIMIT", "MARKET", or "LIMIT_MAKER"
             price: Price for limit orders (required for LIMIT and LIMIT_MAKER)
             position_action: Position action for perpetual contracts (OPEN/CLOSE)
-            market_data_manager: Market data manager for price fetching
-            
+
         Returns:
             Client order ID assigned by the connector
-            
+
         Raises:
             HTTPException: If account, connector not found, or trade fails
         """
         # Validate account exists
         if account_name not in self.list_accounts():
             raise HTTPException(status_code=404, detail=f"Account '{account_name}' not found")
-        
-        # Validate connector exists for account
-        if not self.connector_manager.is_connector_initialized(account_name, connector_name):
-            raise HTTPException(status_code=404, detail=f"Connector '{connector_name}' not found for account '{account_name}'")
-        
-        # Get the connector instance
-        connector = await self.connector_manager.get_connector(account_name, connector_name)
+
+        if not self._connector_service:
+            raise HTTPException(status_code=500, detail="Connector service not initialized")
+
+        connector = await self._connector_service.get_trading_connector(account_name, connector_name)
         
         # Validate price for limit orders
         if order_type in [OrderType.LIMIT, OrderType.LIMIT_MAKER] and price is None:
@@ -980,14 +1351,14 @@ class AccountsService:
             notional_size = quantized_price * quantized_amount
         else:
             # For market orders without price, get current market price for validation
-            if market_data_manager:
+            if self._market_data_service:
                 try:
-                    prices = await market_data_manager.get_prices(connector_name, [trading_pair])
+                    prices = await self._market_data_service.get_prices(connector_name, [trading_pair])
                     if trading_pair in prices and "error" not in prices:
                         price = Decimal(str(prices[trading_pair]))
                 except Exception as e:
                     logger.error(f"Error getting market price for {trading_pair}: {e}")
-            notional_size = price * quantized_amount
+            notional_size = price * quantized_amount if price else Decimal("0")
             
         if notional_size < trading_rule.min_notional_size:
             raise HTTPException(
@@ -1031,26 +1402,24 @@ class AccountsService:
     async def get_connector_instance(self, account_name: str, connector_name: str):
         """
         Get a connector instance for direct access.
-        
+
         Args:
             account_name: Name of the account
             connector_name: Name of the connector
-            
+
         Returns:
             Connector instance
-            
+
         Raises:
             HTTPException: If account or connector not found
         """
         if account_name not in self.list_accounts():
             raise HTTPException(status_code=404, detail=f"Account '{account_name}' not found")
-        
-        # Check if connector credentials exist
-        available_credentials = self.connector_manager.list_available_credentials(account_name)
-        if connector_name not in available_credentials:
-            raise HTTPException(status_code=404, detail=f"Connector '{connector_name}' not found for account '{account_name}'")
-        
-        return await self.connector_manager.get_connector(account_name, connector_name)
+
+        if not self._connector_service:
+            raise HTTPException(status_code=500, detail="Connector service not initialized")
+
+        return await self._connector_service.get_trading_connector(account_name, connector_name)
 
     async def _get_perpetual_connector(self, account_name: str, connector_name: str):
         """
@@ -1662,65 +2031,21 @@ class AccountsService:
                         "units": Decimal(str(balance))
                     })
 
-            # Get prices using rate sources (similar to _get_connector_tokens_info)
+            # Get prices for tokens
             unique_tokens = [b["token"] for b in balances_list]
+            all_prices = {}
 
-            # Try to get cached prices first
-            # Try USDT first (more common in CEX like Binance), then USDC (common in DEX)
-            prices_from_cache = {}
-            tokens_need_update = []
-
-            if self.market_data_feed_manager:
-                for token in unique_tokens:
-                    try:
-                        token_unwrapped = self.get_unwrapped_token(token)
-                        # Try USDT first (Binance, etc.), then USDC as fallback (DEX)
-                        found_price = False
-                        for quote in ["USDT", "USDC"]:
-                            trading_pair = f"{token_unwrapped}-{quote}"
-                            try:
-                                cached_price = self.market_data_feed_manager.market_data_provider.get_rate(trading_pair)
-                                if cached_price > 0:
-                                    prices_from_cache[token] = cached_price
-                                    found_price = True
-                                    break
-                            except Exception:
-                                continue
-                        if not found_price:
-                            tokens_need_update.append(token)
-                    except Exception:
-                        tokens_need_update.append(token)
-            else:
-                tokens_need_update = unique_tokens
-
-            # Initialize rate sources for Gateway using the old format: "gateway_{chain}-{network}"
-            # The MarketDataProvider.update_rates_task() will detect this format and resolve
-            # the correct pricing connector (jupiter/router for solana, uniswap/router for ethereum, etc.)
-            if tokens_need_update and self.market_data_feed_manager:
-                # Use the format that MarketDataProvider expects for gateway connectors
-                gateway_connector_key = f"gateway_{chain}-{network}"
-                trading_pairs_need_update = [f"{token}-USDC" for token in tokens_need_update]
-                connector_pairs = [ConnectorPair(connector_name=gateway_connector_key, trading_pair=tp) for tp in trading_pairs_need_update]
-
-                for pair in connector_pairs:
-                    self.market_data_feed_manager.market_data_provider._rates_required.add_or_update(
-                        gateway_connector_key, pair
-                    )
-                logger.info(f"Added {len(trading_pairs_need_update)} Gateway trading pairs to market data provider for {gateway_connector_key}: {trading_pairs_need_update}")
-
-                # Trigger immediate price fetch for the new tokens
+            # Fetch prices for Gateway tokens
+            if unique_tokens:
                 try:
                     fetched_prices = await self._fetch_gateway_prices_immediate(
-                        chain, network, tokens_need_update
+                        chain, network, unique_tokens
                     )
                     for token, price in fetched_prices.items():
                         if price > 0:
-                            prices_from_cache[token] = price
+                            all_prices[token] = price
                 except Exception as e:
-                    logger.warning(f"Error fetching immediate gateway prices: {e}")
-
-            # Use cached prices
-            all_prices = prices_from_cache
+                    logger.warning(f"Error fetching gateway prices: {e}")
 
             # Format final result with prices
             formatted_balances = []

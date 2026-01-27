@@ -34,8 +34,13 @@ class FundingRecorder:
     
     def start(self, connector: ConnectorBase):
         """Start recording funding payments for the given connector"""
+        # Idempotency guard: prevent double-registration of listeners
+        if self._connector is not None:
+            self.logger.warning(f"FundingRecorder already started for {self.account_name}/{self.connector_name}, ignoring duplicate start")
+            return
+
         self._connector = connector
-        
+
         # Subscribe to funding payment events
         for event, forwarder in self._event_pairs:
             connector.add_listener(event, forwarder)
