@@ -278,10 +278,6 @@ class ExecutorFilterRequest(PaginationParams):
         None,
         description="Filter by status (RUNNING, TERMINATED, etc.)"
     )
-    include_completed: bool = Field(
-        default=False,
-        description="Include recently completed executors"
-    )
 
 
 # ========================================
@@ -389,7 +385,3 @@ class ExecutorsSummaryResponse(BaseModel):
     by_status: Dict[str, int] = Field(description="Executor count by status")
 
 
-class DeleteExecutorResponse(BaseModel):
-    """Response after deleting an executor from tracking."""
-    message: str = Field(description="Success message")
-    executor_id: str = Field(description="Executor identifier that was removed")
