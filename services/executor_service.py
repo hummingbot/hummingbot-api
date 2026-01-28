@@ -364,6 +364,14 @@ class ExecutorService:
         # Persist to database
         await self._persist_executor_created(executor_id, executor)
 
+        # Capture created_at before potential cleanup
+        created_at = self._executor_metadata[executor_id]["created_at"].isoformat()
+
+        # Check if executor terminated immediately (e.g., insufficient balance)
+        # If so, handle completion now rather than waiting for control loop
+        if executor.is_closed:
+            await self._handle_executor_completion(executor_id)
+
         logger.info(f"Created {executor_type} executor {executor_id} for {connector_name}/{trading_pair}")
 
         return {
@@ -372,7 +380,7 @@ class ExecutorService:
             "connector_name": connector_name,
             "trading_pair": trading_pair,
             "status": executor.status.name,
-            "created_at": self._executor_metadata[executor_id]["created_at"].isoformat()
+            "created_at": created_at
         }
 
     async def get_executors(
@@ -539,85 +547,36 @@ class ExecutorService:
         executor_id: str,
         executor: ExecutorBase
     ) -> Dict[str, Any]:
-        """Format executor information for API response.
-
-        Uses Pydantic's model_dump(mode='json') for automatic serialization
-        of Decimal, Enum, and other complex types.
-        """
+        """Format executor information for API response."""
         metadata = self._executor_metadata.get(executor_id, {})
+        executor_type = metadata.get("executor_type")
 
-        try:
-            # Use model_dump() then our custom serializer to handle TrackedOrder etc.
-            executor_info = executor.executor_info
-            result = json.loads(json.dumps(executor_info.model_dump(), default=_json_default))
+        # Get executor_info and serialize
+        executor_info = executor.executor_info
+        result = json.loads(json.dumps(executor_info.model_dump(), default=_json_default))
 
-            # Add our metadata (not part of ExecutorInfo model)
-            result["executor_id"] = executor_id
-            result["executor_type"] = metadata.get("executor_type")
-            result["account_name"] = metadata.get("account_name")
-            result["created_at"] = metadata.get("created_at").isoformat() if metadata.get("created_at") else None
+        # Add metadata
+        result["executor_id"] = executor_id
+        result["executor_type"] = executor_type
+        result["account_name"] = metadata.get("account_name")
+        result["created_at"] = metadata.get("created_at").isoformat() if metadata.get("created_at") else None
 
-            # Ensure connector_name and trading_pair from metadata take precedence
-            if metadata.get("connector_name"):
-                result["connector_name"] = metadata.get("connector_name")
-            if metadata.get("trading_pair"):
-                result["trading_pair"] = metadata.get("trading_pair")
+        if metadata.get("connector_name"):
+            result["connector_name"] = metadata.get("connector_name")
+        if metadata.get("trading_pair"):
+            result["trading_pair"] = metadata.get("trading_pair")
 
-            return result
+        # Read status/close_type directly from executor
+        result["status"] = executor.status.name
+        result["close_type"] = executor.close_type.name if executor.close_type else None
+        result["is_active"] = not executor.is_closed
 
-        except Exception as e:
-            # Fallback when executor_info validation fails (e.g., timestamp=None)
-            logger.warning(f"Error accessing executor_info for {executor_id}: {e}")
+        # For grid executors, filter out heavy fields from custom_info
+        if executor_type == "grid_executor" and result.get("custom_info"):
+            heavy_fields = {"levels_by_state", "filled_orders", "failed_orders", "canceled_orders"}
+            result["custom_info"] = {k: v for k, v in result["custom_info"].items() if k not in heavy_fields}
 
-            # Try to get real values directly from executor
-            try:
-                is_trading = executor.is_trading if hasattr(executor, 'is_trading') else False
-            except Exception:
-                is_trading = False
-
-            try:
-                raw_custom_info = executor.get_custom_info() if hasattr(executor, 'get_custom_info') else None
-                # Convert to JSON-safe format (handles Decimals, Enums, etc.)
-                if raw_custom_info:
-                    custom_info = json.loads(json.dumps(raw_custom_info, default=_json_default))
-                else:
-                    custom_info = None
-            except Exception:
-                custom_info = None
-
-            try:
-                net_pnl_quote = float(executor.net_pnl_quote) if hasattr(executor, 'net_pnl_quote') else 0.0
-                net_pnl_pct = float(executor.net_pnl_pct) if hasattr(executor, 'net_pnl_pct') else 0.0
-                cum_fees_quote = float(executor.cum_fees_quote) if hasattr(executor, 'cum_fees_quote') else 0.0
-                filled_amount_quote = float(executor.filled_amount_quote) if hasattr(executor, 'filled_amount_quote') else 0.0
-            except Exception:
-                net_pnl_quote = 0.0
-                net_pnl_pct = 0.0
-                cum_fees_quote = 0.0
-                filled_amount_quote = 0.0
-
-            return {
-                "executor_id": executor_id,
-                "executor_type": metadata.get("executor_type"),
-                "account_name": metadata.get("account_name"),
-                "connector_name": metadata.get("connector_name"),
-                "trading_pair": metadata.get("trading_pair"),
-                "side": None,
-                "status": executor.status.name if hasattr(executor, 'status') else "UNKNOWN",
-                "is_active": not executor.is_closed if hasattr(executor, 'is_closed') else True,
-                "is_trading": is_trading,
-                "timestamp": None,
-                "created_at": metadata.get("created_at").isoformat() if metadata.get("created_at") else None,
-                "close_type": executor.close_type.name if hasattr(executor, 'close_type') and executor.close_type else None,
-                "close_timestamp": None,
-                "controller_id": None,
-                "net_pnl_quote": net_pnl_quote,
-                "net_pnl_pct": net_pnl_pct,
-                "cum_fees_quote": cum_fees_quote,
-                "filled_amount_quote": filled_amount_quote,
-                "config": metadata.get("config"),
-                "custom_info": custom_info,
-            }
+        return result
 
     def _format_db_record(self, record) -> Dict[str, Any]:
         """Format a database ExecutorRecord for API response."""
@@ -717,26 +676,51 @@ class ExecutorService:
             return
 
         try:
-            # Try to get executor_info, handle validation errors (e.g., timestamp=None)
+            # Read status/close_type directly from executor (most reliable)
+            status_name = executor.status.name
+            close_type = executor.close_type.name if executor.close_type else None
+
+            # Get PnL values from executor_info
             try:
                 executor_info = executor.executor_info
-                status_name = executor_info.status.name
-                close_type = executor_info.close_type.name if executor_info.close_type else None
                 net_pnl_quote = executor_info.net_pnl_quote
                 net_pnl_pct = executor_info.net_pnl_pct
                 cum_fees_quote = executor_info.cum_fees_quote
                 filled_amount_quote = executor_info.filled_amount_quote
-                custom_info = executor_info.custom_info
             except Exception as e:
-                # Fallback when executor_info validation fails
                 logger.debug(f"Error accessing executor_info for persistence: {e}")
-                status_name = executor.status.name if hasattr(executor, 'status') else "UNKNOWN"
-                close_type = executor.close_type.name if hasattr(executor, 'close_type') and executor.close_type else None
                 net_pnl_quote = Decimal("0")
                 net_pnl_pct = Decimal("0")
                 cum_fees_quote = Decimal("0")
                 filled_amount_quote = Decimal("0")
-                custom_info = None
+
+            # Get custom_info directly from executor to avoid Pydantic serialization issues
+            # with TrackedOrder and other complex types
+            custom_info = executor.get_custom_info()
+            # Serialize custom_info, fallback to None if serialization fails
+            final_state_json = None
+            metadata = self._executor_metadata.get(executor_id, {})
+            executor_type = metadata.get("executor_type")
+            if executor_type == "grid_executor":
+                heavy_fields = {
+                    "levels_by_state",
+                    "filled_orders",
+                    "failed_orders",
+                    "canceled_orders",
+                }
+                custom_info = {k: v for k, v in custom_info.items() if k not in heavy_fields}
+
+            try:
+                final_state_json = json.dumps(custom_info, default=_json_default)
+            except Exception as e:
+                logger.warning(f"Failed to serialize custom_info for {executor_id}: {e}")
+                # Try a simpler serialization without complex objects
+                try:
+                    simple_info = {k: v for k, v in custom_info.items()
+                                   if isinstance(v, (str, int, float, bool, list, dict, type(None)))}
+                    final_state_json = json.dumps(simple_info)
+                except Exception:
+                    final_state_json = None
 
             async with self.db_manager.get_session_context() as session:
                 from database.repositories.executor_repository import ExecutorRepository
@@ -750,7 +734,7 @@ class ExecutorService:
                     net_pnl_pct=net_pnl_pct,
                     cum_fees_quote=cum_fees_quote,
                     filled_amount_quote=filled_amount_quote,
-                    final_state=json.dumps(custom_info, default=_json_default) if custom_info else None
+                    final_state=final_state_json
                 )
 
             logger.debug(f"Persisted executor {executor_id} completion to database")
@@ -832,15 +816,14 @@ class ExecutorService:
             if filled_amount_quote == 0 and custom_info:
                 filled_amount_quote = Decimal(str(custom_info.get("filled_amount_quote", 0)))
 
-            # For grid executors, aggregate from held_position_orders
-            if metadata.get("executor_type") == "grid_executor" and custom_info:
+            # Check for held_position_orders (used by grid_executor, position_executor, etc.)
+            held_orders = custom_info.get("held_position_orders", []) if custom_info else []
+
+            if held_orders:
                 buy_filled_base = Decimal("0")
                 buy_filled_quote = Decimal("0")
                 sell_filled_base = Decimal("0")
                 sell_filled_quote = Decimal("0")
-
-                # held_position_orders contains the orders kept when keep_position=True
-                held_orders = custom_info.get("held_position_orders", [])
 
                 for order in held_orders:
                     if isinstance(order, dict):
@@ -862,7 +845,7 @@ class ExecutorService:
                     position.add_fill("SELL", sell_filled_base, sell_filled_quote, executor_id)
 
                 logger.info(
-                    f"Aggregated grid executor {executor_id} to position {position_key}: "
+                    f"Aggregated executor {executor_id} to position {position_key}: "
                     f"buy={buy_filled_base} base, sell={sell_filled_base} base"
                 )
 
