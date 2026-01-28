@@ -13,7 +13,6 @@ from deps import get_executor_service
 from models.executors import (
     CreateExecutorRequest,
     CreateExecutorResponse,
-    DeleteExecutorResponse,
     ExecutorDetailResponse,
     ExecutorFilterRequest,
     ExecutorResponse,
@@ -75,7 +74,9 @@ async def list_executors(
     executor_service: ExecutorService = Depends(get_executor_service)
 ):
     """
-    Get list of active executors with optional filtering.
+    Get list of executors with optional filtering.
+
+    Returns active executors from memory combined with completed executors from database.
 
     Filters:
     - `account_names`: Filter by specific accounts
@@ -83,19 +84,17 @@ async def list_executors(
     - `trading_pairs`: Filter by trading pairs
     - `executor_types`: Filter by executor types
     - `status`: Filter by status (RUNNING, TERMINATED, etc.)
-    - `include_completed`: Include recently completed executors
 
     Returns paginated list of executor summaries.
     """
     try:
-        # Get filtered executors
-        executors = executor_service.get_executors(
+        # Get filtered executors (active from memory + completed from DB)
+        executors = await executor_service.get_executors(
             account_name=filter_request.account_names[0] if filter_request.account_names else None,
             connector_name=filter_request.connector_names[0] if filter_request.connector_names else None,
             trading_pair=filter_request.trading_pairs[0] if filter_request.trading_pairs else None,
             executor_type=filter_request.executor_types[0] if filter_request.executor_types else None,
-            status=filter_request.status,
-            include_completed=filter_request.include_completed
+            status=filter_request.status
         )
 
         # Apply additional multi-value filters
@@ -167,13 +166,15 @@ async def get_executor(
     """
     Get detailed information about a specific executor.
 
+    Checks active executors in memory first, then falls back to database for completed executors.
+
     Returns full executor information including:
     - Current status and PnL
     - Full configuration
     - Executor-specific custom information
     """
     try:
-        executor = executor_service.get_executor(executor_id)
+        executor = await executor_service.get_executor(executor_id)
 
         if not executor:
             raise HTTPException(status_code=404, detail=f"Executor {executor_id} not found")
@@ -212,48 +213,6 @@ async def stop_executor(
     except Exception as e:
         logger.error(f"Error stopping executor {executor_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error stopping executor: {str(e)}")
-
-
-@router.delete("/{executor_id}", response_model=DeleteExecutorResponse)
-async def delete_executor(
-    executor_id: str,
-    executor_service: ExecutorService = Depends(get_executor_service)
-):
-    """
-    Remove an executor from tracking.
-
-    The executor must be already stopped/completed. This removes it from
-    the active tracking list but preserves database records for historical queries.
-
-    Returns success message if removed.
-    """
-    try:
-        # Check if executor exists
-        executor = executor_service.get_executor(executor_id)
-        if not executor:
-            raise HTTPException(status_code=404, detail=f"Executor {executor_id} not found")
-
-        # Check if still active
-        if executor.get("is_active", False):
-            raise HTTPException(
-                status_code=400,
-                detail=f"Cannot delete active executor. Stop it first using POST /executors/{executor_id}/stop"
-            )
-
-        # Remove from tracking
-        removed = executor_service.remove_completed_executor(executor_id)
-        if not removed:
-            raise HTTPException(status_code=404, detail=f"Executor {executor_id} not found in completed list")
-
-        return DeleteExecutorResponse(
-            message=f"Executor {executor_id} removed from tracking",
-            executor_id=executor_id
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error deleting executor {executor_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error deleting executor: {str(e)}")
 
 
 # ========================================
