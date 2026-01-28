@@ -361,25 +361,23 @@ class StopExecutorResponse(BaseModel):
 
 
 class ExecutorsSummaryResponse(BaseModel):
-    """Summary of all executors."""
+    """Summary of active executors."""
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
                 "total_active": 5,
-                "total_completed": 23,
                 "total_pnl_quote": 1234.56,
                 "total_volume_quote": 50000.00,
                 "by_type": {"position_executor": 3, "grid_executor": 2},
                 "by_connector": {"binance_perpetual": 4, "binance": 1},
-                "by_status": {"RUNNING": 5, "TERMINATED": 23}
+                "by_status": {"RUNNING": 5}
             }
         }
     )
 
     total_active: int = Field(description="Number of active executors")
-    total_completed: int = Field(description="Number of completed executors")
-    total_pnl_quote: float = Field(description="Total PnL across all executors")
-    total_volume_quote: float = Field(description="Total volume across all executors")
+    total_pnl_quote: float = Field(description="Total PnL across active executors")
+    total_volume_quote: float = Field(description="Total volume across active executors")
     by_type: Dict[str, int] = Field(description="Executor count by type")
     by_connector: Dict[str, int] = Field(description="Executor count by connector")
     by_status: Dict[str, int] = Field(description="Executor count by status")
