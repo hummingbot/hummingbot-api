@@ -839,7 +839,7 @@ class AccountsService:
                 # Try RateOracle first (instant, cached)
                 rate = None
                 if self._market_data_service:
-                    rate = self._market_data_service.get_rate(token, "USD")
+                    rate = self._market_data_service.get_rate(token, "USDT")
                 if rate and rate > 0:
                     price = rate
                 else:
@@ -869,22 +869,42 @@ class AccountsService:
         return tokens_info
     
     async def _safe_get_last_traded_prices(self, connector, trading_pairs, timeout=10):
-        """Safely get last traded prices with timeout and error handling. Preserves previous prices on failure."""
+        """Safely get last traded prices with timeout and error handling.
+        Fetches each pair individually via gather so one bad pair doesn't kill the rest."""
+
+        async def _fetch_single(pair):
+            return pair, await connector._get_last_traded_price(trading_pair=pair)
+
         try:
-            last_traded = await asyncio.wait_for(connector.get_last_traded_prices(trading_pairs=trading_pairs), timeout=timeout)
-            
-            # Update cache with successful prices
-            for pair, price in last_traded.items():
-                if price and price > 0:
-                    self._last_known_prices[pair] = price
-            
-            return last_traded
+            results = await asyncio.wait_for(
+                asyncio.gather(*[_fetch_single(p) for p in trading_pairs], return_exceptions=True),
+                timeout=timeout,
+            )
         except asyncio.TimeoutError:
             logger.error(f"Timeout getting last traded prices for trading pairs {trading_pairs}")
             return self._get_fallback_prices(trading_pairs)
-        except Exception as e:
-            logger.error(f"Error getting last traded prices in connector {connector} for trading pairs {trading_pairs}: {e}")
-            return self._get_fallback_prices(trading_pairs)
+
+        last_traded = {}
+        for result in results:
+            if isinstance(result, Exception):
+                logger.warning(f"Failed to get price for a pair: {result}")
+                continue
+            pair, price = result
+            if price and price > 0:
+                self._last_known_prices[pair] = price
+            last_traded[pair] = price
+
+        # Fill in fallbacks for any pairs that failed
+        for pair in trading_pairs:
+            if pair not in last_traded:
+                if pair in self._last_known_prices:
+                    last_traded[pair] = self._last_known_prices[pair]
+                    logger.info(f"Using cached price {self._last_known_prices[pair]} for {pair}")
+                else:
+                    last_traded[pair] = Decimal("0")
+                    logger.warning(f"No cached price available for {pair}, using 0")
+
+        return last_traded
     
     def _get_fallback_prices(self, trading_pairs):
         """Get fallback prices using cached values, only setting to 0 if no previous price exists."""
