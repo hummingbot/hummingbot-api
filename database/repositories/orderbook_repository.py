@@ -74,7 +74,6 @@ class OrderBookRepository:
             Dictionary representation
         """
         return {
-            "id": sample.id,
             "pair": sample.trading_pair,
             "connector": sample.exchange,
             "timestamp": sample.timestamp,

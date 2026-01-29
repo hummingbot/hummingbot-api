@@ -11,8 +11,8 @@ from hummingbot.client.config.config_helpers import (
 from hummingbot.client.config.security import Security
 
 from config import settings
-from utils.hummingbot_api_config_adapter import HummingbotAPIConfigAdapter
 from utils.file_system import fs_util
+from utils.hummingbot_api_config_adapter import HummingbotAPIConfigAdapter
 
 
 class BackendAPISecurity(Security):
@@ -21,6 +21,9 @@ class BackendAPISecurity(Security):
         if not cls.validate_password(secrets_manager):
             return False
         cls.secrets_manager = secrets_manager
+        # Also set on parent Security class for hummingbot's ClientConfigAdapter methods
+        # that access Security.secrets_manager directly
+        Security.secrets_manager = secrets_manager
         cls.decrypt_all(account_name=account_name)
         return True
 

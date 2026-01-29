@@ -1,16 +1,4 @@
-from sqlalchemy import (
-    TIMESTAMP,
-    Column,
-    ForeignKey,
-    Integer,
-    Numeric,
-    String,
-    Text,
-    func,
-    BigInteger,
-    Index,
-    PrimaryKeyConstraint,
-)
+from sqlalchemy import TIMESTAMP, Column, ForeignKey, Integer, Numeric, String, Text, func, Index, PrimaryKeyConstraint,
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 
@@ -287,6 +275,10 @@ class GatewayCLMMPosition(Base):
     lower_bin_id = Column(Integer, nullable=True)  # For bin-based CLMM (Meteora)
     upper_bin_id = Column(Integer, nullable=True)
 
+    # Price tracking for PnL calculation
+    entry_price = Column(Numeric(precision=30, scale=18), nullable=True)  # Pool price when position opened
+    current_price = Column(Numeric(precision=30, scale=18), nullable=True)  # Latest price (becomes close price when closed)
+
     # Initial deposit amounts (for PnL calculation)
     initial_base_token_amount = Column(Numeric(precision=30, scale=18), nullable=True)
     initial_quote_token_amount = Column(Numeric(precision=30, scale=18), nullable=True)
@@ -367,3 +359,75 @@ class OrderbookSnapshot(Base):
     best_bid = Column(Numeric(6), nullable=False)
     best_ask = Column(Numeric(6), nullable=False)
     spread = Column(Numeric(6), nullable=True)
+
+class ExecutorRecord(Base):
+    """Database model for executor state persistence."""
+    __tablename__ = "executors"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    # Executor identification
+    executor_id = Column(String, nullable=False, unique=True, index=True)
+    executor_type = Column(String, nullable=False, index=True)
+
+    # Account and connector info
+    account_name = Column(String, nullable=False, index=True)
+    connector_name = Column(String, nullable=False, index=True)
+    trading_pair = Column(String, nullable=False, index=True)
+
+    # Timestamps
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False, index=True)
+    closed_at = Column(TIMESTAMP(timezone=True), nullable=True, index=True)
+
+    # Status
+    status = Column(String, nullable=False, default="RUNNING", index=True)
+    close_type = Column(String, nullable=True)
+
+    # Performance metrics
+    net_pnl_quote = Column(Numeric(precision=30, scale=18), nullable=False, default=0)
+    net_pnl_pct = Column(Numeric(precision=10, scale=6), nullable=False, default=0)
+    cum_fees_quote = Column(Numeric(precision=30, scale=18), nullable=False, default=0)
+    filled_amount_quote = Column(Numeric(precision=30, scale=18), nullable=False, default=0)
+
+    # Configuration (JSON)
+    config = Column(Text, nullable=True)
+
+    # Final state (JSON)
+    final_state = Column(Text, nullable=True)
+
+    # Relationships
+    orders = relationship("ExecutorOrder", back_populates="executor", cascade="all, delete-orphan")
+
+
+class ExecutorOrder(Base):
+    """Database model for orders created by executors."""
+    __tablename__ = "executor_orders"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    # Executor reference
+    executor_id = Column(String, ForeignKey("executors.executor_id"), nullable=False, index=True)
+
+    # Order identification
+    client_order_id = Column(String, nullable=False, index=True)
+    exchange_order_id = Column(String, nullable=True)
+
+    # Order details
+    order_type = Column(String, nullable=False)  # open, close, take_profit, stop_loss
+    trade_type = Column(String, nullable=False)  # BUY, SELL
+    amount = Column(Numeric(precision=30, scale=18), nullable=False)
+    price = Column(Numeric(precision=30, scale=18), nullable=True)
+
+    # Execution
+    status = Column(String, nullable=False, default="SUBMITTED")
+    filled_amount = Column(Numeric(precision=30, scale=18), nullable=False, default=0)
+    average_fill_price = Column(Numeric(precision=30, scale=18), nullable=True)
+
+    # Timestamps
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(TIMESTAMP(timezone=True), onupdate=func.now(), nullable=True)
+
+    # Relationship
+    executor = relationship("ExecutorRecord", back_populates="orders")
+
+

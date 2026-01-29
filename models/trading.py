@@ -189,12 +189,27 @@ class PortfolioStateFilterRequest(BaseModel):
     """Request model for filtering portfolio state"""
     account_names: Optional[List[str]] = Field(default=None, description="List of account names to filter by")
     connector_names: Optional[List[str]] = Field(default=None, description="List of connector names to filter by")
+    skip_gateway: bool = Field(default=False, description="Skip Gateway wallet balance updates for faster CEX-only queries")
+    refresh: bool = Field(default=False, description="If True, refresh balances before returning. If False, return cached state")
 
 
 class PortfolioHistoryFilterRequest(TimeRangePaginationParams):
     """Request model for filtering portfolio history"""
     account_names: Optional[List[str]] = Field(default=None, description="List of account names to filter by")
     connector_names: Optional[List[str]] = Field(default=None, description="List of connector names to filter by")
+    interval: Optional[str] = Field(
+        default="5m",
+        description="Data sampling interval: 5m, 15m, 30m, 1h, 4h, 12h, 1d. Default is 5m (raw data)"
+    )
+
+    @field_validator('interval')
+    @classmethod
+    def validate_interval(cls, v):
+        """Validate that interval is a supported value."""
+        valid_intervals = ["5m", "15m", "30m", "1h", "4h", "12h", "1d"]
+        if v not in valid_intervals:
+            raise ValueError(f"Invalid interval '{v}'. Must be one of: {valid_intervals}")
+        return v
 
 
 class PortfolioDistributionFilterRequest(BaseModel):

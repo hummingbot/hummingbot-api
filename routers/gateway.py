@@ -2,7 +2,15 @@ from fastapi import APIRouter, HTTPException, Depends, Query
 from typing import Optional, Dict, List
 import re
 
-from models import GatewayConfig, GatewayStatus, AddPoolRequest, AddTokenRequest
+from models import (
+    GatewayConfig,
+    GatewayStatus,
+    AddPoolRequest,
+    AddTokenRequest,
+    CreateWalletRequest,
+    ShowPrivateKeyRequest,
+    SendTransactionRequest,
+)
 from services.gateway_service import GatewayService
 from services.accounts_service import AccountsService
 from deps import get_gateway_service, get_accounts_service
@@ -314,13 +322,20 @@ async def add_pool(
             connector=pool_request.connector_name,
             pool_type=pool_request.type,
             network=pool_request.network,
+            address=pool_request.address,
             base_symbol=pool_request.base,
             quote_symbol=pool_request.quote,
-            address=pool_request.address
+            base_token_address=pool_request.base_address,
+            quote_token_address=pool_request.quote_address,
+            fee_pct=pool_request.fee_pct
         )
 
+        if result is None:
+            raise HTTPException(status_code=502, detail="Failed to add pool: Gateway returned no response")
+
         if "error" in result:
-            raise HTTPException(status_code=400, detail=f"Failed to add pool: {result.get('error')}")
+            status = result.get("status", 400)
+            raise HTTPException(status_code=status, detail=f"Failed to add pool: {result.get('error')}")
 
         trading_pair = f"{pool_request.base}-{pool_request.quote}"
         return {
@@ -332,6 +347,56 @@ async def add_pool(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error adding pool: {str(e)}")
+
+
+@router.delete("/pools/{address}")
+async def delete_pool(
+    address: str,
+    connector_name: str = Query(description="DEX connector (e.g., 'meteora', 'raydium', 'uniswap')"),
+    network: str = Query(description="Network name (e.g., 'mainnet-beta', 'mainnet')"),
+    pool_type: str = Query(description="Pool type (e.g., 'clmm', 'amm')"),
+    accounts_service: AccountsService = Depends(get_accounts_service)
+) -> Dict:
+    """
+    Delete a liquidity pool from Gateway's pool list.
+
+    Args:
+        address: Pool contract address to remove
+        connector_name: DEX connector (e.g., 'meteora', 'raydium', 'uniswap')
+        network: Network name (e.g., 'mainnet-beta', 'mainnet')
+        pool_type: Pool type (e.g., 'clmm', 'amm')
+
+    Example: DELETE /gateway/pools/2sf5NYcY...?connector_name=meteora&network=mainnet-beta&pool_type=clmm
+    """
+    try:
+        if not await accounts_service.gateway_client.ping():
+            raise HTTPException(status_code=503, detail="Gateway service is not available")
+
+        result = await accounts_service.gateway_client.delete_pool(
+            connector=connector_name,
+            network=network,
+            pool_type=pool_type,
+            address=address
+        )
+
+        if result is None:
+            raise HTTPException(status_code=400, detail="Failed to delete pool - no response from Gateway")
+
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=f"Failed to delete pool: {result.get('error')}")
+
+        return {
+            "success": True,
+            "message": f"Pool {address} deleted from {connector_name}/{network}",
+            "pool_address": address,
+            "connector": connector_name,
+            "network": network
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error deleting pool: {str(e)}")
 
 
 # ============================================
@@ -606,3 +671,146 @@ async def delete_network_token(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error deleting token: {str(e)}")
+
+
+# ============================================
+# Wallet Management
+# ============================================
+
+@router.post("/wallets/create")
+async def create_wallet(
+    request: CreateWalletRequest,
+    accounts_service: AccountsService = Depends(get_accounts_service)
+) -> Dict:
+    """
+    Create a new wallet in Gateway.
+
+    Args:
+        request: Contains chain and set_default flag
+
+    Returns:
+        Dict with address and chain of the created wallet.
+
+    Example: POST /gateway/wallets/create
+    {
+        "chain": "solana",
+        "set_default": true
+    }
+    """
+    try:
+        if not await accounts_service.gateway_client.ping():
+            raise HTTPException(status_code=503, detail="Gateway service is not available")
+
+        result = await accounts_service.gateway_client.create_wallet(
+            chain=request.chain,
+            set_default=request.set_default
+        )
+
+        if result is None:
+            raise HTTPException(status_code=502, detail="Failed to create wallet: Gateway returned no response")
+
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=f"Failed to create wallet: {result.get('error')}")
+
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error creating wallet: {str(e)}")
+
+
+@router.post("/wallets/show-private-key")
+async def show_private_key(
+    request: ShowPrivateKeyRequest,
+    accounts_service: AccountsService = Depends(get_accounts_service)
+) -> Dict:
+    """
+    Show private key for a wallet.
+
+    WARNING: This endpoint exposes sensitive information. Use with caution.
+
+    Args:
+        request: Contains chain, address, and passphrase
+
+    Returns:
+        Dict with privateKey field.
+
+    Example: POST /gateway/wallets/show-private-key
+    {
+        "chain": "solana",
+        "address": "<wallet-address>",
+        "passphrase": "<gateway-passphrase>"
+    }
+    """
+    try:
+        if not await accounts_service.gateway_client.ping():
+            raise HTTPException(status_code=503, detail="Gateway service is not available")
+
+        result = await accounts_service.gateway_client.show_private_key(
+            chain=request.chain,
+            address=request.address,
+            passphrase=request.passphrase
+        )
+
+        if result is None:
+            raise HTTPException(status_code=502, detail="Failed to retrieve private key: Gateway returned no response")
+
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=f"Failed to retrieve private key: {result.get('error')}")
+
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving private key: {str(e)}")
+
+
+@router.post("/wallets/send")
+async def send_transaction(
+    request: SendTransactionRequest,
+    accounts_service: AccountsService = Depends(get_accounts_service)
+) -> Dict:
+    """
+    Send a native token transaction.
+
+    Args:
+        request: Contains chain, network, sender address, recipient address, and amount
+
+    Returns:
+        Dict with transaction signature/hash.
+
+    Example: POST /gateway/wallets/send
+    {
+        "chain": "solana",
+        "network": "mainnet-beta",
+        "address": "<sender-address>",
+        "to_address": "<recipient-address>",
+        "amount": "0.001"
+    }
+    """
+    try:
+        if not await accounts_service.gateway_client.ping():
+            raise HTTPException(status_code=503, detail="Gateway service is not available")
+
+        result = await accounts_service.gateway_client.send_transaction(
+            chain=request.chain,
+            network=request.network,
+            address=request.address,
+            to_address=request.to_address,
+            amount=request.amount
+        )
+
+        if result is None:
+            raise HTTPException(status_code=502, detail="Failed to send transaction: Gateway returned no response")
+
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=f"Failed to send transaction: {result.get('error')}")
+
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error sending transaction: {str(e)}")

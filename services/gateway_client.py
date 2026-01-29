@@ -59,25 +59,44 @@ class GatewayClient:
         try:
             if method == "GET":
                 async with session.get(url, params=params) as response:
-                    response.raise_for_status()
+                    if not response.ok:
+                        error_body = await self._get_error_body(response)
+                        logger.warning(f"Gateway request failed: {method} {url} - {response.status} - {error_body}")
+                        return {"error": error_body, "status": response.status}
                     return await response.json()
             elif method == "POST":
                 async with session.post(url, json=json) as response:
-                    response.raise_for_status()
+                    if not response.ok:
+                        error_body = await self._get_error_body(response)
+                        logger.warning(f"Gateway request failed: {method} {url} - {response.status} - {error_body}")
+                        return {"error": error_body, "status": response.status}
                     return await response.json()
             elif method == "DELETE":
                 async with session.delete(url, params=params, json=json) as response:
-                    response.raise_for_status()
+                    if not response.ok:
+                        error_body = await self._get_error_body(response)
+                        logger.warning(f"Gateway request failed: {method} {url} - {response.status} - {error_body}")
+                        return {"error": error_body, "status": response.status}
                     return await response.json()
-        except aiohttp.ClientResponseError as e:
-            logger.warning(f"Gateway request failed with status {e.status}: {method} {url} - {e.message}")
-            return None
         except aiohttp.ClientError as e:
             logger.debug(f"Gateway request error: {method} {url} - {e}")
             return None
         except Exception as e:
             logger.debug(f"Gateway request failed: {method} {url} - {e}")
             raise
+
+    async def _get_error_body(self, response: aiohttp.ClientResponse) -> str:
+        """Extract error message from response body"""
+        try:
+            data = await response.json()
+            if isinstance(data, dict):
+                return data.get("message") or data.get("error") or str(data)
+            return str(data)
+        except Exception:
+            try:
+                return await response.text()
+            except Exception:
+                return f"HTTP {response.status}"
 
     async def ping(self) -> bool:
         """Check if Gateway is online"""
@@ -104,12 +123,76 @@ class GatewayClient:
             logger.error(f"Error getting default wallet for chain {chain}: {e}")
             return None
 
+    async def get_all_wallet_addresses(self, chain: Optional[str] = None) -> Dict[str, List[str]]:
+        """
+        Get all wallet addresses, optionally filtered by chain.
+
+        Args:
+            chain: Optional chain filter (e.g., 'solana', 'ethereum').
+                   If not provided, returns wallets for all chains.
+
+        Returns:
+            Dict mapping chain name to list of wallet addresses.
+            Example: {"solana": ["addr1", "addr2"], "ethereum": ["addr3"]}
+        """
+        try:
+            wallets = await self.get_wallets()
+            if wallets is None:
+                return {}
+
+            result = {}
+            for wallet in wallets:
+                wallet_chain = wallet.get("chain")
+                if chain and wallet_chain != chain:
+                    continue
+
+                addresses = wallet.get("walletAddresses", [])
+                if addresses and wallet_chain:
+                    result[wallet_chain] = addresses
+
+            return result
+        except Exception as e:
+            logger.error(f"Error getting all wallet addresses: {e}")
+            return {}
+
     async def add_wallet(self, chain: str, private_key: str, set_default: bool = True) -> Dict:
         """Add a wallet to Gateway"""
         return await self._request("POST", "wallet/add", json={
             "chain": chain,
             "privateKey": private_key,
             "setDefault": set_default
+        })
+
+    async def create_wallet(self, chain: str, set_default: bool = True) -> Dict:
+        """Create a new wallet in Gateway"""
+        return await self._request("POST", "wallet/create", json={
+            "chain": chain,
+            "setDefault": set_default
+        })
+
+    async def show_private_key(self, chain: str, address: str, passphrase: str) -> Dict:
+        """Show private key for a wallet"""
+        return await self._request("POST", "wallet/show-private-key", json={
+            "chain": chain,
+            "address": address,
+            "passphrase": passphrase
+        })
+
+    async def send_transaction(
+        self,
+        chain: str,
+        network: str,
+        address: str,
+        to_address: str,
+        amount: str
+    ) -> Dict:
+        """Send a native token transaction"""
+        return await self._request("POST", "wallet/send", json={
+            "chain": chain,
+            "network": network,
+            "address": address,
+            "toAddress": to_address,
+            "amount": amount
         })
 
     async def remove_wallet(self, chain: str, address: str) -> Dict:
@@ -185,15 +268,39 @@ class GatewayClient:
             "network": network
         })
 
-    async def add_pool(self, connector: str, pool_type: str, network: str, base_symbol: str, quote_symbol: str, address: str) -> Dict:
+    async def add_pool(
+        self,
+        connector: str,
+        pool_type: str,
+        network: str,
+        address: str,
+        base_symbol: str,
+        quote_symbol: str,
+        base_token_address: str,
+        quote_token_address: str,
+        fee_pct: Optional[float] = None
+    ) -> Dict:
         """Add a new pool"""
-        return await self._request("POST", "pools", json={
+        payload = {
             "connector": connector,
-            "type": pool_type,
+            "type": pool_type.lower(),  # Gateway expects lowercase (amm, clmm)
             "network": network,
+            "address": address,
             "baseSymbol": base_symbol,
             "quoteSymbol": quote_symbol,
-            "address": address
+            "baseTokenAddress": base_token_address,
+            "quoteTokenAddress": quote_token_address
+        }
+        if fee_pct is not None:
+            payload["feePct"] = fee_pct
+        return await self._request("POST", "pools", json=payload)
+
+    async def delete_pool(self, connector: str, network: str, pool_type: str, address: str) -> Dict:
+        """Delete a pool from Gateway's pool list"""
+        return await self._request("DELETE", f"pools/{address}", params={
+            "connector": connector,
+            "network": network,
+            "type": pool_type.lower()  # Gateway expects lowercase (amm, clmm)
         })
 
     async def pool_info(self, connector: str, network: str, pool_address: str) -> Dict:
@@ -371,33 +478,68 @@ class GatewayClient:
     async def clmm_position_info(
         self,
         connector: str,
-        network: str,
-        wallet_address: str,
+        chain_network: str,
         position_address: str
     ) -> Dict:
-        """Get CLMM position information"""
-        return await self._request("POST", "clmm/liquidity/position", json={
+        """
+        Get CLMM position information including pending fees.
+
+        Note: Gateway returns 500 instead of 404 when position doesn't exist (is closed).
+        Callers should treat 500 errors as "position not found/closed".
+        """
+        # Validate required parameters
+        if not connector:
+            raise ValueError("connector is required for clmm_position_info")
+        if not chain_network:
+            raise ValueError("chain_network is required for clmm_position_info")
+        if not position_address:
+            raise ValueError("position_address is required for clmm_position_info")
+
+        params = {
             "connector": connector,
-            "network": network,
-            "address": wallet_address,
+            "chainNetwork": chain_network,
             "positionAddress": position_address
-        })
+        }
+        return await self._request("GET", "trading/clmm/position-info", params=params)
 
     async def clmm_positions_owned(
         self,
         connector: str,
-        network: str,
+        chain_network: str,
         wallet_address: str,
-        pool_address: str
-    ) -> Dict:
-        """Get all CLMM positions owned by wallet for a specific pool"""
+        pool_address: Optional[str] = None
+    ) -> List[Dict]:
+        """
+        Get CLMM positions owned by a wallet.
+
+        Args:
+            connector: CLMM connector (e.g., 'meteora', 'raydium')
+            chain_network: Chain and network in format 'chain-network' (e.g., 'solana-mainnet-beta')
+            wallet_address: Wallet address to query
+            pool_address: Optional pool address to filter positions.
+                         If not provided, returns ALL positions across all pools.
+
+        Returns:
+            List of position dictionaries with fields like:
+            - address: Position NFT address
+            - poolAddress: Pool address
+            - baseTokenAddress, quoteTokenAddress
+            - baseTokenAmount, quoteTokenAmount
+            - baseFeeAmount, quoteFeeAmount
+            - lowerBinId, upperBinId
+            - lowerPrice, upperPrice, price
+        """
         params = {
-            "network": network,
+            "connector": connector,
+            "chainNetwork": chain_network,
             "walletAddress": wallet_address,
-            "poolAddress": pool_address
         }
 
-        return await self._request("GET", f"connectors/{connector}/clmm/positions-owned", params=params)
+        # Only add poolAddress if specified (allows fetching all positions)
+        if pool_address:
+            params["poolAddress"] = pool_address
+
+        return await self._request("GET", "trading/clmm/positions-owned", params=params)
 
     async def clmm_collect_fees(
         self,

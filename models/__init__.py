@@ -88,6 +88,14 @@ from .market_data import (
     PriceForQuoteVolumeRequest,
     VWAPForVolumeRequest,
     OrderBookQueryResult,
+    # Spread Statistics Models
+    SpreadAverageRequest,
+    SpreadAverageResponse,
+    SpreadAverageData,
+    # Trading pair management models
+    AddTradingPairRequest,
+    RemoveTradingPairRequest,
+    TradingPairResponse,
 )
 
 # Account models
@@ -105,6 +113,9 @@ from .docker import DockerImage
 from .gateway import (
     GatewayConfig,
     GatewayStatus,
+    CreateWalletRequest,
+    ShowPrivateKeyRequest,
+    SendTransactionRequest,
     GatewayWalletCredential,
     GatewayWalletInfo,
     GatewayBalanceRequest,
@@ -188,6 +199,33 @@ from .archived_bots import (
     ExecutorsResponse,
 )
 
+# Rate Oracle models
+from .rate_oracle import (
+    RateOracleSourceEnum,
+    GlobalTokenConfig,
+    RateOracleSourceConfig,
+    RateOracleConfig,
+    RateOracleConfigResponse,
+    RateOracleConfigUpdateRequest,
+    RateOracleConfigUpdateResponse,
+    RateRequest,
+    RateResponse,
+    SingleRateResponse,
+)
+
+# Executor models
+from .executors import (
+    CreateExecutorRequest,
+    CreateExecutorResponse,
+    StopExecutorRequest,
+    StopExecutorResponse,
+    DeleteExecutorResponse,
+    ExecutorFilterRequest,
+    ExecutorResponse,
+    ExecutorDetailResponse,
+    ExecutorsSummaryResponse,
+)
+
 __all__ = [
     # Bot orchestration models
     "BotAction",
@@ -258,6 +296,14 @@ __all__ = [
     "PriceForQuoteVolumeRequest",
     "VWAPForVolumeRequest",
     "OrderBookQueryResult",
+    # Spread Statistics Models
+    "SpreadAverageRequest",
+    "SpreadAverageResponse",
+    "SpreadAverageData",
+    # Trading pair management models
+    "AddTradingPairRequest",
+    "RemoveTradingPairRequest",
+    "TradingPairResponse",
     # Account models
     "LeverageRequest",
     "PositionModeRequest",
@@ -267,6 +313,9 @@ __all__ = [
     # Gateway models
     "GatewayConfig",
     "GatewayStatus",
+    "CreateWalletRequest",
+    "ShowPrivateKeyRequest",
+    "SendTransactionRequest",
     "GatewayWalletCredential",
     "GatewayWalletInfo",
     "GatewayBalanceRequest",
@@ -332,4 +381,25 @@ __all__ = [
     "TradeHistoryResponse",
     "OrderHistoryResponse",
     "ExecutorsResponse",
+    # Rate Oracle models
+    "RateOracleSourceEnum",
+    "GlobalTokenConfig",
+    "RateOracleSourceConfig",
+    "RateOracleConfig",
+    "RateOracleConfigResponse",
+    "RateOracleConfigUpdateRequest",
+    "RateOracleConfigUpdateResponse",
+    "RateRequest",
+    "RateResponse",
+    "SingleRateResponse",
+    # Executor models
+    "CreateExecutorRequest",
+    "CreateExecutorResponse",
+    "StopExecutorRequest",
+    "StopExecutorResponse",
+    "DeleteExecutorResponse",
+    "ExecutorFilterRequest",
+    "ExecutorResponse",
+    "ExecutorDetailResponse",
+    "ExecutorsSummaryResponse",
 ]

@@ -11,7 +11,7 @@ from hummingbot.core.data_type.common import OrderType, PositionAction, Position
 from pydantic import BaseModel
 from starlette import status
 
-from deps import get_accounts_service, get_market_data_feed_manager
+from deps import get_accounts_service, get_connector_service
 from models import (
     ActiveOrderFilterRequest,
     FundingPaymentFilterRequest,
@@ -33,7 +33,6 @@ router = APIRouter(tags=["Trading"], prefix="/trading")
 async def place_trade(
     trade_request: TradeRequest,
     accounts_service: AccountsService = Depends(get_accounts_service),
-    market_data_manager=Depends(get_market_data_feed_manager),
 ):
     """
     Place a buy or sell order using a specific account and connector.
@@ -41,7 +40,6 @@ async def place_trade(
     Args:
         trade_request: Trading request with account, connector, trading pair, type, amount, etc.
         accounts_service: Injected accounts service
-        market_data_manager: Market data manager for price fetching
 
     Returns:
         TradeResponse with order ID and trading details
@@ -64,7 +62,6 @@ async def place_trade(
             order_type=order_type_enum,
             price=trade_request.price,
             position_action=position_action_enum,
-            market_data_manager=market_data_manager,
         )
 
         return TradeResponse(
@@ -119,7 +116,11 @@ async def cancel_order(
 
 
 @router.post("/positions", response_model=PaginatedResponse)
-async def get_positions(filter_request: PositionFilterRequest, accounts_service: AccountsService = Depends(get_accounts_service)):
+async def get_positions(
+    filter_request: PositionFilterRequest,
+    accounts_service: AccountsService = Depends(get_accounts_service),
+    connector_service = Depends(get_connector_service)
+):
     """
     Get current positions across all or filtered perpetual connectors.
 
@@ -137,7 +138,7 @@ async def get_positions(filter_request: PositionFilterRequest, accounts_service:
     """
     try:
         all_positions = []
-        all_connectors = accounts_service.connector_manager.get_all_connectors()
+        all_connectors = connector_service.get_all_trading_connectors()
 
         # Filter accounts
         accounts_to_check = filter_request.account_names if filter_request.account_names else list(all_connectors.keys())
@@ -207,7 +208,8 @@ async def get_positions(filter_request: PositionFilterRequest, accounts_service:
 # Active Orders Management - Real-time from connectors
 @router.post("/orders/active", response_model=PaginatedResponse)
 async def get_active_orders(
-    filter_request: ActiveOrderFilterRequest, accounts_service: AccountsService = Depends(get_accounts_service)
+    filter_request: ActiveOrderFilterRequest,
+    connector_service = Depends(get_connector_service)
 ):
     """
     Get active (in-flight) orders across all or filtered accounts and connectors.
@@ -226,7 +228,7 @@ async def get_active_orders(
     """
     try:
         all_active_orders = []
-        all_connectors = accounts_service.connector_manager.get_all_connectors()
+        all_connectors = connector_service.get_all_trading_connectors()
 
         # Use filter request values
         accounts_to_check = filter_request.account_names if filter_request.account_names else list(all_connectors.keys())
@@ -303,7 +305,11 @@ async def get_active_orders(
 
 # Historical Order Management - From registry/database
 @router.post("/orders/search", response_model=PaginatedResponse)
-async def get_orders(filter_request: OrderFilterRequest, accounts_service: AccountsService = Depends(get_accounts_service)):
+async def get_orders(
+    filter_request: OrderFilterRequest,
+    accounts_service: AccountsService = Depends(get_accounts_service),
+    connector_service = Depends(get_connector_service)
+):
     """
     Get historical order data across all or filtered accounts from the database/registry.
 
@@ -321,7 +327,7 @@ async def get_orders(filter_request: OrderFilterRequest, accounts_service: Accou
             accounts_to_check = filter_request.account_names
         else:
             # Get all accounts
-            all_connectors = accounts_service.connector_manager.get_all_connectors()
+            all_connectors = connector_service.get_all_trading_connectors()
             accounts_to_check = list(all_connectors.keys())
 
         # Collect orders from all specified accounts
@@ -400,7 +406,11 @@ async def get_orders(filter_request: OrderFilterRequest, accounts_service: Accou
 
 # Trade History
 @router.post("/trades", response_model=PaginatedResponse)
-async def get_trades(filter_request: TradeFilterRequest, accounts_service: AccountsService = Depends(get_accounts_service)):
+async def get_trades(
+    filter_request: TradeFilterRequest,
+    accounts_service: AccountsService = Depends(get_accounts_service),
+    connector_service = Depends(get_connector_service)
+):
     """
     Get trade history across all or filtered accounts with complex filtering.
 
@@ -418,7 +428,7 @@ async def get_trades(filter_request: TradeFilterRequest, accounts_service: Accou
             accounts_to_check = filter_request.account_names
         else:
             # Get all accounts
-            all_connectors = accounts_service.connector_manager.get_all_connectors()
+            all_connectors = connector_service.get_all_trading_connectors()
             accounts_to_check = list(all_connectors.keys())
 
         # Collect trades from all specified accounts
@@ -598,7 +608,9 @@ async def set_leverage(
 
 @router.post("/funding-payments", response_model=PaginatedResponse)
 async def get_funding_payments(
-    filter_request: FundingPaymentFilterRequest, accounts_service: AccountsService = Depends(get_accounts_service)
+    filter_request: FundingPaymentFilterRequest,
+    accounts_service: AccountsService = Depends(get_accounts_service),
+    connector_service = Depends(get_connector_service)
 ):
     """
     Get funding payment history across all or filtered perpetual connectors.
@@ -617,7 +629,7 @@ async def get_funding_payments(
     """
     try:
         all_funding_payments = []
-        all_connectors = accounts_service.connector_manager.get_all_connectors()
+        all_connectors = connector_service.get_all_trading_connectors()
 
         # Filter accounts
         accounts_to_check = filter_request.account_names if filter_request.account_names else list(all_connectors.keys())
@@ -709,7 +721,7 @@ def _standardize_in_flight_order_response(order, account_name: str, connector_na
     status_mapping = {
         OrderState.PENDING_CREATE: "SUBMITTED",
         OrderState.OPEN: "OPEN",
-        OrderState.PENDING_CANCEL: "OPEN",  # Still open until cancelled
+        OrderState.PENDING_CANCEL: "PENDING_CANCEL",  # Cancellation in progress
         OrderState.CANCELED: "CANCELLED",
         OrderState.PARTIALLY_FILLED: "PARTIALLY_FILLED",
         OrderState.FILLED: "FILLED",
