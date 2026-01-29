@@ -232,7 +232,22 @@ async def lifespan(app: FastAPI):
     )
 
     # =========================================================================
-    # 6. Store services in app state
+    # 6. Start services
+    # =========================================================================
+
+    # Initialize all trading connectors FIRST (before any service that might use them)
+    # This ensures OrdersRecorder is properly attached before any concurrent access
+    logging.info("Initializing all trading connectors...")
+    await connector_service.initialize_all_trading_connectors()
+
+    bots_orchestrator.start()
+    market_data_service.start()
+    executor_service.start()
+    await executor_service.recover_positions_from_db()
+    accounts_service.start()
+
+    # =========================================================================
+    # 7. Store services in app state
     # =========================================================================
 
     app.state.db_manager = db_manager
@@ -246,20 +261,6 @@ async def lifespan(app: FastAPI):
     app.state.gateway_service = gateway_service
     app.state.bot_archiver = bot_archiver
 
-    # =========================================================================
-    # 7. Start services
-    # =========================================================================
-
-    # Initialize all trading connectors FIRST (before any service that might use them)
-    # This ensures OrdersRecorder is properly attached before any concurrent access
-    logging.info("Initializing all trading connectors...")
-    await connector_service.initialize_all_trading_connectors()
-
-    bots_orchestrator.start()
-    accounts_service.start()
-    market_data_service.start()
-    executor_service.start()
-    await executor_service.recover_positions_from_db()
 
     logging.info("All services started successfully")
 
