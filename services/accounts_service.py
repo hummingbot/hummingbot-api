@@ -600,19 +600,57 @@ class AccountsService:
 
         logger.info("AccountsService stopped successfully")
 
+    async def _refresh_and_get_tokens_info(self, connector, connector_name: str, account_name: str) -> List[Dict]:
+        """Refresh connector state from exchange, then get token info with prices.
+
+        Combines the connector state refresh and token info retrieval into a
+        single awaitable so both can run in parallel across all connectors.
+        """
+        if self._connector_service:
+            try:
+                await self._connector_service._update_connector_state(connector, connector_name, account_name)
+            except Exception as e:
+                logger.error(f"Error refreshing {connector_name}, using stale data: {e}")
+        return await self._get_connector_tokens_info(connector, connector_name)
+
     async def update_account_state_loop(self):
         """
         The loop that updates the account state at a fixed interval.
-        This now includes manual connector state updates.
-        :return:
+        Performs connector state refresh + token info retrieval in a single parallel pass.
         """
         while True:
             try:
                 await self.check_all_connectors()
-                # Update all connector states (balances, orders, positions, trading rules)
-                if self._connector_service:
-                    await self._connector_service.update_all_trading_connector_states()
-                await self.update_account_state()
+
+                # Single parallel pass: refresh connector state + get token info + gateway
+                all_connectors = self._connector_service.get_all_trading_connectors() if self._connector_service else {}
+                tasks = []
+                task_meta = []  # (account_name, connector_name)
+
+                for account_name, connectors in all_connectors.items():
+                    if account_name not in self.accounts_state:
+                        self.accounts_state[account_name] = {}
+                    for connector_name, connector in connectors.items():
+                        tasks.append(self._refresh_and_get_tokens_info(connector, connector_name, account_name))
+                        task_meta.append((account_name, connector_name))
+
+                has_connector_tasks = len(tasks) > 0
+                tasks.append(self._update_gateway_balances())
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+
+                # Process connector results (last result is always gateway)
+                connector_results = results[:-1] if has_connector_tasks else []
+                for (account_name, connector_name), result in zip(task_meta, connector_results):
+                    if isinstance(result, Exception):
+                        logger.error(f"Error updating {connector_name} in {account_name}: {result}")
+                        self.accounts_state[account_name][connector_name] = []
+                    else:
+                        self.accounts_state[account_name][connector_name] = result
+
+                gw_result = results[-1]
+                if isinstance(gw_result, Exception):
+                    logger.error(f"Error updating gateway balances: {gw_result}")
+
                 await self.dump_account_state()
             except Exception as e:
                 logger.error(f"Error updating account state: {e}")
@@ -781,33 +819,53 @@ class AccountsService:
                 self.accounts_state[account_name][connector_name] = result
 
     async def _get_connector_tokens_info(self, connector, connector_name: str) -> List[Dict]:
-        """Get token info from a connector instance using cached prices when available."""
+        """Get token info from a connector instance using RateOracle cached prices.
+
+        Tries the RateOracle (instant, in-memory) first for each token.
+        Only falls back to a batch exchange call for tokens the oracle can't price.
+        """
         balances = [{"token": key, "units": value} for key, value in connector.get_all_balances().items() if
                     value != Decimal("0") and key not in settings.banned_tokens]
-        unique_tokens = [balance["token"] for balance in balances]
-        trading_pairs = [self.get_default_market(token, connector_name) for token in unique_tokens if "USD" not in token]
-        
-        # Get fresh prices for all trading pairs
-        all_prices = {}
-        if trading_pairs:
-            all_prices = await self._safe_get_last_traded_prices(connector, trading_pairs)
-        
+
         tokens_info = []
+        missing_pairs = []  # trading pairs the oracle can't price
+        missing_indices = []  # indices into tokens_info that need patching
+
         for balance in balances:
             token = balance["token"]
             if "USD" in token:
                 price = Decimal("1")
             else:
-                market = self.get_default_market(balance["token"], connector_name)
-                price = Decimal(str(all_prices.get(market, 0)))
-                
+                # Try RateOracle first (instant, cached)
+                rate = None
+                if self._market_data_service:
+                    rate = self._market_data_service.get_rate(token, "USD")
+                if rate and rate > 0:
+                    price = rate
+                else:
+                    # Queue for fallback batch fetch from exchange
+                    market = self.get_default_market(token, connector_name)
+                    missing_pairs.append(market)
+                    missing_indices.append(len(tokens_info))
+                    price = None  # resolved below
+
             tokens_info.append({
-                "token": balance["token"],
+                "token": token,
                 "units": float(balance["units"]),
-                "price": float(price),
-                "value": float(price * balance["units"]),
-                "available_units": float(connector.get_available_balance(balance["token"]))
+                "price": float(price) if price is not None else 0.0,
+                "value": float(price * balance["units"]) if price is not None else 0.0,
+                "available_units": float(connector.get_available_balance(token))
             })
+
+        # Batch-fetch only the missing prices from the exchange
+        if missing_pairs:
+            fallback_prices = await self._safe_get_last_traded_prices(connector, missing_pairs)
+            for pair_idx, info_idx in enumerate(missing_indices):
+                market = missing_pairs[pair_idx]
+                price = Decimal(str(fallback_prices.get(market, 0)))
+                tokens_info[info_idx]["price"] = float(price)
+                tokens_info[info_idx]["value"] = float(price * Decimal(str(tokens_info[info_idx]["units"])))
+
         return tokens_info
     
     async def _safe_get_last_traded_prices(self, connector, trading_pairs, timeout=10):
