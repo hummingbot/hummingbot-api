@@ -167,6 +167,28 @@ class OrderBookQueryResult(BaseModel):
     average_price: Optional[float] = Field(default=None, description="Average/VWAP price")
     timestamp: float = Field(description="Query timestamp")
 
+# Spread Statistics Models
+class SpreadAverageData(BaseModel):
+    """Average spread data for a trading pair"""
+    pair: str = Field(..., description="Trading pair (e.g., BTC-USDT)")
+    connector: str = Field(..., description="Exchange connector name")
+    avg_spread: Decimal = Field(..., description="Average spread percentage")
+    min_spread: Decimal = Field(..., description="Minimum spread percentage")
+    max_spread: Decimal = Field(..., description="Maximum spread percentage")
+    sample_count: int = Field(..., description="Number of samples in calculation")
+
+class SpreadAverageRequest(BaseModel):
+    """Request parameters for spread averages"""
+    pairs: Optional[List[str]] = Field(..., description="List of trading pairs (required)")
+    connectors: Optional[List[str]] = Field(..., description="List of connectors (required)")
+    window_hours: int = Field(24, description="Time window in hours", ge=1)
+
+class SpreadAverageResponse(BaseModel):
+    """Response containing spread averages"""
+    data: List[SpreadAverageData]
+    window_hours: int
+    total_pairs: int
+    timestamp: float
 
 # Trading Pair Management Models
 

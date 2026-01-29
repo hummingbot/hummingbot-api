@@ -473,8 +473,7 @@ class AccountsService:
         self._order_status_polling_task: Optional[asyncio.Task] = None
 
         # Database setup for account states and orders
-        self.db_manager = AsyncDatabaseManager(settings.database.url)
-        self._db_initialized = False
+        self.db_manager = db_manager or AsyncDatabaseManager(settings.database.url)
 
         # Services injected from main.py
         self._connector_service = None  # UnifiedConnectorService
@@ -519,9 +518,7 @@ class AccountsService:
 
     async def ensure_db_initialized(self):
         """Ensure database is initialized before using it."""
-        if not self._db_initialized:
-            await self.db_manager.create_tables()
-            self._db_initialized = True
+        await self.db_manager.ensure_initialized()
     
     def get_accounts_state(self):
         return self.accounts_state

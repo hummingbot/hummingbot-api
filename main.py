@@ -23,6 +23,8 @@ def patched_save_to_yml(yml_path, cm):
 # Apply the patch before importing hummingbot components
 from hummingbot.client.config import config_helpers
 config_helpers.save_to_yml = patched_save_to_yml
+from database.connection import AsyncDatabaseManager
+from config import settings
 
 from hummingbot.core.rate_oracle.rate_oracle import RateOracle, RATE_ORACLE_SOURCES
 from hummingbot.core.gateway.gateway_http_client import GatewayHttpClient
@@ -172,10 +174,11 @@ async def lifespan(app: FastAPI):
     # 3. Services that depend on connector_service
     # =========================================================================
 
-    # MarketDataService - candles, order books, prices
+    # MarketDataService - candles, order books, spreads, prices
     market_data_service = MarketDataService(
         connector_service=connector_service,
         rate_oracle=rate_oracle,
+        db_manager=db_manager,
         cleanup_interval=settings.market_data.cleanup_interval,
         feed_timeout=settings.market_data.feed_timeout
     )
@@ -231,6 +234,8 @@ async def lifespan(app: FastAPI):
         settings.aws.s3_default_bucket_name
     )
 
+    # Initialize database
+    await db_manager.ensure_initialized()
     # =========================================================================
     # 6. Store services in app state
     # =========================================================================

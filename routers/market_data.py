@@ -12,6 +12,7 @@ from models import (
     OrderBookRequest, OrderBookResponse, OrderBookLevel,
     VolumeForPriceRequest, PriceForVolumeRequest, QuoteVolumeForPriceRequest,
     PriceForQuoteVolumeRequest, VWAPForVolumeRequest, OrderBookQueryResult,
+    SpreadAverageRequest, SpreadAverageResponse, SpreadAverageData,
     AddTradingPairRequest, RemoveTradingPairRequest, TradingPairResponse
 )
 from deps import get_market_data_service
@@ -436,6 +437,85 @@ async def get_vwap_for_volume(
         raise HTTPException(status_code=500, detail=f"Error in order book query: {str(e)}")
 
 
+@router.post("/spread-averages", response_model=SpreadAverageResponse)
+async def get_spread_averages(
+    request: SpreadAverageRequest,
+    market_data_service: MarketDataService = Depends(get_market_data_service)
+):
+    """
+    Get average spread data grouped by trading pair.
+    
+    This endpoint calculates average spreads from the spread_samples table
+    within the given time window. Results are grouped by pair and connector.
+    
+    Args:
+        request: Spread average request parameters
+        market_data_service: Injected market data service
+        
+    Returns:
+        Average spread statistics for each trading pair
+    """
+    try:
+        spread_data = await market_data_service.get_spread_averages(
+            pairs=request.pairs,
+            connectors=request.connectors,
+            window_hours=request.window_hours
+        )
+        
+        # Convert to response model
+        return SpreadAverageResponse(
+            data=[SpreadAverageData(**item) for item in spread_data],
+            window_hours=request.window_hours,
+            total_pairs=len(spread_data),
+            timestamp=time.time()
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Error fetching spread averages: {str(e)}"
+        )
+
+
+@router.get("/spread-data/{connector_name}/{trading_pair}")
+async def get_spread_data(
+    connector_name: str,
+    trading_pair: str,
+    market_data_service: MarketDataService = Depends(get_market_data_service)
+):
+    """
+    Get raw spread samples from database.
+    
+    Query parameters:
+        - trading_pair: Filter by trading pair (e.g., BTC-USDT)
+        - connector_name: Filter by exchange (e.g., binance)
+        
+    Args:
+        trading_pair: Optional trading pair filter
+        connector_name: Optional connector filter
+        market_data_service: Injected market data service
+        
+    Returns:
+        Dictionary with spread data samples and count
+    """
+    try:
+        result = await market_data_service.get_spread_data(
+            pair=trading_pair,
+            connector=connector_name,
+            limit=100
+        )
+        
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error fetching spread data: {str(e)}"
+        )
+        
 # Trading Pair Management Endpoints
 
 @router.post("/trading-pair/add", response_model=TradingPairResponse)

@@ -88,6 +88,10 @@ from .market_data import (
     PriceForQuoteVolumeRequest,
     VWAPForVolumeRequest,
     OrderBookQueryResult,
+    # Spread Statistics Models
+    SpreadAverageRequest,
+    SpreadAverageResponse,
+    SpreadAverageData,
     # Trading pair management models
     AddTradingPairRequest,
     RemoveTradingPairRequest,
@@ -292,6 +296,10 @@ __all__ = [
     "PriceForQuoteVolumeRequest",
     "VWAPForVolumeRequest",
     "OrderBookQueryResult",
+    # Spread Statistics Models
+    "SpreadAverageRequest",
+    "SpreadAverageResponse",
+    "SpreadAverageData",
     # Trading pair management models
     "AddTradingPairRequest",
     "RemoveTradingPairRequest",

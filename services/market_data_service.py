@@ -11,6 +11,8 @@ from typing import Dict, Optional, List, Any, Tuple
 from decimal import Decimal
 from enum import Enum
 
+from database.connection import AsyncDatabaseManager
+from database.repositories import OrderBookRepository
 from hummingbot.core.rate_oracle.rate_oracle import RateOracle
 from hummingbot.data_feed.candles_feed.data_types import CandlesConfig
 from hummingbot.data_feed.candles_feed.candles_factory import CandlesFactory
@@ -42,6 +44,7 @@ class MarketDataService:
         self,
         connector_service: "UnifiedConnectorService",
         rate_oracle: RateOracle,
+        db_manager: AsyncDatabaseManager,
         cleanup_interval: int = 300,
         feed_timeout: int = 600
     ):
@@ -53,12 +56,13 @@ class MarketDataService:
             rate_oracle: RateOracle instance for price conversions
             cleanup_interval: How often to run cleanup (seconds, default: 5 minutes)
             feed_timeout: How long to keep unused feeds alive (seconds, default: 10 minutes)
+            db_manager: AsyncDatabaseManager for database access
         """
         self._connector_service = connector_service
         self._rate_oracle = rate_oracle
         self._cleanup_interval = cleanup_interval
         self._feed_timeout = feed_timeout
-
+        self._db_manager = db_manager
         # Candle feeds management
         self._candle_feeds: Dict[str, Any] = {}
         self._last_access_times: Dict[str, float] = {}
@@ -741,3 +745,125 @@ class MarketDataService:
             connector_name=connector_name,
             account_name=account_name
         )
+    
+    async def get_spread_averages(
+        self, 
+        pairs: Optional[List[str]],
+        connectors: Optional[List[str]],
+        window_hours: int = 24
+    ) -> List[Dict]:
+        """
+        Calculate average spread statistics grouped by trading pair and connector.
+        
+        Args:
+            pairs: List of trading pairs to filter
+            connectors: List of connectors to filter
+            window_hours: Time window in hours for aggregation
+            
+        Returns:
+            List of spread average data dictionaries
+        """
+        await self._db_manager.ensure_initialized()
+
+        try:
+            if not pairs and not connectors:
+                raise ValueError("At least one of 'pairs' or 'connectors' must be provided.")
+            
+            # Calculate time window cutoff (convert to milliseconds)
+            current_time = int(time.time() * 1000)
+            cutoff_time = current_time - (window_hours * 3600 * 1000)
+            
+            async with self._db_manager.get_session_context() as session:
+                orderbook_repo = OrderBookRepository(session)
+
+                all_samples = []
+                for pair in pairs or []:
+                    for connector in connectors or []:
+                        samples = await orderbook_repo.get_spread_samples(
+                            pair=pair,
+                            connector=connector,
+                            start_timestamp=cutoff_time
+                        )
+                        all_samples.extend(samples)
+                
+                # Collect samples grouped by (pair, connector) using a dict
+                spread_data = {}
+                for sample in all_samples:
+                    key = (sample.trading_pair, sample.exchange)
+                    if key not in spread_data:
+                        spread_data[key] = {
+                            "spread_sum": 0.0,
+                            "min_spread": float('inf'),
+                            "max_spread": 0.0,
+                            "sample_count": 0
+                        }
+                    
+                    if sample.spread is None:
+                        continue
+                    spread_data[key]["spread_sum"] += float(sample.spread)
+                    spread_data[key]["min_spread"] = min(spread_data[key]["min_spread"], float(sample.spread))
+                    spread_data[key]["max_spread"] = max(spread_data[key]["max_spread"], float(sample.spread))
+                    spread_data[key]["sample_count"] += 1
+                
+                avg_spread_data = []
+                for (pair, connector), stats in spread_data.items():
+                    if stats["sample_count"] == 0:
+                        continue
+                    avg_spread = stats["spread_sum"] / stats["sample_count"]
+                    
+                    avg_spread_data.append({
+                        "pair": pair,
+                        "connector": connector,
+                        "average_spread": avg_spread,
+                        "min_spread": stats["min_spread"],
+                        "max_spread": stats["max_spread"],
+                        "sample_count": stats["sample_count"]
+                    })
+                logger.debug(f"Calculated spread averages for {len(spread_data)} pairs")
+                return avg_spread_data
+                
+        except Exception as e:
+            raise
+
+
+    async def get_spread_data(
+        self,
+        pair: str,
+        connector: str,
+        limit: int = 100
+    ) -> Dict:
+        """
+        Get raw spread samples from database.
+        
+        Args:
+            pair: Trading pair filter
+            connector: Connector filter
+            limit: Maximum number of records to return
+            
+        Returns:
+            Dictionary with spread data and count
+        """
+        await self._db_manager.ensure_initialized()
+        
+        try:
+            async with self._db_manager.get_session_context() as session:
+                orderbook_repo = OrderBookRepository(session)
+                
+                # Get spread samples
+                samples = await orderbook_repo.get_spread_samples(
+                    pair=pair,
+                    connector=connector,
+                    limit=limit
+                )
+                
+                # Convert to dictionaries
+                data = [orderbook_repo.to_dict(sample) for sample in samples]
+                
+                logger.debug(f"Retrieved {len(data)} spread samples")
+                return {
+                    "data": data,
+                    "count": len(data)
+                }
+                
+        except Exception as e:
+            raise

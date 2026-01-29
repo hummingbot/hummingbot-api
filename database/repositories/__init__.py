@@ -6,6 +6,7 @@ from .gateway_clmm_repository import GatewayCLMMRepository
 from .gateway_swap_repository import GatewaySwapRepository
 from .order_repository import OrderRepository
 from .trade_repository import TradeRepository
+from .orderbook_repository import OrderBookRepository
 
 __all__ = [
     "AccountRepository",
@@ -16,4 +17,5 @@ __all__ = [
     "TradeRepository",
     "GatewaySwapRepository",
     "GatewayCLMMRepository",
+    "OrderBookRepository",
 ]
