@@ -7,7 +7,6 @@ from models.trading import (
     PortfolioStateFilterRequest,
     PortfolioHistoryFilterRequest,
     PortfolioDistributionFilterRequest,
-    AccountsDistributionFilterRequest
 )
 from services.accounts_service import AccountsService
 from deps import get_accounts_service
@@ -23,16 +22,27 @@ async def get_portfolio_state(
 ):
     """
     Get the current state of all or filtered accounts portfolio.
-    
+
     Args:
-        filter_request: JSON payload with filtering criteria
-        
+        filter_request: JSON payload with filtering criteria including:
+            - account_names: Optional list of account names to filter by
+            - connector_names: Optional list of connector names to filter by
+            - skip_gateway: If True, skip Gateway wallet balance updates for faster CEX-only queries
+            - refresh: If True, refresh balances before returning. If False (default), return cached state
+
     Returns:
         Dict containing account states with connector balances and token information
     """
-    await accounts_service.update_account_state()
+    # Only refresh balances if explicitly requested
+    if filter_request.refresh:
+        await accounts_service.update_account_state(
+            skip_gateway=filter_request.skip_gateway,
+            account_names=filter_request.account_names,
+            connector_names=filter_request.connector_names
+        )
+
     all_states = accounts_service.get_accounts_state()
-    
+
     # Apply account name filter first
     if filter_request.account_names:
         filtered_states = {}
@@ -40,7 +50,7 @@ async def get_portfolio_state(
             if account_name in all_states:
                 filtered_states[account_name] = all_states[account_name]
         all_states = filtered_states
-    
+
     # Apply connector filter if specified
     if filter_request.connector_names:
         for account_name, account_data in all_states.items():
@@ -51,7 +61,7 @@ async def get_portfolio_state(
                     filtered_connectors[connector_name] = account_data[connector_name]
             # Replace account_data with only filtered connectors
             all_states[account_name] = filtered_connectors
-    
+
     return all_states
 
 
@@ -61,26 +71,39 @@ async def get_portfolio_history(
     accounts_service: AccountsService = Depends(get_accounts_service)
 ):
     """
-    Get the historical state of all or filtered accounts portfolio with pagination.
-    
+    Get the historical state of all or filtered accounts portfolio with pagination and interval sampling.
+
+    The interval parameter allows you to control data granularity:
+    - 5m: Raw data (default, collected every 5 minutes)
+    - 15m: One data point every 15 minutes
+    - 30m: One data point every 30 minutes
+    - 1h: One data point every hour
+    - 4h: One data point every 4 hours
+    - 12h: One data point every 12 hours
+    - 1d: One data point every day
+
+    Using larger intervals significantly reduces response size and improves performance.
+
     Args:
-        filter_request: JSON payload with filtering criteria
-        
+        filter_request: JSON payload with filtering criteria (account_names, connector_names,
+                       start_time, end_time, limit, cursor, interval)
+
     Returns:
-        Paginated response with historical portfolio data
+        Paginated response with historical portfolio data sampled at the requested interval
     """
     try:
         # Convert integer timestamps to datetime objects
         start_time_dt = datetime.fromtimestamp(filter_request.start_time / 1000) if filter_request.start_time else None
         end_time_dt = datetime.fromtimestamp(filter_request.end_time / 1000) if filter_request.end_time else None
-        
+
         if not filter_request.account_names:
             # Get history for all accounts
             data, next_cursor, has_more = await accounts_service.load_account_state_history(
                 limit=filter_request.limit,
                 cursor=filter_request.cursor,
                 start_time=start_time_dt,
-                end_time=end_time_dt
+                end_time=end_time_dt,
+                interval=filter_request.interval
             )
         else:
             # Get history for specific accounts - need to aggregate
@@ -91,7 +114,8 @@ async def get_portfolio_history(
                     limit=filter_request.limit,
                     cursor=filter_request.cursor,
                     start_time=start_time_dt,
-                    end_time=end_time_dt
+                    end_time=end_time_dt,
+                    interval=filter_request.interval
                 )
                 all_data.extend(acc_data)
             
@@ -125,7 +149,8 @@ async def get_portfolio_history(
                     "account_names": filter_request.account_names,
                     "connector_names": filter_request.connector_names,
                     "start_time": filter_request.start_time,
-                    "end_time": filter_request.end_time
+                    "end_time": filter_request.end_time,
+                    "interval": filter_request.interval
                 }
             }
         )
@@ -265,67 +290,14 @@ async def get_portfolio_distribution(
     return distribution
 
 
-@router.post("/accounts-distribution")
+@router.get("/accounts-distribution")
 async def get_accounts_distribution(
-    filter_request: AccountsDistributionFilterRequest,
     accounts_service: AccountsService = Depends(get_accounts_service)
 ):
     """
     Get portfolio distribution by accounts with percentages.
-    
-    Args:
-        filter_request: JSON payload with filtering criteria
-        
+
     Returns:
         Dictionary with account distribution including percentages, values, and breakdown by connectors
     """
-    all_distribution = accounts_service.get_account_distribution()
-    
-    # If no filter, return all accounts
-    if not filter_request.account_names:
-        return all_distribution
-    
-    # Filter the distribution by requested accounts
-    filtered_distribution = {
-        "accounts": {},
-        "total_value": 0,
-        "account_count": 0
-    }
-    
-    for account_name in filter_request.account_names:
-        if account_name in all_distribution.get("accounts", {}):
-            filtered_distribution["accounts"][account_name] = all_distribution["accounts"][account_name]
-            filtered_distribution["total_value"] += all_distribution["accounts"][account_name].get("total_value", 0)
-    
-    # Apply connector filter if specified
-    if filter_request.connector_names:
-        for account_name, account_data in filtered_distribution["accounts"].items():
-            if "connectors" in account_data:
-                filtered_connectors = {}
-                for connector_name in filter_request.connector_names:
-                    if connector_name in account_data["connectors"]:
-                        filtered_connectors[connector_name] = account_data["connectors"][connector_name]
-                account_data["connectors"] = filtered_connectors
-                
-                # Recalculate account total after connector filtering
-                new_total = sum(
-                    conn_data.get("total_balance_in_usd", 0) 
-                    for conn_data in filtered_connectors.values()
-                )
-                account_data["total_value"] = new_total
-        
-        # Recalculate total_value after connector filtering
-        filtered_distribution["total_value"] = sum(
-            acc_data.get("total_value", 0) 
-            for acc_data in filtered_distribution["accounts"].values()
-        )
-
-    # Recalculate percentages
-    total_value = filtered_distribution["total_value"]
-    if total_value > 0:
-        for account_data in filtered_distribution["accounts"].values():
-            account_data["percentage"] = (account_data.get("total_value", 0) / total_value) * 100
-    
-    filtered_distribution["account_count"] = len(filtered_distribution["accounts"])
-
-    return filtered_distribution
+    return accounts_service.get_account_distribution()

@@ -12,6 +12,9 @@ from typing import Optional, Dict, List
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
+
 from database import AsyncDatabaseManager
 from database.repositories import GatewaySwapRepository, GatewayCLMMRepository
 from database.models import GatewayCLMMEvent, GatewayCLMMPosition
@@ -190,14 +193,11 @@ class GatewayTransactionPoller:
     async def _poll_clmm_event_transaction(self, event, clmm_repo: GatewayCLMMRepository):
         """Poll a specific CLMM event transaction status."""
         try:
-            # Get the position to access network info
-            position = await clmm_repo.get_position_by_address(
-                position_address=(await self.db_manager.get_session_context().__aenter__())
-                .query(GatewayCLMMEvent)
-                .filter(GatewayCLMMEvent.id == event.id)
-                .first()
-                .position.position_address
+            # Get the position by ID from the event's position_id foreign key
+            result = await clmm_repo.session.execute(
+                select(GatewayCLMMPosition).where(GatewayCLMMPosition.id == event.position_id)
             )
+            position = result.scalar_one_or_none()
 
             if not position:
                 logger.error(f"Position not found for CLMM event {event.transaction_hash}")
@@ -245,35 +245,32 @@ class GatewayTransactionPoller:
     async def _update_position_from_event(self, event, clmm_repo: GatewayCLMMRepository):
         """Update CLMM position state based on confirmed event."""
         try:
-            # Get position through session
-            async with self.db_manager.get_session_context() as session:
-                result = await session.execute(
-                    session.query(GatewayCLMMEvent).filter(GatewayCLMMEvent.id == event.id)
-                )
-                event_with_position = result.scalar_one_or_none()
+            # Get position by ID using the existing clmm_repo session
+            result = await clmm_repo.session.execute(
+                select(GatewayCLMMPosition).where(GatewayCLMMPosition.id == event.position_id)
+            )
+            position = result.scalar_one_or_none()
 
-                if not event_with_position or not event_with_position.position:
-                    logger.error(f"Position not found for event {event.id}")
-                    return
+            if not position:
+                logger.error(f"Position not found for event {event.id}")
+                return
 
-                position = event_with_position.position
+            if event.event_type == "CLOSE":
+                await clmm_repo.close_position(position.position_address)
 
-                if event.event_type == "CLOSE":
-                    await clmm_repo.close_position(position.position_address)
+            elif event.event_type == "COLLECT_FEES":
+                # Add collected fees to cumulative total
+                if event.base_fee_collected or event.quote_fee_collected:
+                    new_base_collected = float(position.base_fee_collected or 0) + float(event.base_fee_collected or 0)
+                    new_quote_collected = float(position.quote_fee_collected or 0) + float(event.quote_fee_collected or 0)
 
-                elif event.event_type == "COLLECT_FEES":
-                    # Add collected fees to cumulative total
-                    if event.base_fee_collected or event.quote_fee_collected:
-                        new_base_collected = float(position.base_fee_collected or 0) + float(event.base_fee_collected or 0)
-                        new_quote_collected = float(position.quote_fee_collected or 0) + float(event.quote_fee_collected or 0)
-
-                        await clmm_repo.update_position_fees(
-                            position_address=position.position_address,
-                            base_fee_collected=Decimal(str(new_base_collected)),
-                            quote_fee_collected=Decimal(str(new_quote_collected)),
-                            base_fee_pending=Decimal("0"),
-                            quote_fee_pending=Decimal("0")
-                        )
+                    await clmm_repo.update_position_fees(
+                        position_address=position.position_address,
+                        base_fee_collected=Decimal(str(new_base_collected)),
+                        quote_fee_collected=Decimal(str(new_quote_collected)),
+                        base_fee_pending=Decimal("0"),
+                        quote_fee_pending=Decimal("0")
+                    )
 
         except Exception as e:
             logger.error(f"Error updating position from event: {e}", exc_info=True)
@@ -376,8 +373,16 @@ class GatewayTransactionPoller:
         return await self._check_transaction_status(chain, network, tx_hash)
 
     # ============================================
-    # Position State Polling
+    # Position State Polling & Discovery
     # ============================================
+
+    # Supported CLMM connectors and their default networks
+    SUPPORTED_CLMM_CONFIGS = [
+        {"connector": "meteora", "chain": "solana", "network": "mainnet-beta"},
+        # Add more connectors as they become supported:
+        # {"connector": "raydium", "chain": "solana", "network": "mainnet-beta"},
+        # {"connector": "uniswap", "chain": "ethereum", "network": "mainnet"},
+    ]
 
     async def _position_poll_loop(self):
         """Position state polling loop (runs less frequently)."""
@@ -387,7 +392,7 @@ class GatewayTransactionPoller:
                 now = datetime.now(timezone.utc)
                 if self._last_position_poll is None or \
                    (now - self._last_position_poll).total_seconds() >= self.position_poll_interval:
-                    await self._poll_open_positions()
+                    await self._poll_and_discover_positions()
                     self._last_position_poll = now
 
                 # Sleep for a short time to avoid busy waiting
@@ -398,51 +403,281 @@ class GatewayTransactionPoller:
                 logger.error(f"Error in position poll loop: {e}", exc_info=True)
                 await asyncio.sleep(10)
 
-    async def _poll_open_positions(self):
-        """Poll all open CLMM positions and update their state."""
+    async def _poll_and_discover_positions(self):
+        """
+        Main position polling method that:
+        1. Discovers new positions from Gateway (created via UI or other means)
+        2. Updates all open positions with latest state
+        """
         try:
             # Check if Gateway is available
             if not await self.gateway_client.ping():
                 logger.debug("Gateway not available, skipping position polling")
                 return
 
+            # Step 1: Discover new positions from Gateway
+            discovered_count = await self._discover_positions_from_gateway()
+            if discovered_count > 0:
+                logger.info(f"Discovered {discovered_count} new positions from Gateway")
+
+            # Step 2: Update all open positions
+            await self._update_all_open_positions()
+
+        except Exception as e:
+            logger.error(f"Error in position poll and discovery: {e}", exc_info=True)
+
+    async def _discover_positions_from_gateway(self) -> int:
+        """
+        Discover positions from Gateway that aren't tracked in the database,
+        and reopen positions that were incorrectly marked as closed.
+
+        This allows tracking positions created directly via UI or other means,
+        not just those created through the API.
+
+        Also corrects data inconsistencies where a position was marked CLOSED
+        in the database but is still OPEN on-chain (e.g., due to a failed close
+        transaction).
+
+        Returns:
+            Number of newly discovered + reopened positions
+        """
+        discovered_count = 0
+        reopened_count = 0
+
+        try:
+            # Get all wallet addresses for supported chains
+            wallet_addresses_by_chain = await self.gateway_client.get_all_wallet_addresses()
+            if not wallet_addresses_by_chain:
+                logger.debug("No wallets configured in Gateway, skipping position discovery")
+                return 0
+
+            # Get existing position addresses from database (for quick existence check)
+            async with self.db_manager.get_session_context() as session:
+                clmm_repo = GatewayCLMMRepository(session)
+                # Get OPEN positions (to skip - already tracked correctly)
+                open_positions = await clmm_repo.get_position_addresses_set(status="OPEN")
+                # Get CLOSED positions (to potentially reopen if still on-chain)
+                closed_positions = await clmm_repo.get_position_addresses_set(status="CLOSED")
+
+            # Poll each supported connector/chain/wallet combination
+            for config in self.SUPPORTED_CLMM_CONFIGS:
+                connector = config["connector"]
+                chain = config["chain"]
+                network = config["network"]
+
+                # Get wallet addresses for this chain
+                wallet_addresses = wallet_addresses_by_chain.get(chain, [])
+                if not wallet_addresses:
+                    continue
+
+                for wallet_address in wallet_addresses:
+                    try:
+                        # Fetch ALL positions for this wallet (no pool filter)
+                        chain_network = f"{chain}-{network}"
+                        gateway_positions = await self.gateway_client.clmm_positions_owned(
+                            connector=connector,
+                            chain_network=chain_network,
+                            wallet_address=wallet_address,
+                            pool_address=None  # Get all positions across all pools
+                        )
+
+                        if not gateway_positions or not isinstance(gateway_positions, list):
+                            continue
+
+                        # Process each position
+                        for pos_data in gateway_positions:
+                            position_address = pos_data.get("address")
+                            if not position_address:
+                                continue
+
+                            # Skip if already tracked as OPEN
+                            if position_address in open_positions:
+                                continue
+
+                            # Check if position was incorrectly marked as CLOSED
+                            if position_address in closed_positions:
+                                # Position exists on-chain but is CLOSED in DB → reopen it
+                                async with self.db_manager.get_session_context() as session:
+                                    clmm_repo = GatewayCLMMRepository(session)
+                                    reopened = await clmm_repo.reopen_position(position_address)
+                                    if reopened:
+                                        reopened_count += 1
+                                        # Move from closed to open set for this run
+                                        closed_positions.discard(position_address)
+                                        open_positions.add(position_address)
+                                        logger.warning(f"Reopened position {position_address} - "
+                                                      f"was CLOSED in DB but still exists on-chain")
+                                continue
+
+                            # Create new position in database
+                            new_position = await self._create_discovered_position(
+                                pos_data=pos_data,
+                                connector=connector,
+                                chain=chain,
+                                network=network,
+                                wallet_address=wallet_address
+                            )
+
+                            if new_position:
+                                discovered_count += 1
+                                open_positions.add(position_address)
+                                logger.info(f"Discovered new position: {position_address} "
+                                           f"(pool: {pos_data.get('poolAddress', 'unknown')[:16]}...)")
+
+                    except Exception as e:
+                        logger.warning(f"Error discovering positions for {connector}/{chain}/{wallet_address}: {e}")
+                        continue
+
+        except Exception as e:
+            logger.error(f"Error in position discovery: {e}", exc_info=True)
+
+        if reopened_count > 0:
+            logger.info(f"Position discovery complete: {discovered_count} new, {reopened_count} reopened")
+
+        return discovered_count + reopened_count
+
+    async def _create_discovered_position(
+        self,
+        pos_data: Dict,
+        connector: str,
+        chain: str,
+        network: str,
+        wallet_address: str
+    ) -> Optional[GatewayCLMMPosition]:
+        """
+        Create a database record for a discovered position.
+
+        These positions were created externally (e.g., via UI) and are being
+        discovered by the poller.
+        """
+        try:
+            position_address = pos_data.get("address")
+            pool_address = pos_data.get("poolAddress", "")
+
+            # Extract token addresses
+            base_token_address = pos_data.get("baseTokenAddress", "")
+            quote_token_address = pos_data.get("quoteTokenAddress", "")
+
+            # Use full addresses as tokens (consistent with API-created positions)
+            base_token = base_token_address if base_token_address else "UNKNOWN"
+            quote_token = quote_token_address if quote_token_address else "UNKNOWN"
+            trading_pair = f"{base_token}-{quote_token}"
+
+            # Extract price data
+            current_price = float(pos_data.get("price", 0))
+            lower_price = float(pos_data.get("lowerPrice", 0))
+            upper_price = float(pos_data.get("upperPrice", 0))
+
+            # Extract liquidity amounts
+            base_token_amount = float(pos_data.get("baseTokenAmount", 0))
+            quote_token_amount = float(pos_data.get("quoteTokenAmount", 0))
+
+            # Extract fee data
+            base_fee_pending = float(pos_data.get("baseFeeAmount", 0))
+            quote_fee_pending = float(pos_data.get("quoteFeeAmount", 0))
+
+            # Extract bin IDs (for Meteora)
+            lower_bin_id = pos_data.get("lowerBinId")
+            upper_bin_id = pos_data.get("upperBinId")
+
+            # Calculate in_range status
+            in_range = "UNKNOWN"
+            if current_price > 0 and lower_price > 0 and upper_price > 0:
+                if lower_price <= current_price <= upper_price:
+                    in_range = "IN_RANGE"
+                else:
+                    in_range = "OUT_OF_RANGE"
+
+            # Calculate percentage: (upper_price - lower_price) / lower_price
+            percentage = None
+            if lower_price > 0:
+                percentage = (upper_price - lower_price) / lower_price
+
+            # Network in unified format
+            network_id = f"{chain}-{network}"
+
+            # Create position in database
+            async with self.db_manager.get_session_context() as session:
+                clmm_repo = GatewayCLMMRepository(session)
+
+                position_data = {
+                    "position_address": position_address,
+                    "pool_address": pool_address,
+                    "network": network_id,
+                    "connector": connector,
+                    "wallet_address": wallet_address,
+                    "trading_pair": trading_pair,
+                    "base_token": base_token,
+                    "quote_token": quote_token,
+                    "status": "OPEN",
+                    "lower_price": lower_price,
+                    "upper_price": upper_price,
+                    "lower_bin_id": lower_bin_id,
+                    "upper_bin_id": upper_bin_id,
+                    "entry_price": current_price,  # Best available estimate
+                    "current_price": current_price,
+                    "percentage": percentage,
+                    # For discovered positions, we don't know initial amounts
+                    # Use current amounts as initial (best estimate)
+                    "initial_base_token_amount": base_token_amount,
+                    "initial_quote_token_amount": quote_token_amount,
+                    "base_token_amount": base_token_amount,
+                    "quote_token_amount": quote_token_amount,
+                    "in_range": in_range,
+                    "base_fee_pending": base_fee_pending,
+                    "quote_fee_pending": quote_fee_pending,
+                    "base_fee_collected": 0,
+                    "quote_fee_collected": 0,
+                }
+
+                position = await clmm_repo.create_position(position_data)
+
+                # Create a DISCOVERED event to mark this position was auto-discovered
+                event_data = {
+                    "position_id": position.id,
+                    "transaction_hash": f"discovered_{position_address[:16]}",  # Synthetic tx hash
+                    "event_type": "DISCOVERED",
+                    "base_token_amount": base_token_amount,
+                    "quote_token_amount": quote_token_amount,
+                    "status": "CONFIRMED"  # No actual transaction to confirm
+                }
+                await clmm_repo.create_event(event_data)
+
+                return position
+
+        except Exception as e:
+            logger.error(f"Error creating discovered position {pos_data.get('address')}: {e}", exc_info=True)
+            return None
+
+    async def _update_all_open_positions(self):
+        """Update state for all open positions from Gateway."""
+        try:
             async with self.db_manager.get_session_context() as session:
                 clmm_repo = GatewayCLMMRepository(session)
 
                 # Get all open positions
                 open_positions = await clmm_repo.get_open_positions()
                 if not open_positions:
-                    logger.debug("No open CLMM positions to poll")
+                    logger.debug("No open CLMM positions to update")
                     return
 
-                logger.info(f"Polling {len(open_positions)} open CLMM positions")
+                logger.info(f"Updating {len(open_positions)} open CLMM positions")
 
-                # Extract position details before closing session
-                position_details = [
-                    {
-                        "position_address": pos.position_address,
-                        "pool_address": pos.pool_address,
-                        "connector": pos.connector,
-                        "network": pos.network,
-                        "wallet_address": pos.wallet_address
-                    }
-                    for pos in open_positions
-                ]
-
-            # Poll each position in a separate session
-            for pos_detail in position_details:
-                try:
-                    async with self.db_manager.get_session_context() as session:
-                        clmm_repo = GatewayCLMMRepository(session)
-                        position = await clmm_repo.get_position_by_address(pos_detail["position_address"])
-                        if position and position.status == "OPEN":
-                            await self._refresh_position_state(position, clmm_repo)
-                except Exception as e:
-                    logger.warning(f"Failed to poll position {pos_detail['position_address']}: {e}")
-                    continue
+                # Update each position within the same session
+                for position in open_positions:
+                    try:
+                        await self._refresh_position_state(position, clmm_repo)
+                    except Exception as e:
+                        logger.warning(f"Failed to update position {position.position_address}: {e}")
+                        continue
 
         except Exception as e:
-            logger.error(f"Error polling open positions: {e}", exc_info=True)
+            logger.error(f"Error updating open positions: {e}", exc_info=True)
+
+    # Legacy method name for backwards compatibility
+    async def _poll_open_positions(self):
+        """Poll all open CLMM positions and update their state. (Legacy wrapper)"""
+        await self._poll_and_discover_positions()
 
     async def _refresh_position_state(self, position: GatewayCLMMPosition, clmm_repo: GatewayCLMMRepository):
         """
@@ -455,35 +690,54 @@ class GatewayTransactionPoller:
         - position status (if closed externally)
         """
         try:
-            # Parse network to get chain and network name
-            parts = position.network.split('-', 1)
-            if len(parts) != 2:
-                logger.error(f"Invalid network format for position {position.position_address}: {position.network}")
+            # Validate position has required fields
+            if not position.position_address:
+                logger.error(f"Position ID {position.id} has no position_address, skipping refresh")
+                return
+            if not position.wallet_address:
+                logger.error(f"Position {position.position_address} has no wallet_address, skipping refresh")
+                return
+            if not position.connector:
+                logger.error(f"Position {position.position_address} has no connector, skipping refresh")
+                return
+            if not position.network:
+                logger.error(f"Position {position.position_address} has no network, skipping refresh")
                 return
 
-            chain, network = parts
-
-            # Get all positions for this pool from Gateway
+            # Get individual position info from Gateway (includes pending fees)
             try:
-                positions_list = await self.gateway_client.clmm_positions_owned(
+                result = await self.gateway_client.clmm_position_info(
                     connector=position.connector,
-                    network=network,
-                    wallet_address=position.wallet_address,
-                    pool_address=position.pool_address
+                    chain_network=position.network,  # position.network is already in 'chain-network' format
+                    position_address=position.position_address
                 )
 
-                # Find our specific position in the list
-                result = None
-                if isinstance(positions_list, list):
-                    for pos in positions_list:
-                        if pos.get("address") == position.position_address:
-                            result = pos
-                            break
-
-                # If position not found, it was closed externally
+                # Check for Gateway errors
                 if result is None:
-                    logger.info(f"Position {position.position_address} not found on Gateway, marking as CLOSED")
-                    await clmm_repo.close_position(position.position_address)
+                    logger.debug(f"Gateway connection error for position {position.position_address}, skipping update")
+                    return
+
+                if not isinstance(result, dict):
+                    logger.warning(f"Unexpected response type for position {position.position_address}: {type(result)}")
+                    return
+
+                # Check if Gateway returned an error response
+                if "error" in result:
+                    status_code = result.get("status")
+
+                    # Gateway returns 500 instead of 404 when position doesn't exist (closed)
+                    # Treat any error (404 or 500) on position-info as "position closed"
+                    if status_code in (404, 500):
+                        logger.info(f"Position {position.position_address} not found on Gateway (status: {status_code}), marking as CLOSED")
+                        await clmm_repo.close_position(position.position_address)
+                        return
+                    # Other errors → skip update, don't close
+                    logger.debug(f"Gateway error for position {position.position_address}: {result.get('error')} (status: {status_code})")
+                    return
+
+                # Validate response has required fields
+                if "address" not in result:
+                    logger.warning(f"Invalid response for position {position.position_address}, missing 'address' field")
                     return
 
             except Exception as e:
@@ -503,37 +757,46 @@ class GatewayTransactionPoller:
                 else:
                     in_range = "OUT_OF_RANGE"
 
-            # Extract token amounts
-            base_token_amount = Decimal(str(result.get("baseTokenAmount", 0)))
-            quote_token_amount = Decimal(str(result.get("quoteTokenAmount", 0)))
+            # Extract token amounts - validate they exist in response
+            base_amount_raw = result.get("baseTokenAmount")
+            quote_amount_raw = result.get("quoteTokenAmount")
 
-            # Check if position has been closed (zero liquidity)
+            # If amounts are missing or None, skip update (don't assume zero)
+            if base_amount_raw is None or quote_amount_raw is None:
+                logger.warning(f"Position {position.position_address} missing token amounts in response, skipping update")
+                return
+
+            base_token_amount = Decimal(str(base_amount_raw))
+            quote_token_amount = Decimal(str(quote_amount_raw))
+
+            # If Gateway confirms zero liquidity, position was closed externally
             if base_token_amount == 0 and quote_token_amount == 0:
                 logger.info(f"Position {position.position_address} has zero liquidity, marking as CLOSED")
                 await clmm_repo.close_position(position.position_address)
                 return
 
-            # Update liquidity amounts and in_range status
+            # Update liquidity amounts, in_range status, and current price
             await clmm_repo.update_position_liquidity(
                 position_address=position.position_address,
                 base_token_amount=base_token_amount,
                 quote_token_amount=quote_token_amount,
-                in_range=in_range
+                in_range=in_range,
+                current_price=current_price
             )
 
-            # Update pending fees if available
+            # Update pending fees (always update to keep in sync with on-chain state)
             base_fee_pending = Decimal(str(result.get("baseFeeAmount", 0)))
             quote_fee_pending = Decimal(str(result.get("quoteFeeAmount", 0)))
 
-            if base_fee_pending or quote_fee_pending:
-                await clmm_repo.update_position_fees(
-                    position_address=position.position_address,
-                    base_fee_pending=base_fee_pending,
-                    quote_fee_pending=quote_fee_pending
-                )
+            await clmm_repo.update_position_fees(
+                position_address=position.position_address,
+                base_fee_pending=base_fee_pending,
+                quote_fee_pending=quote_fee_pending
+            )
 
-            logger.debug(f"Refreshed position {position.position_address}: in_range={in_range}, "
-                        f"base={base_token_amount}, quote={quote_token_amount}")
+            logger.debug(f"Refreshed position {position.position_address}: price={current_price}, in_range={in_range}, "
+                        f"base={base_token_amount}, quote={quote_token_amount}, "
+                        f"base_fee={base_fee_pending}, quote_fee={quote_fee_pending}")
 
         except Exception as e:
             logger.error(f"Error refreshing position state {position.position_address}: {e}", exc_info=True)

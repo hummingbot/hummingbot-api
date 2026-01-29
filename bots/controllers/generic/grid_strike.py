@@ -44,6 +44,7 @@ class GridStrikeConfig(ControllerConfigBase):
     order_frequency: int = Field(default=3, json_schema_extra={"is_updatable": True})
     activation_bounds: Optional[Decimal] = Field(default=None, json_schema_extra={"is_updatable": True})
     keep_position: bool = Field(default=False, json_schema_extra={"is_updatable": True})
+    coerce_tp_to_step: bool = Field(default=False, json_schema_extra={"is_updatable": True})
 
     # Risk Management
     triple_barrier_config: TripleBarrierConfig = TripleBarrierConfig(
@@ -103,6 +104,7 @@ class GridStrike(ControllerBase):
                     triple_barrier_config=self.config.triple_barrier_config,
                     level_id=None,
                     keep_position=self.config.keep_position,
+                    coerce_tp_to_step=self.config.coerce_tp_to_step,
                 ))]
         return []
 

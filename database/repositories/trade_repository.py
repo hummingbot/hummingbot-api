@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 from sqlalchemy import desc, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import Trade, Order
@@ -11,12 +12,34 @@ class TradeRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def create_trade(self, trade_data: Dict) -> Trade:
-        """Create a new trade record."""
+    async def create_trade(self, trade_data: Dict) -> Optional[Trade]:
+        """Create a new trade record if it doesn't already exist.
+
+        Returns the trade if created, or None if it already exists (idempotent).
+        Handles race conditions gracefully by catching IntegrityError.
+        """
+        # Check if trade already exists
+        trade_id = trade_data.get("trade_id")
+        if trade_id:
+            existing = await self.get_trade_by_id(trade_id)
+            if existing:
+                return None  # Already exists, skip silently
+
         trade = Trade(**trade_data)
         self.session.add(trade)
-        await self.session.flush()  # Get the ID
-        return trade
+        try:
+            await self.session.flush()  # Get the ID
+            return trade
+        except IntegrityError:
+            # Race condition: another concurrent insert succeeded first
+            await self.session.rollback()
+            return None
+
+    async def get_trade_by_id(self, trade_id: str) -> Optional[Trade]:
+        """Get a trade by its trade_id."""
+        query = select(Trade).where(Trade.trade_id == trade_id)
+        result = await self.session.execute(query)
+        return result.scalar_one_or_none()
 
     async def get_trades(self, account_name: Optional[str] = None,
                         connector_name: Optional[str] = None,

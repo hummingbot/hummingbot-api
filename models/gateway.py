@@ -27,6 +27,28 @@ class GatewayStatus(BaseModel):
 # Wallet Management Models
 # ============================================
 
+class CreateWalletRequest(BaseModel):
+    """Request to create a new wallet in Gateway"""
+    chain: str = Field(description="Blockchain chain (e.g., 'solana', 'ethereum')")
+    set_default: bool = Field(default=True, description="Set as default wallet for this chain")
+
+
+class ShowPrivateKeyRequest(BaseModel):
+    """Request to show private key for a wallet"""
+    chain: str = Field(description="Blockchain chain (e.g., 'solana', 'ethereum')")
+    address: str = Field(description="Wallet address")
+    passphrase: str = Field(description="Gateway passphrase for decryption")
+
+
+class SendTransactionRequest(BaseModel):
+    """Request to send a native token transaction"""
+    chain: str = Field(description="Blockchain chain (e.g., 'solana', 'ethereum')")
+    network: str = Field(description="Network (e.g., 'mainnet-beta', 'mainnet')")
+    address: str = Field(description="Sender wallet address")
+    to_address: str = Field(description="Recipient address")
+    amount: str = Field(description="Amount to send (in native token units)")
+
+
 class GatewayWalletCredential(BaseModel):
     """Credentials for connecting a Gateway wallet"""
     chain: str = Field(description="Blockchain chain (e.g., 'solana', 'ethereum')")
@@ -48,11 +70,14 @@ class GatewayWalletInfo(BaseModel):
 class AddPoolRequest(BaseModel):
     """Request to add a liquidity pool"""
     connector_name: str = Field(description="DEX connector name (e.g., 'raydium', 'meteora')")
-    type: str = Field(description="Pool type ('clmm' for concentrated liquidity)")
-    network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta', 'ethereum-mainnet')")
+    type: str = Field(description="Pool type ('clmm' or 'amm')")
+    network: str = Field(description="Network name (e.g., 'mainnet-beta')")
+    address: str = Field(description="Pool contract address")
     base: str = Field(description="Base token symbol")
     quote: str = Field(description="Quote token symbol")
-    address: str = Field(description="Pool contract address")
+    base_address: str = Field(description="Base token contract address")
+    quote_address: str = Field(description="Quote token contract address")
+    fee_pct: Optional[float] = Field(default=None, description="Pool fee percentage (e.g., 0.25)")
 
 
 class AddTokenRequest(BaseModel):

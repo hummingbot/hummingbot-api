@@ -54,8 +54,13 @@ class OrdersRecorder:
         
     def start(self, connector: ConnectorBase):
         """Start recording orders for the given connector"""
+        # Idempotency guard: prevent double-registration of listeners
+        if self._connector is not None:
+            logger.warning(f"OrdersRecorder already started for {self.account_name}/{self.connector_name}, ignoring duplicate start")
+            return
+
         self._connector = connector
-        
+
         # Subscribe to order events using the same pattern as MarketsRecorder
         for event, forwarder in self._event_pairs:
             connector.add_listener(event, forwarder)
@@ -161,9 +166,9 @@ class OrdersRecorder:
                         logger.info(f"OrdersRecorder: Updated exchange_order_id to {exchange_order_id} for order {event.order_id}")
                     
                     # Update status if it's still in PENDING_CREATE or similar early state
-                    if existing_order.status in ["PENDING_CREATE", "PENDING"]:
-                        existing_order.status = "SUBMITTED"
-                        logger.info(f"OrdersRecorder: Updated status from {existing_order.status} to SUBMITTED for order {event.order_id}")
+                    if existing_order.status in ["PENDING_CREATE", "PENDING", "SUBMITTED"]:
+                        existing_order.status = "OPEN"
+                        logger.info(f"OrdersRecorder: Updated status to OPEN for order {event.order_id}")
                     
                     await session.flush()
                     return
@@ -177,7 +182,7 @@ class OrdersRecorder:
                     "order_type": event.type.name if hasattr(event, 'type') else 'UNKNOWN',
                     "amount": float(event.amount),
                     "price": float(event.price) if event.price else None,
-                    "status": "SUBMITTED",
+                    "status": "OPEN",
                     "exchange_order_id": getattr(event, 'exchange_order_id', None)
                 }
                 await order_repo.create_order(order_data)
@@ -237,10 +242,18 @@ class OrdersRecorder:
                         # Validate all values before creating trade record
                         validated_timestamp = event.timestamp if event.timestamp and not math.isnan(event.timestamp) else time.time()
                         validated_fee = trade_fee_paid if trade_fee_paid and not math.isnan(trade_fee_paid) else 0
-                        
+
+                        # Use exchange_trade_id if available (unique per fill), fallback to generated id
+                        exchange_trade_id = getattr(event, 'exchange_trade_id', None)
+                        if exchange_trade_id:
+                            trade_id = f"{event.order_id}_{exchange_trade_id}"
+                        else:
+                            # Fallback: include amount to differentiate partial fills at same timestamp
+                            trade_id = f"{event.order_id}_{validated_timestamp}_{float(filled_amount)}"
+
                         trade_data = {
                             "order_id": order.id,
-                            "trade_id": f"{event.order_id}_{validated_timestamp}",
+                            "trade_id": trade_id,
                             "timestamp": datetime.fromtimestamp(validated_timestamp),
                             "trading_pair": event.trading_pair,
                             "trade_type": event.trade_type.name,
@@ -249,7 +262,9 @@ class OrdersRecorder:
                             "fee_paid": validated_fee,
                             "fee_currency": trade_fee_currency
                         }
-                        await trade_repo.create_trade(trade_data)
+                        result = await trade_repo.create_trade(trade_data)
+                        if result is None:
+                            logger.debug(f"Trade {trade_id} already exists, skipping duplicate")
                     except (ValueError, TypeError) as e:
                         logger.error(f"Error creating trade record for {event.order_id}: {e}")
                         logger.error(f"Trade data that failed: timestamp={event.timestamp}, amount={event.amount}, price={event.price}, fee={trade_fee_paid}")

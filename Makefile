@@ -1,50 +1,48 @@
-.ONESHELL:
-.SHELLFLAGS := -c
+.PHONY: setup run deploy stop install uninstall build install-pre-commit
 
-.PHONY: run
-.PHONY: uninstall
-.PHONY: install
-.PHONY: install-pre-commit
-.PHONY: build
-.PHONY: deploy
+SETUP_SENTINEL := .setup-complete
 
+setup: $(SETUP_SENTINEL)
 
-detect_conda_bin := $(shell bash -c 'if [ "${CONDA_EXE} " == " " ]; then \
-    CONDA_EXE=$$((find /opt/conda/bin/conda || find ~/anaconda3/bin/conda || \
-    find /usr/local/anaconda3/bin/conda || find ~/miniconda3/bin/conda || \
-    find /root/miniconda/bin/conda || find ~/Anaconda3/Scripts/conda || \
-    find $$CONDA/bin/conda) 2>/dev/null); fi; \
-    if [ "${CONDA_EXE}_" == "_" ]; then \
-    echo "Please install Anaconda w/ Python 3.10+ first"; \
-    echo "See: https://www.anaconda.com/distribution/"; \
-    exit 1; fi; \
-    echo $$(dirname $${CONDA_EXE})')
+$(SETUP_SENTINEL):
+	chmod +x setup.sh
+	./setup.sh
 
-CONDA_BIN := $(detect_conda_bin)
-
+# Run locally (dev mode)
 run:
-	uvicorn main:app --reload
+	docker compose up emqx postgres -d
+	conda run --no-capture-output -n hummingbot-api uvicorn main:app --reload
+
+# Deploy with Docker
+deploy: $(SETUP_SENTINEL)
+	docker compose up -d
+
+# Stop all services
+stop:
+	docker compose down
+
+# Install conda environment
+install:
+	@if ! command -v conda >/dev/null 2>&1; then \
+		echo "Error: Conda is not found in PATH. Please install Conda or add it to your PATH."; \
+		exit 1; \
+	fi
+	@if conda env list | grep -q '^hummingbot-api '; then \
+		echo "Environment already exists."; \
+	else \
+		conda env create -f environment.yml; \
+	fi
+	$(MAKE) install-pre-commit
+	$(MAKE) setup
 
 uninstall:
 	conda env remove -n hummingbot-api -y
-
-install:
-	if conda env list | grep -q '^hummingbot-api '; then \
-	    echo "Environment already exists."; \
-	else \
-	    conda env create -f environment.yml; \
-	fi
-	conda activate hummingbot-api
-	$(MAKE) install-pre-commit
+	rm -f $(SETUP_SENTINEL)
 
 install-pre-commit:
-	/bin/bash -c 'source "${CONDA_BIN}/activate" hummingbot-api && \
-	if ! conda list pre-commit | grep pre-commit &> /dev/null; then \
-	    pip install pre-commit; \
-	fi && pre-commit install'
+	conda run -n hummingbot-api pip install pre-commit
+	conda run -n hummingbot-api pre-commit install
 
+# Build Docker image
 build:
 	docker build -t hummingbot/hummingbot-api:latest .
-
-deploy:
-	docker compose up -d

@@ -45,6 +45,7 @@ class PMMisterConfig(ControllerConfigBase):
     leverage: int = Field(default=20, json_schema_extra={"is_updatable": True})
     position_mode: PositionMode = Field(default="HEDGE")
     take_profit: Optional[Decimal] = Field(default=Decimal("0.0001"), gt=0, json_schema_extra={"is_updatable": True})
+    open_order_type: Optional[OrderType] = Field(default="LIMIT_MAKER", json_schema_extra={"is_updatable": True})
     take_profit_order_type: Optional[OrderType] = Field(default="LIMIT_MAKER", json_schema_extra={"is_updatable": True})
     max_active_executors_by_level: Optional[int] = Field(default=4, json_schema_extra={"is_updatable": True})
     tick_mode: bool = Field(default=False, json_schema_extra={"is_updatable": True})
@@ -58,7 +59,7 @@ class PMMisterConfig(ControllerConfigBase):
             return Decimal(v)
         return v
 
-    @field_validator('take_profit_order_type', mode="before")
+    @field_validator('open_order_type', 'take_profit_order_type', mode="before")
     @classmethod
     def validate_order_type(cls, v) -> OrderType:
         if isinstance(v, OrderType):
@@ -114,7 +115,7 @@ class PMMisterConfig(ControllerConfigBase):
         return TripleBarrierConfig(
             take_profit=self.take_profit,
             trailing_stop=None,
-            open_order_type=OrderType.LIMIT_MAKER,
+            open_order_type=self.open_order_type,
             take_profit_order_type=self.take_profit_order_type,
             stop_loss_order_type=OrderType.MARKET,
             time_limit_order_type=OrderType.MARKET
