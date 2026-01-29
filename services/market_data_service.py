@@ -78,10 +78,20 @@ class MarketDataService:
             self._is_running = True
             self._cleanup_task = asyncio.create_task(self._cleanup_loop())
             self._rate_oracle.start()
+            asyncio.create_task(self._warmup_rate_oracle())
             logger.info(
                 f"MarketDataService started with cleanup_interval={self._cleanup_interval}s, "
                 f"feed_timeout={self._feed_timeout}s"
             )
+
+    async def _warmup_rate_oracle(self):
+        """Eagerly fetch prices so the oracle cache is populated before the first portfolio query."""
+        try:
+            prices = await self._rate_oracle._source.get_prices(quote_token=self._rate_oracle.quote_token)
+            self._rate_oracle._prices.update(prices)
+            logger.info(f"RateOracle warmed up with {len(prices)} prices")
+        except Exception as e:
+            logger.warning(f"RateOracle warmup failed: {e}")
 
     def stop(self):
         """Stop the market data service and cleanup all feeds."""
@@ -466,7 +476,7 @@ class MarketDataService:
             logger.error(f"Error getting prices for {connector_name}: {e}")
             return {"error": str(e)}
 
-    def get_rate(self, base: str, quote: str = "USD") -> Optional[Decimal]:
+    def get_rate(self, base: str, quote: str = "USDT") -> Optional[Decimal]:
         """
         Get exchange rate from rate oracle.
 
