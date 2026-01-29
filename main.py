@@ -138,6 +138,10 @@ async def lifespan(app: FastAPI):
 
     # Initialize database
     await accounts_service.ensure_db_initialized()
+    # Start services
+    bots_orchestrator.start()
+    accounts_service.start()
+    market_data_feed_manager.start()
 
     # Store services in app state
     app.state.bots_orchestrator = bots_orchestrator
@@ -146,11 +150,6 @@ async def lifespan(app: FastAPI):
     app.state.gateway_service = gateway_service
     app.state.bot_archiver = bot_archiver
     app.state.market_data_feed_manager = market_data_feed_manager
-
-    # Start services
-    bots_orchestrator.start()
-    accounts_service.start()
-    market_data_feed_manager.start()
 
     yield
 
