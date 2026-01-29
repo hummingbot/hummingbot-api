@@ -78,13 +78,12 @@ class MarketDataService:
             self._is_running = True
             self._cleanup_task = asyncio.create_task(self._cleanup_loop())
             self._rate_oracle.start()
-            asyncio.create_task(self._warmup_rate_oracle())
             logger.info(
                 f"MarketDataService started with cleanup_interval={self._cleanup_interval}s, "
                 f"feed_timeout={self._feed_timeout}s"
             )
 
-    async def _warmup_rate_oracle(self):
+    async def warmup_rate_oracle(self):
         """Eagerly fetch prices so the oracle cache is populated before the first portfolio query."""
         try:
             prices = await self._rate_oracle._source.get_prices(quote_token=self._rate_oracle.quote_token)
