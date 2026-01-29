@@ -58,6 +58,9 @@ class MarketDataFeedManager:
             self._is_running = True
             self._cleanup_task = asyncio.create_task(self._cleanup_loop())
             self.rate_oracle.start()
+            # Warm up the rate oracle cache since check_network() may not succeed
+            # in the API context (BinanceRateSource exchange not fully initialized)
+            asyncio.create_task(self._warmup_rate_oracle())
             self.logger.info(f"MarketDataFeedManager started with cleanup_interval={self.cleanup_interval}s, feed_timeout={self.feed_timeout}s")
     
     def stop(self):
@@ -73,6 +76,18 @@ class MarketDataFeedManager:
         self.feed_configs.clear()
         self.logger.info("MarketDataFeedManager stopped")
     
+    async def _warmup_rate_oracle(self):
+        """Populate the rate oracle cache by fetching prices directly."""
+        try:
+            prices = await self.rate_oracle._source.get_prices()
+            if prices:
+                self.rate_oracle._prices.update(prices)
+                self.logger.info(f"Rate oracle warmed up with {len(prices)} prices")
+            else:
+                self.logger.warning("Rate oracle warmup returned no prices")
+        except Exception as e:
+            self.logger.warning(f"Rate oracle warmup failed: {e}")
+
     def get_candles_feed(self, config: CandlesConfig):
         """
         Get a candles feed and update its last access time.

@@ -368,7 +368,7 @@ class AccountsService:
             for trading_pair in trading_pairs:
                 try:
                     cached_price = self.market_data_feed_manager.market_data_provider.get_rate(trading_pair)
-                    if cached_price > 0:
+                    if cached_price is not None and cached_price > 0:
                         prices_from_cache[trading_pair] = cached_price
                     else:
                         trading_pairs_need_update.append(trading_pair)
@@ -412,31 +412,69 @@ class AccountsService:
         """Safely get last traded prices with timeout and error handling. Preserves previous prices on failure."""
         try:
             last_traded = await asyncio.wait_for(connector.get_last_traded_prices(trading_pairs=trading_pairs), timeout=timeout)
-            
+
             # Update cache with successful prices
             for pair, price in last_traded.items():
                 if price and price > 0:
                     self._last_known_prices[pair] = price
-            
+
             return last_traded
         except asyncio.TimeoutError:
             logger.error(f"Timeout getting last traded prices for trading pairs {trading_pairs}")
-            return self._get_fallback_prices(trading_pairs)
+            return await self._get_fallback_prices(trading_pairs)
         except Exception as e:
-            logger.error(f"Error getting last traded prices in connector {connector} for trading pairs {trading_pairs}: {e}")
-            return self._get_fallback_prices(trading_pairs)
-    
-    def _get_fallback_prices(self, trading_pairs):
-        """Get fallback prices using cached values, only setting to 0 if no previous price exists."""
-        fallback_prices = {}
+            logger.warning(
+                f"Batch price fetch failed for {trading_pairs}: {e}. Retrying individually."
+            )
+            return await self._fetch_prices_individually(connector, trading_pairs, timeout)
+
+    async def _fetch_prices_individually(self, connector, trading_pairs, timeout=10):
+        """Fetch prices one pair at a time when batch fetch fails."""
+        results = {}
         for pair in trading_pairs:
-            if pair in self._last_known_prices:
-                fallback_prices[pair] = self._last_known_prices[pair]
-                logger.info(f"Using cached price {self._last_known_prices[pair]} for {pair}")
-            else:
-                fallback_prices[pair] = Decimal("0")
-                logger.warning(f"No cached price available for {pair}, using 0")
-        return fallback_prices
+            try:
+                pair_prices = await asyncio.wait_for(
+                    connector.get_last_traded_prices(trading_pairs=[pair]), timeout=timeout
+                )
+                price = pair_prices.get(pair)
+                if price and price > 0:
+                    results[pair] = price
+                    self._last_known_prices[pair] = price
+                else:
+                    results[pair] = await self._get_single_fallback_price(pair)
+            except Exception as e:
+                logger.debug(f"Connector price fetch failed for {pair}: {e}")
+                results[pair] = await self._get_single_fallback_price(pair)
+        return results
+
+    async def _get_fallback_prices(self, trading_pairs):
+        """Get fallback prices for multiple pairs."""
+        results = {}
+        for pair in trading_pairs:
+            results[pair] = await self._get_single_fallback_price(pair)
+        return results
+
+    async def _get_single_fallback_price(self, pair):
+        """Get fallback price: local cache -> rate oracle live fetch -> 0."""
+        # 1. Local cache
+        if pair in self._last_known_prices:
+            logger.info(f"Using cached price {self._last_known_prices[pair]} for {pair}")
+            return self._last_known_prices[pair]
+
+        # 2. Rate oracle live fetch (bypasses empty cache, handles pair inversion)
+        if self.market_data_feed_manager:
+            try:
+                rate = await self.market_data_feed_manager.rate_oracle.rate_async(pair)
+                if rate is not None and rate > 0:
+                    self._last_known_prices[pair] = rate
+                    logger.info(f"Got price {rate} for {pair} from rate oracle")
+                    return rate
+            except Exception as e:
+                logger.debug(f"Rate oracle async lookup failed for {pair}: {e}")
+
+        # 3. Last resort
+        logger.warning(f"No price available for {pair}, using 0")
+        return Decimal("0")
 
     def get_connector_config_map(self, connector_name: str):
         """
@@ -1653,7 +1691,7 @@ class AccountsService:
                             trading_pair = f"{token_unwrapped}-{quote}"
                             try:
                                 cached_price = self.market_data_feed_manager.market_data_provider.get_rate(trading_pair)
-                                if cached_price > 0:
+                                if cached_price is not None and cached_price > 0:
                                     prices_from_cache[token] = cached_price
                                     found_price = True
                                     break
