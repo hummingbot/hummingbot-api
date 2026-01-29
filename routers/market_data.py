@@ -479,25 +479,22 @@ async def get_spread_averages(
         )
 
 
-@router.get("/spread-data")
+@router.get("/spread-data/{connector_name}/{trading_pair}")
 async def get_spread_data(
-    pair: Optional[str] = None,
-    connector: Optional[str] = None,
-    limit: int = 100,
+    connector_name: str,
+    trading_pair: str,
     market_data_service: MarketDataService = Depends(get_market_data_service)
 ):
     """
     Get raw spread samples from database.
     
     Query parameters:
-        - pair: Filter by trading pair (e.g., BTC-USDT)
-        - connector: Filter by exchange (e.g., binance)
-        - limit: Max records to return (default 100)
+        - trading_pair: Filter by trading pair (e.g., BTC-USDT)
+        - connector_name: Filter by exchange (e.g., binance)
         
     Args:
-        pair: Optional trading pair filter
-        connector: Optional connector filter
-        limit: Maximum number of records
+        trading_pair: Optional trading pair filter
+        connector_name: Optional connector filter
         market_data_service: Injected market data service
         
     Returns:
@@ -505,9 +502,9 @@ async def get_spread_data(
     """
     try:
         result = await market_data_service.get_spread_data(
-            pair=pair,
-            connector=connector,
-            limit=limit
+            pair=trading_pair,
+            connector=connector_name,
+            limit=100
         )
         
         return result

@@ -748,8 +748,8 @@ class MarketDataService:
     
     async def get_spread_averages(
         self, 
-        pairs: List[str],
-        connectors: List[str],
+        pairs: Optional[List[str]],
+        connectors: Optional[List[str]],
         window_hours: int = 24
     ) -> List[Dict]:
         """
@@ -763,43 +763,64 @@ class MarketDataService:
         Returns:
             List of spread average data dictionaries
         """
+        await self._db_manager.ensure_initialized()
+
         try:
+            if not pairs and not connectors:
+                raise ValueError("At least one of 'pairs' or 'connectors' must be provided.")
+            
             # Calculate time window cutoff (convert to milliseconds)
             current_time = int(time.time() * 1000)
             cutoff_time = current_time - (window_hours * 3600 * 1000)
             
             async with self._db_manager.get_session_context() as session:
                 orderbook_repo = OrderBookRepository(session)
-                
-                # Collect samples grouped by (pair, connector) using a dict
-                spread_data = []
-                for pair in pairs:
-                    for connector in connectors:
+
+                all_samples = []
+                for pair in pairs or []:
+                    for connector in connectors or []:
                         samples = await orderbook_repo.get_spread_samples(
                             pair=pair,
                             connector=connector,
                             start_timestamp=cutoff_time
                         )
-                        # Only store if we have samples with spread data
-                        spread_values = [float(samples.spread) for samples in samples if samples.spread is not None]
-                        if not spread_values:
-                            continue
-
-                        avg_spread = sum(spread_values) / len(spread_values)
-                        min_spread = min(spread_values)
-                        max_spread = max(spread_values)
-                        
-                        spread_data.append({
-                            "pair": pair,
-                            "connector": connector,
-                            "avg_spread": Decimal(f"{avg_spread:.6f}"),
-                            "min_spread": Decimal(f"{min_spread:.6f}"),
-                            "max_spread": Decimal(f"{max_spread:.6f}"),
-                            "sample_count": len(spread_values)
-                        })
+                        all_samples.extend(samples)
                 
+                # Collect samples grouped by (pair, connector) using a dict
+                spread_data = {}
+                for sample in all_samples:
+                    key = (sample.trading_pair, sample.exchange)
+                    if key not in spread_data:
+                        spread_data[key] = {
+                            "spread_sum": 0.0,
+                            "min_spread": float('inf'),
+                            "max_spread": 0.0,
+                            "sample_count": 0
+                        }
+                    
+                    if sample.spread is None:
+                        continue
+                    spread_data[key]["spread_sum"] += float(sample.spread)
+                    spread_data[key]["min_spread"] = min(spread_data[key]["min_spread"], float(sample.spread))
+                    spread_data[key]["max_spread"] = max(spread_data[key]["max_spread"], float(sample.spread))
+                    spread_data[key]["sample_count"] += 1
+                
+                avg_spread_data = []
+                for (pair, connector), stats in spread_data.items():
+                    if stats["sample_count"] == 0:
+                        continue
+                    avg_spread = stats["spread_sum"] / stats["sample_count"]
+                    
+                    avg_spread_data.append({
+                        "pair": pair,
+                        "connector": connector,
+                        "average_spread": avg_spread,
+                        "min_spread": stats["min_spread"],
+                        "max_spread": stats["max_spread"],
+                        "sample_count": stats["sample_count"]
+                    })
                 logger.debug(f"Calculated spread averages for {len(spread_data)} pairs")
-                return spread_data
+                return avg_spread_data
                 
         except Exception as e:
             raise

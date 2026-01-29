@@ -6,8 +6,6 @@ from .gateway_clmm_repository import GatewayCLMMRepository
 from .gateway_swap_repository import GatewaySwapRepository
 from .order_repository import OrderRepository
 from .trade_repository import TradeRepository
-from .gateway_swap_repository import GatewaySwapRepository
-from .gateway_clmm_repository import GatewayCLMMRepository
 from .orderbook_repository import OrderBookRepository
 
 __all__ = [
