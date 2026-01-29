@@ -607,8 +607,14 @@ class UnifiedConnectorService:
         # Start network tasks
         await self._start_connector_network(connector)
 
-        # Initial state update
-        await self._update_connector_state(connector, connector_name, account_name)
+        # Only update order status for orders loaded from DB (balances, rules, positions
+        # were already fetched above — no need to repeat via _update_connector_state)
+        if connector.in_flight_orders:
+            try:
+                connector._set_current_timestamp(time.time())
+                await connector._update_order_status()
+            except Exception as e:
+                logger.error(f"Error updating initial order status for {connector_name}: {e}")
 
         logger.info(f"Initialized trading connector {connector_name} for {account_name}")
         return connector
@@ -729,11 +735,15 @@ class UnifiedConnectorService:
         connector_name: str,
         account_name: str = None
     ):
-        """Update connector state (balances, rules, positions)."""
+        """Update connector state (balances, positions, orders).
+
+        Note: Trading rules are NOT refreshed here — the background
+        _trading_rules_polling_loop() (started in _start_connector_network)
+        already handles that.
+        """
         try:
             connector._set_current_timestamp(time.time())
             await connector._update_balances()
-            await connector._update_trading_rules()
 
             if self._is_perpetual_connector(connector):
                 await connector._update_positions()
@@ -749,17 +759,18 @@ class UnifiedConnectorService:
             logger.error(f"Error updating connector state: {e}")
 
     async def update_all_trading_connector_states(self):
-        """Update state for all trading connectors."""
+        """Update state for all trading connectors in parallel."""
+        tasks = []
+        task_keys = []
         for account_name, connectors in self._trading_connectors.items():
             for connector_name, connector in connectors.items():
-                try:
-                    await self._update_connector_state(
-                        connector, connector_name, account_name
-                    )
-                except Exception as e:
-                    logger.error(
-                        f"Error updating {account_name}/{connector_name}: {e}"
-                    )
+                tasks.append(self._update_connector_state(connector, connector_name, account_name))
+                task_keys.append(f"{account_name}/{connector_name}")
+        if tasks:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for key, result in zip(task_keys, results):
+                if isinstance(result, Exception):
+                    logger.error(f"Error updating {key}: {result}")
 
     async def initialize_all_trading_connectors(self):
         """
