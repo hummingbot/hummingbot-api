@@ -5,11 +5,11 @@ from decimal import Decimal
 from sqlalchemy import select, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.models import SpreadSample
+from database.models import OrderbookSnapshot
 
 
-class SpreadRepository:
-    """Repository for spread sample data access."""
+class OrderBookRepository:
+    """Repository for order book snapshot data access."""
     
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -22,7 +22,7 @@ class SpreadRepository:
         end_timestamp: Optional[int] = None,
         limit: Optional[int] = None,
         offset: int = 0
-    ) -> List[SpreadSample]:
+    ) -> List[OrderbookSnapshot]:
         """
         Get raw spread samples with filtering and pagination.
         
@@ -35,25 +35,25 @@ class SpreadRepository:
             offset: Pagination offset
             
         Returns:
-            List of SpreadSample objects
+            List of OrderbookSnapshot objects
         """
-        query = select(SpreadSample)
+        query = select(OrderbookSnapshot)
         
         # Apply filters
         if pair:
-            query = query.where(SpreadSample.pair == pair)
+            query = query.where(OrderbookSnapshot.trading_pair == pair)
         
         if connector:
-            query = query.where(SpreadSample.connector == connector)
+            query = query.where(OrderbookSnapshot.exchange == connector)
         
         if start_timestamp:
-            query = query.where(SpreadSample.timestamp >= start_timestamp)
+            query = query.where(OrderbookSnapshot.timestamp >= start_timestamp)
         
         if end_timestamp:
-            query = query.where(SpreadSample.timestamp <= end_timestamp)
+            query = query.where(OrderbookSnapshot.timestamp <= end_timestamp)
         
         # Order by timestamp descending (most recent first)
-        query = query.order_by(desc(SpreadSample.timestamp))
+        query = query.order_by(desc(OrderbookSnapshot.timestamp))
         
         # Apply pagination
         if limit is not None:
@@ -63,24 +63,23 @@ class SpreadRepository:
         result = await self.session.execute(query)
         return result.scalars().all()
 
-    def to_dict(self, sample: SpreadSample) -> Dict:
+    def to_dict(self, sample: OrderbookSnapshot) -> Dict:
         """
-        Convert SpreadSample model to dictionary format.
+        Convert OrderbookSnapshot model to dictionary format.
         
         Args:
-            sample: SpreadSample object
+            sample: OrderbookSnapshot object
             
         Returns:
             Dictionary representation
         """
         return {
             "id": sample.id,
-            "pair": sample.pair,
-            "connector": sample.connector,
+            "pair": sample.trading_pair,
+            "connector": sample.exchange,
             "timestamp": sample.timestamp,
-            "bid": float(sample.bid) if sample.bid else None,
-            "ask": float(sample.ask) if sample.ask else None,
-            "mid": float(sample.mid) if sample.mid else None,
-            "spread": float(sample.spread) if sample.spread else None,
-            "source": sample.source
+            "bid": float(sample.best_bid) if sample.best_bid else None,
+            "ask": float(sample.best_ask) if sample.best_ask else None,
+            "mid": float(sample.mid_price) if sample.mid_price else None,
+            "spread": float(sample.spread) if sample.spread else None
         }

@@ -67,11 +67,7 @@ class AccountsService:
         self._update_account_state_task: Optional[asyncio.Task] = None
 
         # Database setup for account states and orders
-        if db_manager is None:
-            self.db_manager = AsyncDatabaseManager(settings.database.url)
-        else:
-            self.db_manager = db_manager
-        self._db_initialized = False
+        self.db_manager = db_manager or AsyncDatabaseManager(settings.database.url)
 
         # Initialize connector manager with db_manager
         self.connector_manager = ConnectorManager(self.secrets_manager, self.db_manager)
@@ -91,9 +87,7 @@ class AccountsService:
 
     async def ensure_db_initialized(self):
         """Ensure database is initialized before using it."""
-        if not self._db_initialized:
-            await self.db_manager.create_tables()
-            self._db_initialized = True
+        await self.db_manager.ensure_initialized()
     
     def get_accounts_state(self):
         return self.accounts_state

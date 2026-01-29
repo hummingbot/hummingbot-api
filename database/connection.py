@@ -38,6 +38,21 @@ class AsyncDatabaseManager:
             class_=AsyncSession, 
             expire_on_commit=False
         )
+        self._initialized = False
+    
+    async def ensure_initialized(self):
+        """
+        Ensure database is initialized before using it.
+        This method is idempotent and can be called multiple times safely.
+        """
+        if not self._initialized:
+            await self.create_tables()
+            self._initialized = True
+    
+    @property
+    def is_initialized(self) -> bool:
+        """Check if the database has been initialized."""
+        return self._initialized
         
     async def create_tables(self):
         """Create all tables defined in the models."""

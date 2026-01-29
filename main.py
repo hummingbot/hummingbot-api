@@ -128,7 +128,7 @@ async def lifespan(app: FastAPI):
     )
 
     # Initialize database
-    await accounts_service.ensure_db_initialized()
+    await db_manager.ensure_initialized()
 
     # Store services in app state
     app.state.bots_orchestrator = bots_orchestrator

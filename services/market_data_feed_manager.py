@@ -4,7 +4,7 @@ from typing import Dict, Optional, Callable, List
 import logging
 from enum import Enum
 from decimal import Decimal
-from collections import defaultdict
+from config import settings
 from hummingbot.core.rate_oracle.rate_oracle import RateOracle
 from hummingbot.data_feed.candles_feed.data_types import CandlesConfig
 from hummingbot.data_feed.market_data_provider import MarketDataProvider
@@ -28,7 +28,9 @@ class MarketDataFeedManager:
     are automatically stopped and cleaned up.
     """
     
-    def __init__(self, market_data_provider: MarketDataProvider, rate_oracle: RateOracle, cleanup_interval: int = 300, feed_timeout: int = 600):
+    def __init__(self, market_data_provider: MarketDataProvider,
+                 rate_oracle: RateOracle, cleanup_interval: int = 300,
+                 feed_timeout: int = 600, db_manager: Optional[AsyncDatabaseManager] = None):
         """
         Initialize the MarketDataFeedManager.
         
@@ -42,6 +44,7 @@ class MarketDataFeedManager:
         self.cleanup_interval = cleanup_interval
         self.feed_timeout = feed_timeout
         self.last_access_times: Dict[str, float] = {}
+        self.db_manager = db_manager or AsyncDatabaseManager(settings.database.url)
         self.feed_configs: Dict[str, tuple] = {}  # Store feed configs for cleanup
         self._cleanup_task: Optional[asyncio.Task] = None
         self._is_running = False
@@ -605,34 +608,33 @@ class MarketDataFeedManager:
 
     async def get_spread_averages(
         self, 
-        pairs: Optional[List[str]] = None,
-        connectors: Optional[List[str]] = None,
+        pairs: List[str],
+        connectors: List[str],
         window_hours: int = 24
     ) -> List[Dict]:
         """
         Calculate average spread statistics grouped by trading pair and connector.
         
         Args:
-            pairs: Optional list of trading pairs to filter
-            connectors: Optional list of connectors to filter
+            pairs: List of trading pairs to filter
+            connectors: List of connectors to filter
             window_hours: Time window in hours for aggregation
             
         Returns:
             List of spread average data dictionaries
         """
+        await self.db_manager.ensure_initialized()
+
         try:
-            if not self.db_manager:
-                raise ValueError("Database manager required for spread data")
-            
             # Calculate time window cutoff (convert to milliseconds)
             current_time = int(time.time() * 1000)
             cutoff_time = current_time - (window_hours * 3600 * 1000)
             
-            aasync with self.db_manager.get_session_context() as session:
+            async with self.db_manager.get_session_context() as session:
                 spread_repo = SpreadRepository(session)
                 
                 # Collect samples grouped by (pair, connector) using a dict
-                samples_by_pair_connector = {}
+                spread_data = []
                 for pair in pairs:
                     for connector in connectors:
                         samples = await spread_repo.get_spread_samples(
@@ -642,24 +644,21 @@ class MarketDataFeedManager:
                         )
                         # Only store if we have samples with spread data
                         spread_values = [float(samples.spread) for samples in samples if samples.spread is not None]
-                        if spread_values:
-                            samples_by_pair_connector[(pair, connector)] = spread_values
-                
-                # Calculate statistics
-                spread_data = []
-                for (pair, connector), spread_values in samples_by_pair_connector.items():
-                    avg_spread = sum(spread_values) / len(spread_values)
-                    min_spread = min(spread_values)
-                    max_spread = max(spread_values)
-                    
-                    spread_data.append({
-                        "pair": pair,
-                        "connector": connector,
-                        "avg_spread": Decimal(f"{avg_spread:.6f}"),
-                        "min_spread": Decimal(f"{min_spread:.6f}"),
-                        "max_spread": Decimal(f"{max_spread:.6f}"),
-                        "sample_count": len(spread_values)
-                    })
+                        if not spread_values:
+                            continue
+
+                        avg_spread = sum(spread_values) / len(spread_values)
+                        min_spread = min(spread_values)
+                        max_spread = max(spread_values)
+                        
+                        spread_data.append({
+                            "pair": pair,
+                            "connector": connector,
+                            "avg_spread": Decimal(f"{avg_spread:.6f}"),
+                            "min_spread": Decimal(f"{min_spread:.6f}"),
+                            "max_spread": Decimal(f"{max_spread:.6f}"),
+                            "sample_count": len(spread_values)
+                        })
                 
                 self.logger.debug(f"Calculated spread averages for {len(spread_data)} pairs")
                 return spread_data
@@ -670,25 +669,24 @@ class MarketDataFeedManager:
 
     async def get_spread_data(
         self,
-        pair: Optional[str] = None,
-        connector: Optional[str] = None,
+        pair: str,
+        connector: str,
         limit: int = 100
     ) -> Dict:
         """
         Get raw spread samples from database.
         
         Args:
-            pair: Optional trading pair filter
-            connector: Optional connector filter
+            pair: Trading pair filter
+            connector: Connector filter
             limit: Maximum number of records to return
             
         Returns:
             Dictionary with spread data and count
         """
-        try:
-            if not self.db_manager:
-                raise ValueError("Database manager required for spread data")
-            
+        await self.db_manager.ensure_initialized()
+        
+        try:            
             async with self.db_manager.get_session_context() as session:
                 spread_repo = SpreadRepository(session)
                 
