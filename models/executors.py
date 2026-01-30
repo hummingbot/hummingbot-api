@@ -193,6 +193,7 @@ class PositionsSummaryResponse(BaseModel):
     """Summary of all held positions."""
     total_positions: int = Field(description="Number of active position holds")
     total_realized_pnl: float = Field(description="Total realized PnL across all positions")
+    total_unrealized_pnl: Optional[float] = Field(default=None, description="Total unrealized PnL across all positions (None if no rates available)")
     positions: List[PositionHoldResponse] = Field(description="List of position holds")
 
 
