@@ -9,7 +9,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 from starlette import status
 
-from deps import get_executor_service
+from deps import get_executor_service, get_market_data_service
 from models.executors import (
     CreateExecutorRequest,
     CreateExecutorResponse,
@@ -24,6 +24,7 @@ from models.executors import (
 )
 from models.pagination import PaginatedResponse
 from services.executor_service import ExecutorService
+from services.market_data_service import MarketDataService
 
 logger = logging.getLogger(__name__)
 
@@ -221,7 +222,8 @@ async def stop_executor(
 
 @router.get("/positions/summary", response_model=PositionsSummaryResponse)
 async def get_positions_summary(
-    executor_service: ExecutorService = Depends(get_executor_service)
+    executor_service: ExecutorService = Depends(get_executor_service),
+    market_data_service: MarketDataService = Depends(get_market_data_service)
 ):
     """
     Get summary of all held positions from executors stopped with keep_position=True.
@@ -229,11 +231,54 @@ async def get_positions_summary(
     Returns aggregate information including:
     - Total number of active position holds
     - Total realized PnL across all positions
+    - Total unrealized PnL (when market rates are available)
     - List of all positions with breakeven prices and PnL
     """
     try:
-        summary = executor_service.get_positions_summary()
-        return PositionsSummaryResponse(**summary)
+        positions = executor_service.get_positions_held()
+        total_realized_pnl = sum(float(p.realized_pnl_quote) for p in positions)
+        total_unrealized_pnl = None
+        position_responses = []
+
+        for p in positions:
+            unrealized_pnl = None
+            parts = p.trading_pair.split("-")
+            if len(parts) == 2:
+                base, quote = parts
+                rate = market_data_service.get_rate(base, quote)
+                if rate is not None:
+                    unrealized_pnl = float(p.get_unrealized_pnl(rate))
+                    if total_unrealized_pnl is None:
+                        total_unrealized_pnl = 0.0
+                    total_unrealized_pnl += unrealized_pnl
+
+            position_responses.append(PositionHoldResponse(
+                trading_pair=p.trading_pair,
+                connector_name=p.connector_name,
+                account_name=p.account_name,
+                buy_amount_base=float(p.buy_amount_base),
+                buy_amount_quote=float(p.buy_amount_quote),
+                sell_amount_base=float(p.sell_amount_base),
+                sell_amount_quote=float(p.sell_amount_quote),
+                net_amount_base=float(p.net_amount_base),
+                buy_breakeven_price=float(p.buy_breakeven_price) if p.buy_breakeven_price else None,
+                sell_breakeven_price=float(p.sell_breakeven_price) if p.sell_breakeven_price else None,
+                matched_amount_base=float(p.matched_amount_base),
+                unmatched_amount_base=float(p.unmatched_amount_base),
+                position_side=p.position_side,
+                realized_pnl_quote=float(p.realized_pnl_quote),
+                unrealized_pnl_quote=unrealized_pnl,
+                executor_count=len(p.executor_ids),
+                executor_ids=p.executor_ids,
+                last_updated=p.last_updated.isoformat() if p.last_updated else None
+            ))
+
+        return PositionsSummaryResponse(
+            total_positions=len(positions),
+            total_realized_pnl=total_realized_pnl,
+            total_unrealized_pnl=total_unrealized_pnl,
+            positions=position_responses
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -246,13 +291,14 @@ async def get_position_held(
     connector_name: str,
     trading_pair: str,
     account_name: str = "master_account",
-    executor_service: ExecutorService = Depends(get_executor_service)
+    executor_service: ExecutorService = Depends(get_executor_service),
+    market_data_service: MarketDataService = Depends(get_market_data_service)
 ):
     """
     Get held position for a specific connector/trading pair.
 
     Returns the aggregated position from executors stopped with keep_position=True,
-    including breakeven prices, matched/unmatched volume, and realized PnL.
+    including breakeven prices, matched/unmatched volume, realized PnL, and unrealized PnL.
     """
     try:
         position = executor_service.get_position_held(
@@ -266,6 +312,14 @@ async def get_position_held(
                 status_code=404,
                 detail=f"No position hold found for {connector_name}/{trading_pair}"
             )
+
+        unrealized_pnl = None
+        parts = trading_pair.split("-")
+        if len(parts) == 2:
+            base, quote = parts
+            rate = market_data_service.get_rate(base, quote)
+            if rate is not None:
+                unrealized_pnl = float(position.get_unrealized_pnl(rate))
 
         return PositionHoldResponse(
             trading_pair=position.trading_pair,
@@ -282,6 +336,7 @@ async def get_position_held(
             unmatched_amount_base=float(position.unmatched_amount_base),
             position_side=position.position_side,
             realized_pnl_quote=float(position.realized_pnl_quote),
+            unrealized_pnl_quote=unrealized_pnl,
             executor_count=len(position.executor_ids),
             executor_ids=position.executor_ids,
             last_updated=position.last_updated.isoformat() if position.last_updated else None
