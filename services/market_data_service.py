@@ -13,7 +13,7 @@ from enum import Enum
 
 from hummingbot.core.rate_oracle.rate_oracle import RateOracle
 from hummingbot.data_feed.candles_feed.data_types import CandlesConfig
-from hummingbot.data_feed.candles_feed.candles_factory import CandlesFactory
+from hummingbot.data_feed.candles_feed.candles_factory import CandlesFactory, UnsupportedConnectorException
 
 
 logger = logging.getLogger(__name__)
@@ -373,6 +373,11 @@ class MarketDataService:
 
     # ==================== Candles ====================
 
+    @staticmethod
+    def validate_connector(connector_name: str) -> None:
+        if connector_name not in CandlesFactory._candles_map:
+            raise UnsupportedConnectorException(connector_name)
+
     def get_candles_feed(self, config: CandlesConfig):
         """
         Get or create a candles feed.
@@ -391,6 +396,7 @@ class MarketDataService:
         self._feed_configs[feed_key] = (FeedType.CANDLES, config)
 
         if feed_key not in self._candle_feeds:
+            self.validate_connector(config.connector)
             feed = CandlesFactory.get_candle(config)
             feed.start()
             self._candle_feeds[feed_key] = feed
