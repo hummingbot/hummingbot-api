@@ -2187,15 +2187,23 @@ class AccountsService:
         # Create tasks for all tokens in parallel
         tasks = []
         task_tokens = []
+        quote_asset = "USDC"
 
         for token in tokens:
+            # Skip same-token quotes (e.g., USDC/USDC) - price is always 1
+            if token.upper() == quote_asset.upper():
+                prices[token] = Decimal("1")
+                rate_oracle.set_price(f"{token}-{quote_asset}", Decimal("1"))
+                logger.debug(f"Skipping same-token quote for {token}, price=1")
+                continue
+
             try:
                 task = gateway_client.get_price(
                     chain=chain,
                     network=network,
                     connector=pricing_connector,
                     base_asset=token,
-                    quote_asset="USDC",
+                    quote_asset=quote_asset,
                     amount=Decimal("1"),
                     side=TradeType.SELL
                 )
