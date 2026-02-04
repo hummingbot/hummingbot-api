@@ -47,6 +47,7 @@ async def create_executor(
     - **arbitrage_executor**: Cross-exchange arbitrage
     - **xemm_executor**: Cross-exchange market making
     - **order_executor**: Simple order execution
+    - **lp_executor**: Liquidity provider position on CLMM DEXs (Meteora, etc.)
 
     The `executor_config` must include:
     - `type`: One of the executor types above
@@ -429,6 +430,11 @@ async def get_available_executor_types():
                 "type": "order_executor",
                 "description": "Simple order execution with retry logic",
                 "use_case": "Basic order placement with reliability"
+            },
+            {
+                "type": "lp_executor",
+                "description": "LP position management for concentrated liquidity pools",
+                "use_case": "Automated liquidity provision with position tracking"
             }
         ]
     }
