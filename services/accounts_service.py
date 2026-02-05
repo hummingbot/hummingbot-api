@@ -2189,9 +2189,27 @@ class AccountsService:
         task_tokens = []
         quote_asset = "USDC"
 
+        # On ethereum networks, use WETH price for ETH to avoid duplicate calls
+        eth_needs_weth_price = False
+        if chain == "ethereum":
+            has_eth = any(t.upper() == "ETH" for t in tokens)
+            has_weth = any(t.upper() == "WETH" for t in tokens)
+            if has_eth and not has_weth:
+                # Replace ETH with WETH for fetching
+                tokens = [t if t.upper() != "ETH" else "WETH" for t in tokens]
+                eth_needs_weth_price = True
+                logger.debug("Replacing ETH with WETH for price fetch on ethereum")
+            elif has_eth and has_weth:
+                # Remove ETH, will copy WETH price later
+                tokens = [t for t in tokens if t.upper() != "ETH"]
+                eth_needs_weth_price = True
+                logger.debug("Removing duplicate ETH, will use WETH price on ethereum")
+
         for token in tokens:
+            token_upper = token.upper()
+
             # Skip same-token quotes (e.g., USDC/USDC) - price is always 1
-            if token.upper() == quote_asset.upper():
+            if token_upper == quote_asset.upper():
                 prices[token] = Decimal("1")
                 rate_oracle.set_price(f"{token}-{quote_asset}", Decimal("1"))
                 logger.debug(f"Skipping same-token quote for {token}, price=1")
@@ -2228,6 +2246,12 @@ class AccountsService:
                         logger.debug(f"Fetched immediate price for {token}: {price} USDC")
             except Exception as e:
                 logger.error(f"Error fetching gateway prices: {e}", exc_info=True)
+
+        # Copy WETH price to ETH on ethereum networks
+        if eth_needs_weth_price and "WETH" in prices:
+            prices["ETH"] = prices["WETH"]
+            rate_oracle.set_price("ETH-USDC", prices["WETH"])
+            logger.debug(f"Copied WETH price to ETH: {prices['WETH']} USDC")
 
         return prices
 
