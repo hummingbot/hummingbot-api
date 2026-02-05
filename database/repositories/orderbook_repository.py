@@ -5,7 +5,7 @@ from decimal import Decimal
 from sqlalchemy import select, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.models import OrderbookSnapshot
+from database.models import MarketData
 
 
 class OrderBookRepository:
@@ -22,7 +22,7 @@ class OrderBookRepository:
         end_timestamp: Optional[int] = None,
         limit: Optional[int] = None,
         offset: int = 0
-    ) -> List[OrderbookSnapshot]:
+    ) -> List[MarketData]:
         """
         Get raw spread samples with filtering and pagination.
         
@@ -35,25 +35,25 @@ class OrderBookRepository:
             offset: Pagination offset
             
         Returns:
-            List of OrderbookSnapshot objects
+            List of MarketData objects
         """
-        query = select(OrderbookSnapshot)
+        query = select(MarketData)
         
         # Apply filters
         if pair:
-            query = query.where(OrderbookSnapshot.trading_pair == pair)
+            query = query.where(MarketData.trading_pair == pair)
         
         if connector:
-            query = query.where(OrderbookSnapshot.exchange == connector)
+            query = query.where(MarketData.exchange == connector)
         
         if start_timestamp:
-            query = query.where(OrderbookSnapshot.timestamp >= start_timestamp)
+            query = query.where(MarketData.timestamp >= start_timestamp)
         
         if end_timestamp:
-            query = query.where(OrderbookSnapshot.timestamp <= end_timestamp)
+            query = query.where(MarketData.timestamp <= end_timestamp)
         
         # Order by timestamp descending (most recent first)
-        query = query.order_by(desc(OrderbookSnapshot.timestamp))
+        query = query.order_by(desc(MarketData.timestamp))
         
         # Apply pagination
         if limit is not None:
@@ -63,12 +63,12 @@ class OrderBookRepository:
         result = await self.session.execute(query)
         return result.scalars().all()
 
-    def to_dict(self, sample: OrderbookSnapshot) -> Dict:
+    def to_dict(self, sample: MarketData) -> Dict:
         """
-        Convert OrderbookSnapshot model to dictionary format.
+        Convert MarketData model to dictionary format.
         
         Args:
-            sample: OrderbookSnapshot object
+            sample: MarketData object
             
         Returns:
             Dictionary representation

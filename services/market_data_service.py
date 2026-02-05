@@ -769,41 +769,36 @@ class MarketDataService:
             if not pairs and not connectors:
                 raise ValueError("At least one of 'pairs' or 'connectors' must be provided.")
             
-            # Calculate time window cutoff (convert to milliseconds)
-            current_time = int(time.time() * 1000)
-            cutoff_time = current_time - (window_hours * 3600 * 1000)
+            # Calculate time window cutoff (convert to seconds)
+            current_time = int(time.time())
+            cutoff_time = current_time - (window_hours * 3600)
             
             async with self._db_manager.get_session_context() as session:
                 orderbook_repo = OrderBookRepository(session)
 
-                all_samples = []
-                for pair in pairs or []:
-                    for connector in connectors or []:
+                spread_data = {}
+                for pair in pairs or [None]:
+                    for connector in connectors or [None]:
                         samples = await orderbook_repo.get_spread_samples(
                             pair=pair,
                             connector=connector,
                             start_timestamp=cutoff_time
                         )
-                        all_samples.extend(samples)
-                
-                # Collect samples grouped by (pair, connector) using a dict
-                spread_data = {}
-                for sample in all_samples:
-                    key = (sample.trading_pair, sample.exchange)
-                    if key not in spread_data:
-                        spread_data[key] = {
-                            "spread_sum": 0.0,
-                            "min_spread": float('inf'),
-                            "max_spread": 0.0,
-                            "sample_count": 0
-                        }
-                    
-                    if sample.spread is None:
-                        continue
-                    spread_data[key]["spread_sum"] += float(sample.spread)
-                    spread_data[key]["min_spread"] = min(spread_data[key]["min_spread"], float(sample.spread))
-                    spread_data[key]["max_spread"] = max(spread_data[key]["max_spread"], float(sample.spread))
-                    spread_data[key]["sample_count"] += 1
+                        for sample in samples:
+                            key = (sample.trading_pair, sample.exchange)
+                            if key not in spread_data:
+                                spread_data[key] = {
+                                    "spread_sum": 0.0,
+                                    "min_spread": float('inf'),
+                                    "max_spread": 0.0,
+                                    "sample_count": 0
+                                }
+                            if sample.spread is None:
+                                continue
+                            spread_data[key]["spread_sum"] += float(sample.spread)
+                            spread_data[key]["min_spread"] = min(spread_data[key]["min_spread"], float(sample.spread))
+                            spread_data[key]["max_spread"] = max(spread_data[key]["max_spread"], float(sample.spread))
+                            spread_data[key]["sample_count"] += 1
                 
                 avg_spread_data = []
                 for (pair, connector), stats in spread_data.items():
@@ -814,7 +809,7 @@ class MarketDataService:
                     avg_spread_data.append({
                         "pair": pair,
                         "connector": connector,
-                        "average_spread": avg_spread,
+                        "avg_spread": round(avg_spread, 2),
                         "min_spread": stats["min_spread"],
                         "max_spread": stats["max_spread"],
                         "sample_count": stats["sample_count"]

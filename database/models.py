@@ -1,4 +1,4 @@
-from sqlalchemy import TIMESTAMP, Column, ForeignKey, Integer, Numeric, String, Text, func, Index, PrimaryKeyConstraint
+from sqlalchemy import TIMESTAMP, BigInteger, Column, Float, ForeignKey, Integer, Numeric, String, Text, func, Index, PrimaryKeyConstraint
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 
@@ -344,21 +344,21 @@ class GatewayCLMMEvent(Base):
     position = relationship("GatewayCLMMPosition", back_populates="events")
 
 
-class OrderbookSnapshot(Base):
-    __tablename__ = "OrderbookSnapshot"
+class MarketData(Base):
+    __tablename__ = "MarketData"
     __table_args__ = (
         PrimaryKeyConstraint("timestamp", "exchange", "trading_pair"),
         Index("idx_market_data_timestamp", "timestamp"),
         Index("idx_market_data_trading_pair", "trading_pair"),
         Index("idx_market_data_exchange", "exchange"),
     )
-    timestamp = Column(Numeric(6), nullable=False)
+    timestamp = Column(BigInteger, nullable=False)
     exchange = Column(Text, nullable=False)
     trading_pair = Column(Text, nullable=False)
-    mid_price = Column(Numeric(6), nullable=False)
-    best_bid = Column(Numeric(6), nullable=False)
-    best_ask = Column(Numeric(6), nullable=False)
-    spread = Column(Numeric(6), nullable=True)
+    mid_price = Column(Float, nullable=False)
+    best_bid = Column(Float, nullable=False)
+    best_ask = Column(Float, nullable=False)
+    spread = Column(Numeric(5, 2), nullable=True)
 
 class ExecutorRecord(Base):
     """Database model for executor state persistence."""

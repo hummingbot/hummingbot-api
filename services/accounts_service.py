@@ -455,7 +455,8 @@ class AccountsService:
     def __init__(self,
                  account_update_interval: int = 5,
                  default_quote: str = "USDT",
-                 gateway_url: str = "http://localhost:15888"):
+                 gateway_url: str = "http://localhost:15888",
+                 db_manager: Optional[AsyncDatabaseManager] = None):
         """
         Initialize the AccountsService.
 
@@ -463,6 +464,7 @@ class AccountsService:
             account_update_interval: How often to update account states in minutes (default: 5)
             default_quote: Default quote currency for trading pairs (default: "USDT")
             gateway_url: URL for Gateway service (default: "http://localhost:15888")
+            db_manager: Optional AsyncDatabaseManager instance for database operations (default: None)
         """
         self.secrets_manager = ETHKeyFileSecretManger(settings.security.config_password)
         self.accounts_state = {}
