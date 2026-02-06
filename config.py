@@ -36,6 +36,10 @@ class MarketDataSettings(BaseSettings):
         default=600,
         description="How long to keep unused feeds alive in seconds"
     )
+    candles_ready_timeout: int = Field(
+        default=30,
+        description="How long to wait for a candle feed to become ready in seconds"
+    )
 
     model_config = SettingsConfigDict(env_prefix="MARKET_DATA_", extra="ignore")
 
