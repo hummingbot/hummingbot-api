@@ -8,10 +8,10 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Set
 from fastapi import HTTPException
 from hummingbot.client.config.config_crypt import ETHKeyFileSecretManger
 from hummingbot.connector.connector_base import ConnectorBase
-from hummingbot.core.data_type.common import OrderType, TradeType, PositionAction, PositionMode
+from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, TradeType
 
 from config import settings
-from database import AsyncDatabaseManager, AccountRepository, OrderRepository, TradeRepository, FundingRepository
+from database import AccountRepository, AsyncDatabaseManager, FundingRepository, OrderRepository, TradeRepository
 from services.gateway_client import GatewayClient
 from services.gateway_transaction_poller import GatewayTransactionPoller
 from utils.file_system import fs_util
@@ -1877,10 +1877,13 @@ class AccountsService:
     async def _update_gateway_balances(self, chain_networks: Optional[List[str]] = None):
         """Update Gateway wallet balances in master_account state.
 
+        Only queries the defaultWallet on each network in defaultNetworks for each chain.
+        This is more efficient than querying all wallets on all networks.
+
         Args:
             chain_networks: If provided, only update these chain-network combinations
                            (e.g., ['solana-mainnet-beta', 'ethereum-mainnet']).
-                           If None, update all available chain-networks.
+                           If None, update all defaultNetworks for each chain.
         """
         try:
             # Check if Gateway is available
@@ -1888,32 +1891,13 @@ class AccountsService:
                 logger.debug("Gateway service is not available, skipping wallet balance update")
                 return
 
-            # Get all wallets from Gateway
-            wallets = await self.gateway_client.get_wallets()
-            if not wallets:
-                logger.debug("No Gateway wallets found")
-                # Clear any stale gateway balances from master_account when no wallets exist
-                if "master_account" in self.accounts_state:
-                    chains_result = await self.gateway_client.get_chains()
-                    if chains_result and "chains" in chains_result:
-                        known_chains = {c["chain"] for c in chains_result["chains"]}
-                        stale_keys = [
-                            key for key in list(self.accounts_state["master_account"].keys())
-                            if "-" in key and key.split("-")[0] in known_chains
-                        ]
-                        for key in stale_keys:
-                            logger.info(f"Removing stale Gateway balance data for {key} (no wallets exist)")
-                            del self.accounts_state["master_account"][key]
-                return
-
-            # Get all available chains and networks
+            # Get all available chains
             chains_result = await self.gateway_client.get_chains()
             if not chains_result or "chains" not in chains_result:
                 logger.error("Could not get chains from Gateway")
                 return
 
-            # Build a map of chain -> [networks]
-            chain_networks_map = {c["chain"]: c["networks"] for c in chains_result["chains"]}
+            known_chains = {c["chain"] for c in chains_result["chains"]}
 
             # Ensure master_account exists in accounts_state
             if "master_account" not in self.accounts_state:
@@ -1923,40 +1907,57 @@ class AccountsService:
             balance_tasks = []
             task_metadata = []  # Store (chain, network, address) for each task
 
-            for wallet_info in wallets:
-                chain = wallet_info.get("chain")
-                wallet_addresses = wallet_info.get("walletAddresses", [])
+            # For each chain, get its config with defaultWallet and defaultNetworks
+            for chain_info in chains_result["chains"]:
+                chain = chain_info["chain"]
+                networks = chain_info.get("networks", [])
 
-                if not chain or not wallet_addresses:
-                    continue
-
-                # Use the first address as the default wallet for this chain
-                address = wallet_addresses[0]
-
-                # Get all networks for this chain
-                networks = chain_networks_map.get(chain, [])
                 if not networks:
-                    logger.warning(f"No networks found for chain '{chain}', skipping")
+                    logger.debug(f"Chain '{chain}' has no networks configured, skipping")
                     continue
 
-                # Create tasks for all networks for this wallet
-                for network in networks:
+                # Get merged config using chain-network namespace (e.g., solana-mainnet-beta)
+                # This returns both chain-level fields (defaultWallet, defaultNetworks) and network fields
+                first_network = networks[0]
+                try:
+                    config = await self.gateway_client.get_config(f"{chain}-{first_network}")
+                except Exception as e:
+                    logger.warning(f"Could not get config for '{chain}-{first_network}': {e}")
+                    continue
+
+                default_wallet = config.get("defaultWallet")
+                default_networks = config.get("defaultNetworks", [])
+
+                if not default_wallet:
+                    logger.debug(f"Chain '{chain}' missing defaultWallet, skipping")
+                    continue
+
+                if not default_networks:
+                    # Fall back to defaultNetwork (singular) if defaultNetworks not set
+                    default_network = config.get("defaultNetwork")
+                    if default_network:
+                        default_networks = [default_network]
+                    else:
+                        logger.debug(f"Chain '{chain}' missing defaultNetworks, skipping")
+                        continue
+
+                # Create balance tasks for each default network
+                for network in default_networks:
                     chain_network_key = f"{chain}-{network}"
 
                     # Filter by chain_networks if specified
-                    if chain_networks:
-                        if chain_network_key not in chain_networks:
-                            continue
+                    if chain_networks and chain_network_key not in chain_networks:
+                        continue
 
-                    balance_tasks.append(self.get_gateway_balances(chain, address, network=network))
-                    task_metadata.append((chain, network, address))
+                    balance_tasks.append(self.get_gateway_balances(chain, default_wallet, network=network))
+                    task_metadata.append((chain, network, default_wallet))
+
+            # Build set of active chain-network keys
+            active_chain_networks = {f"{chain}-{network}" for chain, network, _ in task_metadata}
 
             # Execute all balance queries in parallel
             if balance_tasks:
                 results = await asyncio.gather(*balance_tasks, return_exceptions=True)
-
-                # Build set of active chain-network keys from current wallets
-                active_chain_networks = {f"{chain}-{network}" for chain, network, _ in task_metadata}
 
                 # Process results
                 for result, (chain, network, address) in zip(results, task_metadata):
@@ -1973,23 +1974,23 @@ class AccountsService:
                         # Store empty list to indicate we checked this network
                         self.accounts_state["master_account"][chain_network] = []
 
-                # Only remove stale keys if we're doing a full update (no filter)
-                # When filtering, we don't want to remove keys that weren't in the filter
-                if not chain_networks:
-                    # Remove stale gateway chain-network keys (wallets that were deleted)
-                    # Gateway keys follow pattern: chain-network (e.g., "solana-mainnet-beta", "ethereum-mainnet")
-                    stale_keys = []
-                    for key in self.accounts_state["master_account"]:
-                        # Check if key looks like a gateway chain-network (contains hyphen and matches chain pattern)
-                        if "-" in key and key not in active_chain_networks:
-                            # Verify it's a gateway key by checking if chain part matches known chains
-                            chain_part = key.split("-")[0]
-                            if chain_part in chain_networks_map:
-                                stale_keys.append(key)
+            # Only remove stale keys if we're doing a full update (no filter)
+            # When filtering, we don't want to remove keys that weren't in the filter
+            if not chain_networks:
+                # Remove stale gateway chain-network keys (default network/wallet changed or no longer configured)
+                # Gateway keys follow pattern: chain-network (e.g., "solana-mainnet-beta", "ethereum-mainnet")
+                stale_keys = []
+                for key in self.accounts_state["master_account"]:
+                    # Check if key looks like a gateway chain-network (contains hyphen and matches chain pattern)
+                    if "-" in key and key not in active_chain_networks:
+                        # Verify it's a gateway key by checking if chain part matches known chains
+                        chain_part = key.split("-")[0]
+                        if chain_part in known_chains:
+                            stale_keys.append(key)
 
-                    for key in stale_keys:
-                        logger.info(f"Removing stale Gateway balance data for {key} (wallet no longer exists)")
-                        del self.accounts_state["master_account"][key]
+                for key in stale_keys:
+                    logger.info(f"Removing stale Gateway balance data for {key} (no longer default network)")
+                    del self.accounts_state["master_account"][key]
 
         except Exception as e:
             logger.error(f"Error updating Gateway balances: {e}")
@@ -2169,9 +2170,9 @@ class AccountsService:
         Returns:
             Dictionary mapping token symbol to price in USDC
         """
+        from hummingbot.core.data_type.common import TradeType
         from hummingbot.core.gateway.gateway_http_client import GatewayHttpClient
         from hummingbot.core.rate_oracle.rate_oracle import RateOracle
-        from hummingbot.core.data_type.common import TradeType
 
         gateway_client = GatewayHttpClient.get_instance()
         rate_oracle = RateOracle.get_instance()
@@ -2186,15 +2187,41 @@ class AccountsService:
         # Create tasks for all tokens in parallel
         tasks = []
         task_tokens = []
+        quote_asset = "USDC"
+
+        # On ethereum networks, use WETH price for ETH to avoid duplicate calls
+        eth_needs_weth_price = False
+        if chain == "ethereum":
+            has_eth = any(t.upper() == "ETH" for t in tokens)
+            has_weth = any(t.upper() == "WETH" for t in tokens)
+            if has_eth and not has_weth:
+                # Replace ETH with WETH for fetching
+                tokens = [t if t.upper() != "ETH" else "WETH" for t in tokens]
+                eth_needs_weth_price = True
+                logger.debug("Replacing ETH with WETH for price fetch on ethereum")
+            elif has_eth and has_weth:
+                # Remove ETH, will copy WETH price later
+                tokens = [t for t in tokens if t.upper() != "ETH"]
+                eth_needs_weth_price = True
+                logger.debug("Removing duplicate ETH, will use WETH price on ethereum")
 
         for token in tokens:
+            token_upper = token.upper()
+
+            # Skip same-token quotes (e.g., USDC/USDC) - price is always 1
+            if token_upper == quote_asset.upper():
+                prices[token] = Decimal("1")
+                rate_oracle.set_price(f"{token}-{quote_asset}", Decimal("1"))
+                logger.debug(f"Skipping same-token quote for {token}, price=1")
+                continue
+
             try:
                 task = gateway_client.get_price(
                     chain=chain,
                     network=network,
                     connector=pricing_connector,
                     base_asset=token,
-                    quote_asset="USDC",
+                    quote_asset=quote_asset,
                     amount=Decimal("1"),
                     side=TradeType.SELL
                 )
@@ -2219,6 +2246,12 @@ class AccountsService:
                         logger.debug(f"Fetched immediate price for {token}: {price} USDC")
             except Exception as e:
                 logger.error(f"Error fetching gateway prices: {e}", exc_info=True)
+
+        # Copy WETH price to ETH on ethereum networks
+        if eth_needs_weth_price and "WETH" in prices:
+            prices["ETH"] = prices["WETH"]
+            rate_oracle.set_price("ETH-USDC", prices["WETH"])
+            logger.debug(f"Copied WETH price to ETH: {prices['WETH']} USDC")
 
         return prices
 

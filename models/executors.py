@@ -12,7 +12,6 @@ from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 from .pagination import PaginationParams
 
-
 # ========================================
 # Position Hold for Aggregated Tracking
 # ========================================
@@ -208,7 +207,8 @@ EXECUTOR_TYPES = Literal[
     "arbitrage_executor",
     "twap_executor",
     "xemm_executor",
-    "order_executor"
+    "order_executor",
+    "lp_executor"
 ]
 
 

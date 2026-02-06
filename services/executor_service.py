@@ -12,15 +12,16 @@ from enum import Enum
 from typing import Any, Dict, List, Optional, Type
 
 from fastapi import HTTPException
-
 from hummingbot.strategy_v2.executors.arbitrage_executor.arbitrage_executor import ArbitrageExecutor
 from hummingbot.strategy_v2.executors.arbitrage_executor.data_types import ArbitrageExecutorConfig
 from hummingbot.strategy_v2.executors.data_types import ExecutorConfigBase
-from hummingbot.strategy_v2.executors.dca_executor.dca_executor import DCAExecutor
 from hummingbot.strategy_v2.executors.dca_executor.data_types import DCAExecutorConfig
+from hummingbot.strategy_v2.executors.dca_executor.dca_executor import DCAExecutor
 from hummingbot.strategy_v2.executors.executor_base import ExecutorBase
 from hummingbot.strategy_v2.executors.grid_executor.data_types import GridExecutorConfig
 from hummingbot.strategy_v2.executors.grid_executor.grid_executor import GridExecutor
+from hummingbot.strategy_v2.executors.lp_executor.data_types import LPExecutorConfig
+from hummingbot.strategy_v2.executors.lp_executor.lp_executor import LPExecutor
 from hummingbot.strategy_v2.executors.order_executor.data_types import OrderExecutorConfig
 from hummingbot.strategy_v2.executors.order_executor.order_executor import OrderExecutor
 from hummingbot.strategy_v2.executors.position_executor.data_types import PositionExecutorConfig
@@ -34,7 +35,7 @@ from hummingbot.strategy_v2.models.executors import CloseType, TrackedOrder
 
 from database import AsyncDatabaseManager
 from models.executors import PositionHold
-from services.trading_service import TradingService, AccountTradingInterface
+from services.trading_service import AccountTradingInterface, TradingService
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +81,7 @@ class ExecutorService:
         "twap_executor": (TWAPExecutor, TWAPExecutorConfig),
         "xemm_executor": (XEMMExecutor, XEMMExecutorConfig),
         "order_executor": (OrderExecutor, OrderExecutorConfig),
+        "lp_executor": (LPExecutor, LPExecutorConfig),
     }
 
     def __init__(
