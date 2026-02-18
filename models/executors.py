@@ -12,10 +12,10 @@ from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 from .pagination import PaginationParams
 
-
 # ========================================
 # Position Hold for Aggregated Tracking
 # ========================================
+
 
 class PositionHold(BaseModel):
     """
@@ -193,7 +193,9 @@ class PositionsSummaryResponse(BaseModel):
     """Summary of all held positions."""
     total_positions: int = Field(description="Number of active position holds")
     total_realized_pnl: float = Field(description="Total realized PnL across all positions")
-    total_unrealized_pnl: Optional[float] = Field(default=None, description="Total unrealized PnL across all positions (None if no rates available)")
+    total_unrealized_pnl: Optional[float] = Field(
+        default=None, description="Total unrealized PnL (None if no rates available)"
+    )
     positions: List[PositionHoldResponse] = Field(description="List of position holds")
 
 
@@ -330,6 +332,8 @@ class ExecutorResponse(BaseModel):
     net_pnl_pct: float = Field(description="Net PnL percentage")
     cum_fees_quote: float = Field(description="Cumulative fees in quote currency")
     filled_amount_quote: float = Field(description="Total filled amount in quote currency")
+    error_count: int = Field(default=0, description="Number of ERROR-level log entries captured")
+    last_error: Optional[str] = Field(default=None, description="Most recent error message, if any")
 
 
 class ExecutorDetailResponse(ExecutorResponse):
@@ -384,3 +388,16 @@ class ExecutorsSummaryResponse(BaseModel):
     by_status: Dict[str, int] = Field(description="Executor count by status")
 
 
+class ExecutorLogEntry(BaseModel):
+    """A single log entry from an executor."""
+    timestamp: str = Field(description="ISO-format timestamp")
+    level: str = Field(description="Log level (DEBUG, INFO, WARNING, ERROR)")
+    message: str = Field(description="Log message")
+    exc_info: Optional[str] = Field(default=None, description="Exception traceback if present")
+
+
+class ExecutorLogsResponse(BaseModel):
+    """Response for executor log entries."""
+    executor_id: str = Field(description="Executor identifier")
+    logs: List[ExecutorLogEntry] = Field(description="Log entries")
+    total_count: int = Field(description="Total number of log entries (before limit)")

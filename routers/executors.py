@@ -5,6 +5,7 @@ This router enables running Hummingbot executors directly via API
 without Docker containers or full strategy setup.
 """
 import logging
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from starlette import status
@@ -15,7 +16,7 @@ from models.executors import (
     CreateExecutorResponse,
     ExecutorDetailResponse,
     ExecutorFilterRequest,
-    ExecutorResponse,
+    ExecutorLogsResponse,
     ExecutorsSummaryResponse,
     PositionHoldResponse,
     PositionsSummaryResponse,
@@ -157,6 +158,38 @@ async def get_executors_summary(
     except Exception as e:
         logger.error(f"Error getting executor summary: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error getting summary: {str(e)}")
+
+
+@router.get("/{executor_id}/logs", response_model=ExecutorLogsResponse)
+async def get_executor_logs(
+    executor_id: str,
+    level: Optional[str] = None,
+    limit: int = 50,
+    executor_service: ExecutorService = Depends(get_executor_service)
+):
+    """
+    Get captured log entries for a specific executor.
+
+    Returns log entries from the in-memory ring buffer. Only available for
+    active executors - logs are cleared when the executor completes.
+
+    Query parameters:
+    - **level**: Filter by log level (ERROR, WARNING, INFO, DEBUG)
+    - **limit**: Maximum entries to return (default 50)
+    """
+    try:
+        all_logs = executor_service.get_executor_logs(executor_id, level=level)
+        total_count = len(all_logs)
+        limited_logs = all_logs[-limit:] if limit else all_logs
+
+        return ExecutorLogsResponse(
+            executor_id=executor_id,
+            logs=limited_logs,
+            total_count=total_count,
+        )
+    except Exception as e:
+        logger.error(f"Error getting logs for executor {executor_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error getting executor logs: {str(e)}")
 
 
 @router.get("/{executor_id}", response_model=ExecutorDetailResponse)
