@@ -4,7 +4,6 @@ from typing import List, Optional
 from pydantic import Field
 
 from hummingbot.core.data_type.common import MarketDict, OrderType, PositionMode, PriceType, TradeType
-from hummingbot.data_feed.candles_feed.data_types import CandlesConfig
 from hummingbot.strategy_v2.controllers import ControllerBase, ControllerConfigBase
 from hummingbot.strategy_v2.executors.data_types import ConnectorPair
 from hummingbot.strategy_v2.executors.grid_executor.data_types import GridExecutorConfig
@@ -19,7 +18,6 @@ class GridStrikeConfig(ControllerConfigBase):
     """
     controller_type: str = "generic"
     controller_name: str = "grid_strike"
-    candles_config: List[CandlesConfig] = []
 
     # Account configuration
     leverage: int = 20
@@ -44,7 +42,6 @@ class GridStrikeConfig(ControllerConfigBase):
     order_frequency: int = Field(default=3, json_schema_extra={"is_updatable": True})
     activation_bounds: Optional[Decimal] = Field(default=None, json_schema_extra={"is_updatable": True})
     keep_position: bool = Field(default=False, json_schema_extra={"is_updatable": True})
-    coerce_tp_to_step: bool = Field(default=False, json_schema_extra={"is_updatable": True})
 
     # Risk Management
     triple_barrier_config: TripleBarrierConfig = TripleBarrierConfig(
@@ -104,7 +101,6 @@ class GridStrike(ControllerBase):
                     triple_barrier_config=self.config.triple_barrier_config,
                     level_id=None,
                     keep_position=self.config.keep_position,
-                    coerce_tp_to_step=self.config.coerce_tp_to_step,
                 ))]
         return []
 
