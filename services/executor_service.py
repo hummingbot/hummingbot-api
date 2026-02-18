@@ -211,6 +211,39 @@ class ExecutorService:
         except Exception as e:
             logger.error(f"Error recovering positions from database: {e}", exc_info=True)
 
+    async def cleanup_orphaned_executors(self):
+        """
+        Clean up orphaned executors from database on startup.
+        
+        Identifies executors marked as RUNNING in the database but not present
+        in memory (i.e., from previous API sessions that were terminated).
+        """
+        if not self.db_manager:
+            logger.debug("No database manager available, skipping orphaned executor cleanup")
+            return
+        
+        try:
+            # Get list of currently active executor IDs in memory
+            active_executor_ids = list(self._active_executors.keys())
+            
+            async with self.db_manager.get_session_context() as session:
+                from database.repositories.executor_repository import ExecutorRepository
+                repo = ExecutorRepository(session)
+                
+                # Clean up orphaned executors
+                cleaned_count = await repo.cleanup_orphaned_executors(
+                    active_executor_ids=active_executor_ids,
+                    close_type="SYSTEM_CLEANUP"
+                )
+                
+                if cleaned_count > 0:
+                    logger.info(f"Cleaned up {cleaned_count} orphaned executors from database")
+                else:
+                    logger.debug("No orphaned executors found in database")
+                    
+        except Exception as e:
+            logger.error(f"Error cleaning up orphaned executors: {e}", exc_info=True)
+
     async def stop(self):
         """Stop the executor service and all active executors."""
         self._is_running = False
