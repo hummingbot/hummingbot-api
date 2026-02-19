@@ -1,16 +1,20 @@
+import logging
 import secrets
 from contextlib import asynccontextmanager
 from typing import Annotated
 from urllib.parse import urlparse
 
 import logfire
-import logging
 from dotenv import load_dotenv
+
+# Apply the patch before importing hummingbot components
+from hummingbot.client.config import config_helpers
 
 # Load environment variables early
 load_dotenv()
 
 VERSION = "1.0.1"
+
 
 # Monkey patch save_to_yml to prevent writes to library directory
 def patched_save_to_yml(yml_path, cm):
@@ -20,34 +24,22 @@ def patched_save_to_yml(yml_path, cm):
     logger.debug(f"Skipping config write to {yml_path} (patched for API mode)")
     # Do nothing - this prevents the original function from trying to write to the library directory
 
-# Apply the patch before importing hummingbot components
-from hummingbot.client.config import config_helpers
+
 config_helpers.save_to_yml = patched_save_to_yml
 
-from hummingbot.core.rate_oracle.rate_oracle import RateOracle, RATE_ORACLE_SOURCES
-from hummingbot.core.gateway.gateway_http_client import GatewayHttpClient
-from hummingbot.client.config.client_config_map import GatewayConfigMap
+from fastapi import Depends, FastAPI, HTTPException, Request, status  # noqa: E402
+from fastapi.exceptions import RequestValidationError  # noqa: E402
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+from fastapi.responses import JSONResponse  # noqa: E402
+from fastapi.security import HTTPBasic, HTTPBasicCredentials  # noqa: E402
+from hummingbot.client.config.client_config_map import GatewayConfigMap  # noqa: E402
+from hummingbot.client.config.config_crypt import ETHKeyFileSecretManger  # noqa: E402
+from hummingbot.core.gateway.gateway_http_client import GatewayHttpClient  # noqa: E402
+from hummingbot.core.rate_oracle.rate_oracle import RATE_ORACLE_SOURCES, RateOracle  # noqa: E402
 
-from fastapi import Depends, FastAPI, HTTPException, Request, status
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
-from hummingbot.data_feed.market_data_provider import MarketDataProvider
-from hummingbot.client.config.config_crypt import ETHKeyFileSecretManger
-
-from utils.security import BackendAPISecurity
-from services.bots_orchestrator import BotsOrchestrator
-from services.accounts_service import AccountsService
-from services.docker_service import DockerService
-from services.gateway_service import GatewayService
-from services.unified_connector_service import UnifiedConnectorService
-from services.market_data_service import MarketDataService
-from services.trading_service import TradingService
-from services.executor_service import ExecutorService
-from database import AsyncDatabaseManager
-from utils.bot_archiver import BotArchiver
-from routers import (
+from config import settings  # noqa: E402
+from database import AsyncDatabaseManager  # noqa: E402
+from routers import (  # noqa: E402
     accounts,
     archived_bots,
     backtesting,
@@ -57,17 +49,24 @@ from routers import (
     docker,
     executors,
     gateway,
-    gateway_swap,
     gateway_clmm,
+    gateway_swap,
     market_data,
     portfolio,
     rate_oracle,
     scripts,
-    trading
+    trading,
 )
-
-from config import settings
-
+from services.accounts_service import AccountsService  # noqa: E402
+from services.bots_orchestrator import BotsOrchestrator  # noqa: E402
+from services.docker_service import DockerService  # noqa: E402
+from services.executor_service import ExecutorService  # noqa: E402
+from services.gateway_service import GatewayService  # noqa: E402
+from services.market_data_service import MarketDataService  # noqa: E402
+from services.trading_service import TradingService  # noqa: E402
+from services.unified_connector_service import UnifiedConnectorService  # noqa: E402
+from utils.bot_archiver import BotArchiver  # noqa: E402
+from utils.security import BackendAPISecurity  # noqa: E402
 
 # Set up logging configuration
 logging.basicConfig(
@@ -75,9 +74,8 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 
-# Enable debug logging for MQTT manager
-logging.getLogger('services.mqtt_manager').setLevel(logging.DEBUG)
-
+# Enable info logging for MQTT manager
+logging.getLogger('services.mqtt_manager').setLevel(logging.INFO)
 
 # Get settings from Pydantic Settings
 username = settings.security.username
@@ -244,6 +242,7 @@ async def lifespan(app: FastAPI):
     market_data_service.start()
     await market_data_service.warmup_rate_oracle()
     executor_service.start()
+    await executor_service.cleanup_orphaned_executors()
     await executor_service.recover_positions_from_db()
     accounts_service.start()
 
@@ -261,7 +260,6 @@ async def lifespan(app: FastAPI):
     app.state.docker_service = docker_service
     app.state.gateway_service = gateway_service
     app.state.bot_archiver = bot_archiver
-
 
     logging.info("All services started successfully")
 
@@ -310,7 +308,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     # Build a readable error message from validation errors
     error_messages = []
     for error in exc.errors():
-        loc = " -> ".join(str(l) for l in error.get("loc", []))
+        loc = " -> ".join(str(part) for part in error.get("loc", []))
         msg = error.get("msg", "Validation error")
         error_messages.append(f"{loc}: {msg}")
 
@@ -326,11 +324,13 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     )
 
 
-logfire.configure(send_to_logfire="if-token-present", environment=settings.app.logfire_environment, service_name="hummingbot-api")
+logfire.configure(send_to_logfire="if-token-present", environment=settings.app.logfire_environment,
+                  service_name="hummingbot-api")
 logfire.instrument_fastapi(app)
 
+
 def auth_user(
-    credentials: Annotated[HTTPBasicCredentials, Depends(security)],
+        credentials: Annotated[HTTPBasicCredentials, Depends(security)],
 ):
     """Authenticate user using HTTP Basic Auth"""
     current_username_bytes = credentials.username.encode("utf8")
@@ -351,6 +351,7 @@ def auth_user(
         )
     return credentials.username
 
+
 # Include all routers with authentication
 app.include_router(docker.router, dependencies=[Depends(auth_user)])
 app.include_router(gateway.router, dependencies=[Depends(auth_user)])
@@ -368,6 +369,7 @@ app.include_router(rate_oracle.router, dependencies=[Depends(auth_user)])
 app.include_router(backtesting.router, dependencies=[Depends(auth_user)])
 app.include_router(archived_bots.router, dependencies=[Depends(auth_user)])
 app.include_router(executors.router, dependencies=[Depends(auth_user)])
+
 
 @app.get("/")
 async def root():

@@ -306,3 +306,48 @@ class ExecutorRepository:
         stmt = select(ExecutorOrder).where(ExecutorOrder.client_order_id == client_order_id)
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def cleanup_orphaned_executors(
+        self,
+        active_executor_ids: List[str],
+        close_type: str = "SYSTEM_CLEANUP"
+    ) -> int:
+        """
+        Clean up orphaned executors - those marked as RUNNING but not in active memory.
+        
+        Args:
+            active_executor_ids: List of executor IDs currently active in memory
+            close_type: Close type to set for cleaned up executors
+            
+        Returns:
+            Number of executors cleaned up
+        """
+        from sqlalchemy import update
+        
+        # Find executors that are RUNNING but not in the active list
+        conditions = [ExecutorRecord.status == "RUNNING"]
+        
+        if active_executor_ids:
+            conditions.append(~ExecutorRecord.executor_id.in_(active_executor_ids))
+        
+        # First, get the count of orphaned executors for logging
+        count_stmt = select(func.count(ExecutorRecord.id)).where(and_(*conditions))
+        count_result = await self.session.execute(count_stmt)
+        orphaned_count = count_result.scalar() or 0
+        
+        if orphaned_count > 0:
+            # Update orphaned executors to TERMINATED status
+            update_stmt = (
+                update(ExecutorRecord)
+                .where(and_(*conditions))
+                .values(
+                    status="TERMINATED",
+                    close_type=close_type,
+                    closed_at=datetime.now(timezone.utc)
+                )
+            )
+            
+            await self.session.execute(update_stmt)
+            await self.session.flush()
+        
+        return orphaned_count

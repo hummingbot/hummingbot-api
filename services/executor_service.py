@@ -12,12 +12,11 @@ from enum import Enum
 from typing import Any, Dict, List, Optional, Type
 
 from fastapi import HTTPException
-
 from hummingbot.strategy_v2.executors.arbitrage_executor.arbitrage_executor import ArbitrageExecutor
 from hummingbot.strategy_v2.executors.arbitrage_executor.data_types import ArbitrageExecutorConfig
 from hummingbot.strategy_v2.executors.data_types import ExecutorConfigBase
-from hummingbot.strategy_v2.executors.dca_executor.dca_executor import DCAExecutor
 from hummingbot.strategy_v2.executors.dca_executor.data_types import DCAExecutorConfig
+from hummingbot.strategy_v2.executors.dca_executor.dca_executor import DCAExecutor
 from hummingbot.strategy_v2.executors.executor_base import ExecutorBase
 from hummingbot.strategy_v2.executors.grid_executor.data_types import GridExecutorConfig
 from hummingbot.strategy_v2.executors.grid_executor.grid_executor import GridExecutor
@@ -29,12 +28,12 @@ from hummingbot.strategy_v2.executors.twap_executor.data_types import TWAPExecut
 from hummingbot.strategy_v2.executors.twap_executor.twap_executor import TWAPExecutor
 from hummingbot.strategy_v2.executors.xemm_executor.data_types import XEMMExecutorConfig
 from hummingbot.strategy_v2.executors.xemm_executor.xemm_executor import XEMMExecutor
-from hummingbot.strategy_v2.models.base import RunnableStatus
 from hummingbot.strategy_v2.models.executors import CloseType, TrackedOrder
 
 from database import AsyncDatabaseManager
 from models.executors import PositionHold
-from services.trading_service import TradingService, AccountTradingInterface
+from services.trading_service import AccountTradingInterface, TradingService
+from utils.executor_log_capture import ExecutorLogCapture, current_executor_id
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +117,10 @@ class ExecutorService:
         # Position holds: key = "account_name|connector_name|trading_pair"
         # Tracks aggregated positions from executors stopped with keep_position=True
         self._positions_held: Dict[str, PositionHold] = {}
+
+        # Executor log capture
+        self._log_capture = ExecutorLogCapture()
+        self._log_capture.install()
 
         # Control loop task
         self._control_loop_task: Optional[asyncio.Task] = None
@@ -210,6 +213,39 @@ class ExecutorService:
 
         except Exception as e:
             logger.error(f"Error recovering positions from database: {e}", exc_info=True)
+
+    async def cleanup_orphaned_executors(self):
+        """
+        Clean up orphaned executors from database on startup.
+
+        Identifies executors marked as RUNNING in the database but not present
+        in memory (i.e., from previous API sessions that were terminated).
+        """
+        if not self.db_manager:
+            logger.debug("No database manager available, skipping orphaned executor cleanup")
+            return
+
+        try:
+            # Get list of currently active executor IDs in memory
+            active_executor_ids = list(self._active_executors.keys())
+
+            async with self.db_manager.get_session_context() as session:
+                from database.repositories.executor_repository import ExecutorRepository
+                repo = ExecutorRepository(session)
+
+                # Clean up orphaned executors
+                cleaned_count = await repo.cleanup_orphaned_executors(
+                    active_executor_ids=active_executor_ids,
+                    close_type="SYSTEM_CLEANUP"
+                )
+
+                if cleaned_count > 0:
+                    logger.info(f"Cleaned up {cleaned_count} orphaned executors from database")
+                else:
+                    logger.debug("No orphaned executors found in database")
+
+        except Exception as e:
+            logger.error(f"Error cleaning up orphaned executors: {e}", exc_info=True)
 
     async def stop(self):
         """Stop the executor service and all active executors."""
@@ -358,8 +394,10 @@ class ExecutorService:
             "config": executor_config
         }
 
-        # Start the executor
+        # Set ContextVar so the asyncio Task created by start() inherits it
+        token = current_executor_id.set(executor_id)
         executor.start()
+        current_executor_id.reset(token)
 
         # Persist to database
         await self._persist_executor_created(executor_id, executor)
@@ -482,6 +520,27 @@ class ExecutorService:
 
         return None
 
+    def get_executor_logs(
+        self,
+        executor_id: str,
+        level: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> List[dict]:
+        """
+        Get captured log entries for an executor.
+
+        Only available for active executors (logs are cleared on completion).
+
+        Args:
+            executor_id: The executor ID
+            level: Optional filter by level (ERROR, WARNING, INFO, DEBUG)
+            limit: Maximum number of entries to return
+
+        Returns:
+            List of log entry dicts
+        """
+        return self._log_capture.get_logs(executor_id, level=level, limit=limit)
+
     async def stop_executor(
         self,
         executor_id: str,
@@ -539,6 +598,9 @@ class ExecutorService:
         if executor_id in self._executor_metadata:
             del self._executor_metadata[executor_id]
 
+        # Clean up captured logs
+        self._log_capture.clear(executor_id)
+
         close_type = executor.close_type.name if executor.close_type else "UNKNOWN"
         logger.info(f"Executor {executor_id} completed with close_type: {close_type}")
 
@@ -575,6 +637,10 @@ class ExecutorService:
         if executor_type == "grid_executor" and result.get("custom_info"):
             heavy_fields = {"levels_by_state", "filled_orders", "failed_orders", "canceled_orders"}
             result["custom_info"] = {k: v for k, v in result["custom_info"].items() if k not in heavy_fields}
+
+        # Add log capture info
+        result["error_count"] = self._log_capture.get_error_count(executor_id)
+        result["last_error"] = self._log_capture.get_last_error(executor_id)
 
         return result
 

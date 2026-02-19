@@ -1,8 +1,12 @@
+from sys import float_info as sflt
 from typing import List
 
+import pandas as pd
 import pandas_ta as ta  # noqa: F401
+import talib
 from pydantic import Field, field_validator
 from pydantic_core.core_schema import ValidationInfo
+from talib import MA_Type
 
 from hummingbot.data_feed.candles_feed.data_types import CandlesConfig
 from hummingbot.strategy_v2.controllers.directional_trading_controller_base import (
@@ -11,8 +15,8 @@ from hummingbot.strategy_v2.controllers.directional_trading_controller_base impo
 )
 
 
-class MACDBBV1ControllerConfig(DirectionalTradingControllerConfigBase):
-    controller_name: str = "macd_bb_v1"
+class BollingerV2ControllerConfig(DirectionalTradingControllerConfigBase):
+    controller_name: str = "bollinger_v2"
     candles_connector: str = Field(
         default=None,
         json_schema_extra={
@@ -34,15 +38,6 @@ class MACDBBV1ControllerConfig(DirectionalTradingControllerConfigBase):
     bb_std: float = Field(default=2.0)
     bb_long_threshold: float = Field(default=0.0)
     bb_short_threshold: float = Field(default=1.0)
-    macd_fast: int = Field(
-        default=21,
-        json_schema_extra={"prompt": "Enter the MACD fast period: ", "prompt_on_new": True})
-    macd_slow: int = Field(
-        default=42,
-        json_schema_extra={"prompt": "Enter the MACD slow period: ", "prompt_on_new": True})
-    macd_signal: int = Field(
-        default=9,
-        json_schema_extra={"prompt": "Enter the MACD signal period: ", "prompt_on_new": True})
 
     @field_validator("candles_connector", mode="before")
     @classmethod
@@ -59,37 +54,11 @@ class MACDBBV1ControllerConfig(DirectionalTradingControllerConfigBase):
         return v
 
 
-class MACDBBV1Controller(DirectionalTradingControllerBase):
-
-    def __init__(self, config: MACDBBV1ControllerConfig, *args, **kwargs):
+class BollingerV2Controller(DirectionalTradingControllerBase):
+    def __init__(self, config: BollingerV2ControllerConfig, *args, **kwargs):
         self.config = config
-        self.max_records = max(config.macd_slow, config.macd_fast, config.macd_signal, config.bb_length) + 20
+        self.max_records = self.config.bb_length * 5
         super().__init__(config, *args, **kwargs)
-
-    async def update_processed_data(self):
-        df = self.market_data_provider.get_candles_df(connector_name=self.config.candles_connector,
-                                                      trading_pair=self.config.candles_trading_pair,
-                                                      interval=self.config.interval,
-                                                      max_records=self.max_records)
-        # Add indicators
-        df.ta.bbands(length=self.config.bb_length, lower_std=self.config.bb_std, upper_std=self.config.bb_std, append=True)
-        df.ta.macd(fast=self.config.macd_fast, slow=self.config.macd_slow, signal=self.config.macd_signal, append=True)
-
-        bbp = df[f"BBP_{self.config.bb_length}_{self.config.bb_std}_{self.config.bb_std}"]
-        macdh = df[f"MACDh_{self.config.macd_fast}_{self.config.macd_slow}_{self.config.macd_signal}"]
-        macd = df[f"MACD_{self.config.macd_fast}_{self.config.macd_slow}_{self.config.macd_signal}"]
-
-        # Generate signal
-        long_condition = (bbp < self.config.bb_long_threshold) & (macdh > 0) & (macd < 0)
-        short_condition = (bbp > self.config.bb_short_threshold) & (macdh < 0) & (macd > 0)
-
-        df["signal"] = 0
-        df.loc[long_condition, "signal"] = 1
-        df.loc[short_condition, "signal"] = -1
-
-        # Update processed data
-        self.processed_data["signal"] = df["signal"].iloc[-1]
-        self.processed_data["features"] = df
 
     def get_candles_config(self) -> List[CandlesConfig]:
         return [CandlesConfig(
@@ -98,3 +67,52 @@ class MACDBBV1Controller(DirectionalTradingControllerBase):
             interval=self.config.interval,
             max_records=self.max_records
         )]
+
+    def non_zero_range(self, x: pd.Series, y: pd.Series) -> pd.Series:
+        """Non-Zero Range
+
+        Calculates the difference of two Series plus epsilon to any zero values.
+        Technically: ```x - y + epsilon```
+
+        Parameters:
+            x (Series): Series of 'x's
+            y (Series): Series of 'y's
+
+        Returns:
+            (Series): 1 column
+        """
+        diff = x - y
+        if diff.eq(0).any().any():
+            diff += sflt.epsilon
+        return diff
+
+    async def update_processed_data(self):
+        df = self.market_data_provider.get_candles_df(connector_name=self.config.candles_connector,
+                                                      trading_pair=self.config.candles_trading_pair,
+                                                      interval=self.config.interval,
+                                                      max_records=self.max_records)
+        # Add indicators
+        df.ta.bbands(length=self.config.bb_length, lower_std=self.config.bb_std, upper_std=self.config.bb_std, append=True)
+        df["upperband"], df["middleband"], df["lowerband"] = talib.BBANDS(real=df["close"], timeperiod=self.config.bb_length, nbdevup=self.config.bb_std, nbdevdn=self.config.bb_std, matype=MA_Type.SMA)
+
+        ulr = self.non_zero_range(df["upperband"], df["lowerband"])
+        bbp = self.non_zero_range(df["close"], df["lowerband"]) / ulr
+        df["percent"] = bbp
+
+        # Generate signal
+        long_condition = bbp < self.config.bb_long_threshold
+        short_condition = bbp > self.config.bb_short_threshold
+
+        # Generate signal
+        df["signal"] = 0
+        df.loc[long_condition, "signal"] = 1
+        df.loc[short_condition, "signal"] = -1
+
+        # Debug
+        # We skip the last row which is live candle
+        with pd.option_context('display.max_rows', None, 'display.max_columns', None, 'display.width', None):
+            self.logger().info(df.head(-1).tail(15))
+
+        # Update processed data
+        self.processed_data["signal"] = df["signal"].iloc[-1]
+        self.processed_data["features"] = df
