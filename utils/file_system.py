@@ -2,9 +2,6 @@ import importlib
 import inspect
 import logging
 import os
-
-# Create module-specific logger
-logger = logging.getLogger(__name__)
 import shutil
 import sys
 from pathlib import Path
@@ -13,16 +10,19 @@ from typing import List, Optional, Type
 import yaml
 from hummingbot.client.config.config_data_types import BaseClientModel
 from hummingbot.client.config.config_helpers import ClientConfigAdapter
+from hummingbot.strategy_v2.controllers.controller_base import ControllerConfigBase
 from hummingbot.strategy_v2.controllers.directional_trading_controller_base import DirectionalTradingControllerConfigBase
 from hummingbot.strategy_v2.controllers.market_making_controller_base import MarketMakingControllerConfigBase
-from hummingbot.strategy_v2.controllers.controller_base import ControllerConfigBase
+
+# Create module-specific logger
+logger = logging.getLogger(__name__)
 
 
 class FileSystemUtil:
     """
     FileSystemUtil provides utility functions for file and directory management,
     as well as dynamic loading of script configurations.
-    
+
     All file operations are performed relative to the base_path unless an absolute path is provided.
     Implements singleton pattern to ensure the same instance is reused.
     """
@@ -42,7 +42,7 @@ class FileSystemUtil:
         """
         # Singleton pattern - instance already configured in __new__
         pass
-    
+
     def _get_full_path(self, path: str) -> str:
         """
         Get the full path by combining base_path with relative path.
@@ -105,12 +105,12 @@ class FileSystemUtil:
         """
         src_path = self._get_full_path(src)
         dest_path = self._get_full_path(dest)
-        
+
         if not os.path.exists(src_path):
             raise FileNotFoundError(f"Source folder '{src}' not found")
         if not os.path.isdir(src_path):
             raise NotADirectoryError(f"Source path '{src}' is not a directory")
-            
+
         shutil.copytree(src_path, dest_path, dirs_exist_ok=True)
 
     def copy_file(self, src: str, dest: str) -> None:
@@ -123,16 +123,16 @@ class FileSystemUtil:
         """
         src_path = self._get_full_path(src)
         dest_path = self._get_full_path(dest)
-        
+
         if not os.path.exists(src_path):
             raise FileNotFoundError(f"Source file '{src}' not found")
         if os.path.isdir(src_path):
             raise IsADirectoryError(f"Source path '{src}' is a directory, not a file")
-            
+
         # Ensure destination directory exists
         dest_dir = os.path.dirname(dest_path)
         os.makedirs(dest_dir, exist_ok=True)
-        
+
         shutil.copy2(src_path, dest_path)
 
     def delete_folder(self, directory: str, folder_name: str) -> None:
@@ -186,14 +186,14 @@ class FileSystemUtil:
         """
         if not file_name or '/' in file_name or '\\' in file_name:
             raise ValueError(f"Invalid file name: '{file_name}'")
-        
+
         dir_path = self._get_full_path(directory)
         os.makedirs(dir_path, exist_ok=True)
-        
+
         file_path = os.path.join(dir_path, file_name)
         if not override and os.path.exists(file_path):
             raise FileExistsError(f"File '{file_name}' already exists in '{directory}'.")
-        
+
         with open(file_path, 'w', encoding='utf-8') as file:
             file.write(content)
 
@@ -211,7 +211,7 @@ class FileSystemUtil:
             raise FileNotFoundError(f"File '{file_name}' not found in '{directory}'")
         if os.path.isdir(file_path):
             raise IsADirectoryError(f"Path '{file_name}' is a directory, not a file")
-        
+
         with open(file_path, 'a', encoding='utf-8') as file:
             file.write(content)
 
@@ -229,7 +229,7 @@ class FileSystemUtil:
             raise FileNotFoundError(f"File '{file_path}' not found")
         if os.path.isdir(full_path):
             raise IsADirectoryError(f"Path '{file_path}' is a directory, not a file")
-        
+
         with open(full_path, 'r', encoding='utf-8') as file:
             return file.read()
 
@@ -256,7 +256,7 @@ class FileSystemUtil:
         full_path = self._get_full_path(file_path) if not os.path.isabs(file_path) else file_path
         if not os.path.exists(full_path):
             raise FileNotFoundError(f"YAML file '{file_path}' not found")
-        
+
         with open(full_path, 'r', encoding='utf-8') as file:
             try:
                 data = yaml.safe_load(file)
@@ -291,26 +291,42 @@ class FileSystemUtil:
     def load_controller_config_class(controller_type: str, controller_name: str) -> Optional[Type]:
         """
         Dynamically loads a controller's configuration class.
+        Supports both single-file controllers (controller.py) and
+        package-style controllers (controller/controller.py).
         :param controller_type: The type of the controller.
         :param controller_name: The name of the controller file (without the '.py' extension).
         :return: The configuration class from the controller, or None if not found.
         """
-        try:
-            # Assuming controllers are in a package named 'controllers'
-            module_name = f"bots.controllers.{controller_type}.{controller_name.replace('.py', '')}"
-            if module_name not in sys.modules:
-                script_module = importlib.import_module(module_name)
-            else:
-                script_module = importlib.reload(sys.modules[module_name])
+        controller_name = controller_name.replace('.py', '')
 
-            # Find the subclass of BaseClientModel in the module
-            for _, cls in inspect.getmembers(script_module, inspect.isclass):
-                if (issubclass(cls, DirectionalTradingControllerConfigBase) and cls is not DirectionalTradingControllerConfigBase)\
-                        or (issubclass(cls, MarketMakingControllerConfigBase) and cls is not MarketMakingControllerConfigBase)\
-                        or (issubclass(cls, ControllerConfigBase) and cls is not ControllerConfigBase):
-                    return cls
-        except (ImportError, AttributeError, ModuleNotFoundError) as e:
-            logger.warning(f"Error loading controller class for '{controller_type}.{controller_name}': {e}")
+        # Try single-file first: bots.controllers.{type}.{name}
+        # Then package-style: bots.controllers.{type}.{name}.{name}
+        module_paths = [
+            f"bots.controllers.{controller_type}.{controller_name}",
+            f"bots.controllers.{controller_type}.{controller_name}.{controller_name}",
+        ]
+
+        for module_name in module_paths:
+            try:
+                if module_name not in sys.modules:
+                    script_module = importlib.import_module(module_name)
+                else:
+                    script_module = importlib.reload(sys.modules[module_name])
+
+                # Find the subclass of controller config base in the module
+                for _, cls in inspect.getmembers(script_module, inspect.isclass):
+                    is_directional = (issubclass(cls, DirectionalTradingControllerConfigBase)
+                                      and cls is not DirectionalTradingControllerConfigBase)
+                    is_market_making = (issubclass(cls, MarketMakingControllerConfigBase)
+                                        and cls is not MarketMakingControllerConfigBase)
+                    is_generic = (issubclass(cls, ControllerConfigBase)
+                                  and cls is not ControllerConfigBase)
+                    if is_directional or is_market_making or is_generic:
+                        return cls
+            except (ImportError, AttributeError, ModuleNotFoundError):
+                continue
+
+        logger.warning(f"Could not load controller class for '{controller_type}.{controller_name}'")
         return None
 
     def ensure_file_and_dump_text(self, file_path: str, text: str) -> None:
@@ -357,20 +373,20 @@ class FileSystemUtil:
         :return: The base path string
         """
         return self.base_path
-        
+
     def get_directory_creation_time(self, path):
         """
         Get the creation time of a directory
         :param path: The path to the directory
         :return: ISO formatted creation time string or None if directory doesn't exist
         """
-        import os
         import datetime
-        
+        import os
+
         full_path = self._get_full_path(path)
         if not os.path.exists(full_path):
             return None
-            
+
         # Get creation time (platform dependent)
         try:
             # For Unix systems, use stat
@@ -380,7 +396,7 @@ class FileSystemUtil:
         except Exception:
             # Fallback
             return "unknown"
-            
+
     def list_directories(self, path):
         """
         List all directories within a given path
@@ -388,11 +404,11 @@ class FileSystemUtil:
         :return: List of directory names
         """
         import os
-        
+
         full_path = self._get_full_path(path)
         if not os.path.exists(full_path):
             return []
-            
+
         try:
             # Return only directories
             return [d for d in os.listdir(full_path) if os.path.isdir(os.path.join(full_path, d))]
@@ -408,14 +424,14 @@ class FileSystemUtil:
             archived_instances = self.list_folders("archived")
         except FileNotFoundError:
             return []
-            
+
         archived_databases = []
         for archived_instance in archived_instances:
             db_path = self._get_full_path(os.path.join("archived", archived_instance, "data"))
             try:
                 if os.path.exists(db_path):
                     archived_databases.extend([
-                        os.path.join(db_path, db_file) 
+                        os.path.join(db_path, db_file)
                         for db_file in os.listdir(db_path)
                         if db_file.endswith(".sqlite")
                     ])
@@ -432,16 +448,16 @@ class FileSystemUtil:
         dir_path = self._get_full_path("data")
         if not os.path.exists(dir_path):
             return []
-            
+
         try:
             files = os.listdir(dir_path)
             checkpoint_files = [
-                f for f in files 
-                if (os.path.isfile(os.path.join(dir_path, f)) 
-                    and f.startswith("checkpoint") 
+                f for f in files
+                if (os.path.isfile(os.path.join(dir_path, f))
+                    and f.startswith("checkpoint")
                     and f.endswith(".sqlite"))
             ]
-            
+
             if full_path:
                 return [os.path.join(dir_path, f) for f in checkpoint_files]
             else:
@@ -449,5 +465,6 @@ class FileSystemUtil:
         except (OSError, PermissionError) as e:
             logger.warning(f"Error listing checkpoints in '{dir_path}': {e}")
             return []
+
 
 fs_util = FileSystemUtil()
