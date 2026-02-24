@@ -1,10 +1,12 @@
 import asyncio
+import logging
 import time
 
 from fastapi import APIRouter, Request, HTTPException, Depends
 from hummingbot.data_feed.candles_feed.data_types import HistoricalCandlesConfig, CandlesConfig
-from hummingbot.data_feed.candles_feed.candles_factory import CandlesFactory
+from hummingbot.data_feed.candles_feed.candles_factory import CandlesFactory, UnsupportedConnectorException
 
+from config import settings
 from models.market_data import CandlesConfigRequest
 from services.market_data_service import MarketDataService
 from models import (
@@ -16,6 +18,8 @@ from models import (
 )
 from deps import get_market_data_service
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(tags=["Market Data"], prefix="/market-data")
 
 
@@ -23,82 +27,139 @@ router = APIRouter(tags=["Market Data"], prefix="/market-data")
 async def get_candles(request: Request, candles_config: CandlesConfigRequest):
     """
     Get real-time candles data for a specific trading pair.
-    
+
     This endpoint uses the MarketDataProvider to get or create a candles feed that will
     automatically start and maintain real-time updates. Subsequent requests with the same
     configuration will reuse the existing feed for up-to-date data.
-    
+
     Args:
         request: FastAPI request object
         candles_config: Configuration for the candles including connector, trading_pair, interval, and max_records
-        
+
     Returns:
         Real-time candles data or error message
     """
+    available = list(CandlesFactory._candles_map.keys())
+    if candles_config.connector_name not in CandlesFactory._candles_map:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported connector '{candles_config.connector_name}'. "
+                   f"Available connectors: {available}"
+        )
+
+    if "-" not in candles_config.trading_pair:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid trading pair format '{candles_config.trading_pair}'. "
+                   f"Expected format: BASE-QUOTE (e.g., BTC-USDT)"
+        )
+
     try:
         market_data_service: MarketDataService = request.app.state.market_data_service
-        
-        # Get or create the candles feed (this will start it automatically and track access time)
+
         candles_cfg = CandlesConfig(
             connector=candles_config.connector_name, trading_pair=candles_config.trading_pair,
             interval=candles_config.interval, max_records=candles_config.max_records)
         candles_feed = market_data_service.get_candles_feed(candles_cfg)
-        
-        # Wait for the candles feed to be ready
+
+        # Wait for the candles feed to be ready with a timeout
+        timeout = settings.market_data.candles_ready_timeout
+        start = time.time()
         while not candles_feed.ready:
+            if time.time() - start > timeout:
+                # Clean up the stale feed so it doesn't stay cached
+                market_data_service.stop_candle_feed(candles_cfg)
+                raise HTTPException(
+                    status_code=504,
+                    detail=f"Candle feed for {candles_config.connector_name} "
+                           f"{candles_config.trading_pair} did not become ready within "
+                           f"{timeout}s. The trading pair may not exist on this exchange."
+                )
             await asyncio.sleep(0.1)
-        
-        # Get the candles dataframe
+
         df = candles_feed.candles_df
-        
+
         if df is not None and not df.empty:
-            # Limit to requested max_records and remove duplicates
             df = df.tail(candles_config.max_records)
             df = df.drop_duplicates(subset=["timestamp"], keep="last")
-            # Convert to dict for JSON serialization
             return df.to_dict(orient="records")
         else:
-            return {"error": "No candles data available"}
-            
+            raise HTTPException(status_code=404, detail="No candles data available")
+
+    except HTTPException:
+        raise
+    except UnsupportedConnectorException as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"Unexpected error fetching candles: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal error fetching candles: {str(e)}")
 
 
 @router.post("/historical-candles")
 async def get_historical_candles(request: Request, config: HistoricalCandlesConfig):
     """
     Get historical candles data for a specific trading pair.
-    
+
     Args:
         config: Configuration for historical candles including connector, trading pair, interval, start and end time
-        
+
     Returns:
         Historical candles data or error message
     """
+    available = list(CandlesFactory._candles_map.keys())
+    if config.connector_name not in CandlesFactory._candles_map:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported connector '{config.connector_name}'. "
+                   f"Available connectors: {available}"
+        )
+
+    if "-" not in config.trading_pair:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid trading pair format '{config.trading_pair}'. "
+                   f"Expected format: BASE-QUOTE (e.g., BTC-USDT)"
+        )
+
     try:
         market_data_service: MarketDataService = request.app.state.market_data_service
-        
-        # Create candles config from historical config
+
         candles_config = CandlesConfig(
             connector=config.connector_name,
             trading_pair=config.trading_pair,
             interval=config.interval
         )
-        
-        # Get or create the candles feed (this will track access time)
+
         candles = market_data_service.get_candles_feed(candles_config)
-        
-        # Fetch historical candles
-        historical_data = await candles.get_historical_candles(config=config)
-        
+
+        timeout = settings.market_data.candles_ready_timeout
+        historical_data = await asyncio.wait_for(
+            candles.get_historical_candles(config=config),
+            timeout=timeout
+        )
+
         if historical_data is not None and not historical_data.empty:
-            # Convert to dict for JSON serialization
             return historical_data.to_dict(orient="records")
         else:
-            return {"error": "No historical data available"}
-            
+            raise HTTPException(status_code=404, detail="No historical data available")
+
+    except HTTPException:
+        raise
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=504,
+            detail=f"Historical candles request for {config.connector_name} "
+                   f"{config.trading_pair} timed out after "
+                   f"{settings.market_data.candles_ready_timeout}s. "
+                   f"The trading pair may not exist or the time range may be too large."
+        )
+    except UnsupportedConnectorException as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid parameters: {str(e)}")
     except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"Unexpected error fetching historical candles: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal error fetching historical candles: {str(e)}")
 
 
 @router.get("/active-feeds")
