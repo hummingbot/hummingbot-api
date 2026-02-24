@@ -346,13 +346,23 @@ class ExecutorService:
         trading_interface = self._get_trading_interface(account)
 
         # Extract connector and trading pair from config
-        connector_name = executor_config.get("connector_name")
-        trading_pair = executor_config.get("trading_pair")
-
-        if not connector_name:
-            raise HTTPException(status_code=400, detail="connector_name is required in executor_config")
-        if not trading_pair:
-            raise HTTPException(status_code=400, detail="trading_pair is required in executor_config")
+        # LP executor uses market.connector_name/trading_pair, others use direct fields
+        if executor_type == "lp_executor":
+            market = executor_config.get("market", {})
+            connector_name = market.get("connector_name") if isinstance(market, dict) else None
+            trading_pair = market.get("trading_pair") if isinstance(market, dict) else None
+            if not connector_name or not trading_pair:
+                raise HTTPException(
+                    status_code=400,
+                    detail="lp_executor requires 'market' with 'connector_name' and 'trading_pair'"
+                )
+        else:
+            connector_name = executor_config.get("connector_name")
+            trading_pair = executor_config.get("trading_pair")
+            if not connector_name:
+                raise HTTPException(status_code=400, detail="connector_name is required in executor_config")
+            if not trading_pair:
+                raise HTTPException(status_code=400, detail="trading_pair is required in executor_config")
 
         # Ensure connector and market are ready
         await trading_interface.add_market(connector_name, trading_pair)

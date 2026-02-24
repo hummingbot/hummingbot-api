@@ -48,13 +48,24 @@ async def create_executor(
     - **arbitrage_executor**: Cross-exchange arbitrage
     - **xemm_executor**: Cross-exchange market making
     - **order_executor**: Simple order execution
-    - **lp_executor**: Liquidity provider position on CLMM DEXs (Meteora, etc.)
+    - **lp_executor**: Liquidity provider position on CLMM DEXs (Meteora, Raydium, etc.)
 
     The `executor_config` must include:
     - `type`: One of the executor types above
-    - `connector_name`: Exchange connector (e.g., "binance", "binance_perpetual")
-    - `trading_pair`: Trading pair (e.g., "BTC-USDT")
-    - Additional type-specific configuration
+    - For most executors:
+      - `connector_name`: Exchange connector (e.g., "binance", "binance_perpetual")
+      - `trading_pair`: Trading pair (e.g., "BTC-USDT")
+    - For **lp_executor**:
+      - `market`: Object with `connector_name` and `trading_pair`
+      - `pool_address`: CLMM pool address
+      - `lower_price`, `upper_price`: Position price bounds
+      - `base_amount`, `quote_amount`: Token amounts to provide
+      - `side`: 0=BOTH, 1=BUY (quote only, below current price), 2=SELL (base only, above current price)
+      - `position_offset_pct`: Offset from current price for single-sided positions (default: 0.01%)
+      - `auto_close_above_range_seconds`: Auto-close when price above range for this duration
+      - `auto_close_below_range_seconds`: Auto-close when price below range for this duration
+      - `extra_params`: Connector-specific params (e.g., {"strategyType": 0} for Meteora)
+      - `keep_position`: If true, don't close position on executor stop
 
     Returns the created executor ID and initial status.
     """
@@ -466,8 +477,12 @@ async def get_available_executor_types():
             },
             {
                 "type": "lp_executor",
-                "description": "LP position management for concentrated liquidity pools",
-                "use_case": "Automated liquidity provision with position tracking"
+                "description": "LP position management for CLMM pools (Meteora, Raydium)",
+                "use_case": "Automated liquidity provision with position tracking",
+                "config_note": (
+                    "Uses 'market' object instead of direct connector_name/trading_pair. "
+                    "Supports single-sided positions and auto-close when out of range."
+                )
             }
         ]
     }
