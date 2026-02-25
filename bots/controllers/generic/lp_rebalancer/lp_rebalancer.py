@@ -128,6 +128,12 @@ class LPRebalancer(ControllerBase):
         # Track the executor we created
         self._current_executor_id: Optional[str] = None
 
+        # Track amounts from last closed position (for rebalance sizing)
+        self._last_closed_base_amount: Optional[Decimal] = None
+        self._last_closed_quote_amount: Optional[Decimal] = None
+        self._last_closed_base_fee: Optional[Decimal] = None
+        self._last_closed_quote_fee: Optional[Decimal] = None
+
         # Track initial balances for comparison
         self._initial_base_balance: Optional[Decimal] = None
         self._initial_quote_balance: Optional[Decimal] = None
@@ -212,7 +218,20 @@ class LPRebalancer(ControllerBase):
                 )
                 return actions
 
-            # Previous executor terminated, clear tracking
+            # Previous executor terminated - capture final amounts for rebalance sizing
+            terminated_executor = self.get_tracked_executor()
+            if terminated_executor and self._pending_rebalance:
+                self._last_closed_base_amount = Decimal(str(terminated_executor.custom_info.get("base_amount", 0)))
+                self._last_closed_quote_amount = Decimal(str(terminated_executor.custom_info.get("quote_amount", 0)))
+                self._last_closed_base_fee = Decimal(str(terminated_executor.custom_info.get("base_fee", 0)))
+                self._last_closed_quote_fee = Decimal(str(terminated_executor.custom_info.get("quote_fee", 0)))
+                self.logger().info(
+                    f"Captured closed position amounts: base={self._last_closed_base_amount}, "
+                    f"quote={self._last_closed_quote_amount}, base_fee={self._last_closed_base_fee}, "
+                    f"quote_fee={self._last_closed_quote_fee}"
+                )
+
+            # Clear tracking
             self._current_executor_id = None
 
             # Determine side for new position
@@ -384,10 +403,8 @@ class LPRebalancer(ControllerBase):
 
         return LPExecutorConfig(
             timestamp=self.market_data_provider.time(),
-            market=ConnectorPair(
-                connector_name=self.config.connector_name,
-                trading_pair=self.config.trading_pair,
-            ),
+            connector_name=self.config.connector_name,
+            trading_pair=self.config.trading_pair,
             pool_address=self.config.pool_address,
             lower_price=lower_price,
             upper_price=upper_price,
@@ -403,11 +420,53 @@ class LPRebalancer(ControllerBase):
         """
         Calculate base and quote amounts based on side and total_amount_quote.
 
+        For rebalances, clamps to the actual amounts returned from the closed position
+        to avoid order failures when balance is less than configured total (due to
+        impermanent loss, fees, or price movement).
+
         Side 0 (BOTH): split 50/50
-        Side 1 (BUY): all quote
-        Side 2 (SELL): all base
+        Side 1 (BUY): all quote - clamp to closed position's quote + quote_fee
+        Side 2 (SELL): all base - clamp to closed position's base + base_fee
         """
         total = self.config.total_amount_quote
+
+        # For rebalances, clamp to actual amounts from closed position
+        # Check if we have captured amounts (indicates this is a rebalance)
+        has_closed_amounts = (self._last_closed_base_amount is not None or
+                              self._last_closed_quote_amount is not None)
+        if has_closed_amounts:
+            if side == 1:  # BUY - needs quote token
+                if self._last_closed_quote_amount is not None:
+                    # Total available = position amount + fees earned
+                    available_quote = self._last_closed_quote_amount
+                    if self._last_closed_quote_fee:
+                        available_quote += self._last_closed_quote_fee
+                    if available_quote < total:
+                        self.logger().info(
+                            f"Clamping quote amount from {total} to {available_quote} {self._quote_token} "
+                            f"(closed position returned {self._last_closed_quote_amount} + {self._last_closed_quote_fee} fees)"
+                        )
+                        total = available_quote
+            elif side == 2:  # SELL - needs base token
+                if self._last_closed_base_amount is not None:
+                    # Total available = position amount + fees earned
+                    available_base = self._last_closed_base_amount
+                    if self._last_closed_base_fee:
+                        available_base += self._last_closed_base_fee
+                    available_as_quote = available_base * current_price
+                    if available_as_quote < total:
+                        self.logger().info(
+                            f"Clamping total from {total} to {available_as_quote:.4f} "
+                            f"{self._quote_token} (closed: {self._last_closed_base_amount} + "
+                            f"{self._last_closed_base_fee} fees {self._base_token})"
+                        )
+                        total = available_as_quote
+
+            # Clear the cached amounts after use
+            self._last_closed_base_amount = None
+            self._last_closed_quote_amount = None
+            self._last_closed_base_fee = None
+            self._last_closed_quote_fee = None
 
         if side == 0:  # BOTH
             quote_amt = total / Decimal("2")

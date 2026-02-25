@@ -216,129 +216,6 @@ EXECUTOR_TYPES = Literal[
 
 
 # ========================================
-# LP Executor Specific Types
-# ========================================
-
-LP_EXECUTOR_STATES = Literal[
-    "NOT_ACTIVE",      # No position, no pending orders
-    "OPENING",         # add_liquidity submitted, waiting
-    "IN_RANGE",        # Position active, price within bounds
-    "OUT_OF_RANGE",    # Position active, price outside bounds
-    "CLOSING",         # remove_liquidity submitted, waiting
-    "COMPLETE"         # Position closed permanently
-]
-
-LP_EXECUTOR_SIDES = Literal[0, 1, 2]  # 0=BOTH, 1=BUY (quote only), 2=SELL (base only)
-
-
-class ConnectorPairConfig(BaseModel):
-    """Market configuration for LP executor."""
-    connector_name: str = Field(description="CLMM connector name (e.g., 'meteora_solana_mainnet-beta')")
-    trading_pair: str = Field(description="Trading pair (e.g., 'SOL-USDC')")
-
-
-class LPExecutorConfigSchema(BaseModel):
-    """
-    Configuration schema for LP Executor.
-
-    Creates and manages concentrated liquidity positions on CLMM DEXs.
-    Supports single-sided positions and auto-close based on out-of-range duration.
-    """
-    model_config = ConfigDict(
-        json_schema_extra={
-            "example": {
-                "type": "lp_executor",
-                "market": {
-                    "connector_name": "meteora_solana_mainnet-beta",
-                    "trading_pair": "SOL-USDC"
-                },
-                "pool_address": "pool_address_here",
-                "lower_price": "150.0",
-                "upper_price": "200.0",
-                "base_amount": "0",
-                "quote_amount": "10.0",
-                "side": 1,
-                "position_offset_pct": "0.01",
-                "auto_close_below_range_seconds": 300,
-                "extra_params": {"strategyType": 0}
-            }
-        }
-    )
-
-    type: Literal["lp_executor"] = Field(default="lp_executor", description="Executor type")
-    market: ConnectorPairConfig = Field(description="Market/connector configuration")
-    pool_address: str = Field(description="CLMM pool contract address")
-
-    lower_price: str = Field(description="Lower price bound for the position")
-    upper_price: str = Field(description="Upper price bound for the position")
-
-    base_amount: str = Field(default="0", description="Amount of base token to provide")
-    quote_amount: str = Field(default="0", description="Amount of quote token to provide")
-
-    side: int = Field(
-        default=0,
-        description=(
-            "Position side: 0=BOTH (two-sided), 1=BUY (quote only, below price), "
-            "2=SELL (base only, above price)"
-        )
-    )
-
-    position_offset_pct: str = Field(
-        default="0.01",
-        description="Offset from current price to ensure single-sided positions start out-of-range (in %, e.g., 0.01 = 0.01%)"
-    )
-
-    auto_close_above_range_seconds: Optional[int] = Field(
-        default=None,
-        description="Auto-close when price >= upper_price for this many seconds. None = no auto-close."
-    )
-    auto_close_below_range_seconds: Optional[int] = Field(
-        default=None,
-        description="Auto-close when price <= lower_price for this many seconds. None = no auto-close."
-    )
-
-    extra_params: Optional[Dict[str, Any]] = Field(
-        default=None,
-        description="Connector-specific parameters (e.g., {'strategyType': 0} for Meteora)"
-    )
-
-    keep_position: bool = Field(
-        default=False,
-        description="If true, don't close position on executor stop (for manual management)"
-    )
-
-
-class LPExecutorCustomInfo(BaseModel):
-    """Custom info returned by LP executor in responses."""
-    side: int = Field(description="Position side: 0=BOTH, 1=BUY, 2=SELL")
-    state: str = Field(description="Current state (NOT_ACTIVE, OPENING, IN_RANGE, OUT_OF_RANGE, CLOSING, COMPLETE)")
-    position_address: Optional[str] = Field(description="On-chain position address (NFT)")
-
-    current_price: Optional[float] = Field(description="Current pool price")
-    lower_price: float = Field(description="Position lower price bound")
-    upper_price: float = Field(description="Position upper price bound")
-
-    base_amount: float = Field(description="Current base token amount in position")
-    quote_amount: float = Field(description="Current quote token amount in position")
-    initial_base_amount: float = Field(description="Initial base amount deposited")
-    initial_quote_amount: float = Field(description="Initial quote amount deposited")
-
-    base_fee: float = Field(description="Accumulated base token fees")
-    quote_fee: float = Field(description="Accumulated quote token fees")
-    fees_earned_quote: float = Field(description="Total fees earned in quote currency")
-
-    total_value_quote: float = Field(description="Current position value in quote currency")
-    unrealized_pnl_quote: float = Field(description="Unrealized P&L in quote currency")
-
-    position_rent: float = Field(description="SOL rent paid to create position")
-    position_rent_refunded: float = Field(description="SOL rent refunded on close")
-    tx_fee: float = Field(description="Total transaction fees paid")
-
-    out_of_range_seconds: Optional[int] = Field(description="Seconds the position has been out of range")
-    max_retries_reached: bool = Field(description="True if max retries reached, requires intervention")
-
-
-# ========================================
 # API Request Models
 # ========================================
 
@@ -374,17 +251,14 @@ class CreateExecutorRequest(BaseModel):
                         "account_name": "master_account",
                         "executor_config": {
                             "type": "lp_executor",
-                            "market": {
-                                "connector_name": "meteora_solana_mainnet-beta",
-                                "trading_pair": "SOL-USDC"
-                            },
-                            "pool_address": "pool_address_here",
-                            "lower_price": "150.0",
-                            "upper_price": "200.0",
+                            "connector_name": "meteora/clmm",
+                            "trading_pair": "SOL-USDC",
+                            "pool_address": "HTvjzsfX3yU6BUodCjZ5vZkUrAxMDTrBs3CJaq43ashR",
+                            "lower_price": "80",
+                            "upper_price": "100",
                             "base_amount": "0",
                             "quote_amount": "10.0",
                             "side": 1,
-                            "position_offset_pct": "0.01",
                             "auto_close_above_range_seconds": None,
                             "auto_close_below_range_seconds": 300,
                             "extra_params": {"strategyType": 0},
