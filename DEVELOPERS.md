@@ -149,12 +149,8 @@ cp ~/hummingbot/dist/hummingbot-*-cp312-*-linux_*.whl ~/hummingbot-api/
 cd ~/hummingbot-api
 docker build -f Dockerfile.dev -t hummingbot/hummingbot-api:dev .
 
-# Update docker-compose.yml to use your image
-# Change: image: hummingbot/hummingbot-api:latest
-# To:     image: hummingbot/hummingbot-api:dev
-
-# Deploy
-make deploy
+# Deploy using docker-compose.dev.yml (uses :dev image)
+docker compose -f docker-compose.dev.yml up -d
 ```
 
 ### Verify Docker Deployment
