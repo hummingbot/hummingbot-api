@@ -463,6 +463,33 @@ Key environment variables for development:
 
 ---
 
+## Bot Deployment with Development Images
+
+When deploying bots via `/bot-orchestration/deploy-v2-controllers`, the `image` parameter controls which hummingbot Docker image is used.
+
+**Default**: `hummingbot/hummingbot:latest` (PyPI version)
+
+**For development testing**, use the development image:
+
+```bash
+curl -X POST http://localhost:8000/bot-orchestration/deploy-v2-controllers \
+  -u admin:admin \
+  -H "Content-Type: application/json" \
+  -d '{
+    "instance_name": "test-bot",
+    "credentials_profile": "master_account",
+    "controllers_config": ["my_controller"],
+    "image": "hummingbot/hummingbot:development"
+  }'
+```
+
+**Available hummingbot images:**
+- `hummingbot/hummingbot:latest` - Stable release from PyPI
+- `hummingbot/hummingbot:development` - Development branch (includes lp_executor, etc.)
+- `hummingbot/hummingbot:dev` - Your locally built image (if built)
+
+---
+
 ## Testing Integration
 
 Run smoke tests to verify the stack:
