@@ -1,3 +1,12 @@
+# Development Dockerfile - Use with custom hummingbot wheel
+#
+# Usage:
+# 1. Build Linux wheel: see DEVELOPERS.md
+# 2. Copy wheel to repo: cp ~/hummingbot/dist/hummingbot-*-linux_*.whl .
+# 3. Update environment.docker.yml with wheel filename
+# 4. Build: docker build -f Dockerfile.dev -t hummingbot/hummingbot-api:dev .
+# 5. Deploy: update docker-compose.yml to use :dev tag
+
 # Stage 1: Builder stage
 FROM continuumio/miniconda3 AS builder
 
@@ -9,8 +18,9 @@ RUN apt-get update && \
 # Set working directory
 WORKDIR /build
 
-# Copy only the environment file first (for better layer caching)
-COPY environment.yml .
+# Copy wheel file and environment file
+COPY hummingbot-*.whl ./
+COPY environment.docker.yml ./environment.yml
 
 # Create the conda environment
 RUN conda env create -f environment.yml && \

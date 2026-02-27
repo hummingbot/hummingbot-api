@@ -145,9 +145,9 @@ cp ~/hummingbot/dist/hummingbot-*-cp312-*-linux_*.whl ~/hummingbot-api/
 # Edit the pip section to match your wheel:
 #   - ./hummingbot-YYYYMMDD-cp312-cp312-linux_aarch64.whl
 
-# Build the Docker image
+# Build the Docker image using Dockerfile.dev
 cd ~/hummingbot-api
-docker build -t hummingbot/hummingbot-api:dev .
+docker build -f Dockerfile.dev -t hummingbot/hummingbot-api:dev .
 
 # Update docker-compose.yml to use your image
 # Change: image: hummingbot/hummingbot-api:latest
