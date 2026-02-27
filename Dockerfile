@@ -9,8 +9,10 @@ RUN apt-get update && \
 # Set working directory
 WORKDIR /build
 
-# Copy only the environment file first (for better layer caching)
-COPY environment.yml .
+# Copy wheel file and environment file
+# For custom builds: copy your Linux wheel to the repo root before building
+COPY hummingbot-*.whl ./
+COPY environment.docker.yml ./environment.yml
 
 # Create the conda environment
 RUN conda env create -f environment.yml && \

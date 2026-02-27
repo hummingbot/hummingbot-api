@@ -1,0 +1,37 @@
+# Docker build environment - uses local Linux wheel
+name: hummingbot-api
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  - fastapi
+  - uvicorn
+  - boto3
+  - libcxx
+  - libta-lib>=0.6.4
+  - python-dotenv
+  - pandas>=2.3.2
+  - numba>=0.61.2
+  - numpy>=2.2.6
+  - pandas-ta>=0.4.71b
+  - ta-lib>=0.6.4
+  - tqdm>=4.67.1
+  - docker-py
+  - pip
+  - pip:
+      # Local Linux wheel for Docker build
+      - ./hummingbot-20260126-cp312-cp312-linux_aarch64.whl
+      - msgpack>=1.0.5
+      - flake8
+      - isort
+      - pre-commit
+      - logfire
+      - logfire[fastapi]
+      - logfire[system-metrics]
+      - aiomqtt>=2.0.0
+      - sqlalchemy>=2.0.0
+      - asyncpg
+      - psycopg2-binary
+      - greenlet
+      - pydantic-settings
