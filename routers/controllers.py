@@ -1,7 +1,7 @@
 import json
-import yaml
 from typing import Dict, List
 
+import yaml
 from fastapi import APIRouter, HTTPException
 from starlette import status
 
@@ -15,18 +15,40 @@ router = APIRouter(tags=["Controllers"], prefix="/controllers")
 async def list_controllers():
     """
     List all controllers organized by type.
-    
+
+    Detects both single-file controllers (controller.py) and
+    package-style controllers (controller/controller.py).
+
     Returns:
         Dictionary mapping controller types to lists of controller names
     """
     result = {}
     for controller_type in ControllerType:
+        controllers = []
+        type_path = f'controllers/{controller_type.value}'
+
         try:
-            files = fs_util.list_files(f'controllers/{controller_type.value}')
-            result[controller_type.value] = [
-                f.replace('.py', '') for f in files 
+            # Get single-file controllers (*.py files)
+            files = fs_util.list_files(type_path)
+            controllers.extend([
+                f.replace('.py', '') for f in files
                 if f.endswith('.py') and f != "__init__.py"
-            ]
+            ])
+
+            # Get package-style controllers (folders with same-named .py file inside)
+            folders = fs_util.list_folders(type_path)
+            for folder in folders:
+                if folder.startswith('__') or folder == 'examples':
+                    continue
+                # Check if folder contains a .py file with the same name
+                try:
+                    folder_files = fs_util.list_files(f'{type_path}/{folder}')
+                    if f'{folder}.py' in folder_files:
+                        controllers.append(folder)
+                except FileNotFoundError:
+                    pass
+
+            result[controller_type.value] = sorted(set(controllers))
         except FileNotFoundError:
             result[controller_type.value] = []
     return result
@@ -37,14 +59,14 @@ async def list_controllers():
 async def list_controller_configs():
     """
     List all controller configurations with metadata.
-    
+
     Returns:
         List of controller configuration objects with name, controller_name, controller_type, and other metadata
     """
     try:
         config_files = [f for f in fs_util.list_files('conf/controllers') if f.endswith('.yml')]
         configs = []
-        
+
         for config_file in config_files:
             config_name = config_file.replace('.yml', '')
             try:
@@ -55,10 +77,10 @@ async def list_controller_configs():
                 configs.append({
                     "id": config_name,
                     "controller_name": "error",
-                    "controller_type": "error", 
+                    "controller_type": "error",
                     "error": str(e)
                 })
-        
+
         return configs
     except FileNotFoundError:
         return []
@@ -68,13 +90,13 @@ async def list_controller_configs():
 async def get_controller_config(config_name: str):
     """
     Get controller configuration by config name.
-    
+
     Args:
         config_name: Name of the configuration file to retrieve
-        
+
     Returns:
         Dictionary with controller configuration
-        
+
     Raises:
         HTTPException: 404 if configuration not found
     """
@@ -89,14 +111,14 @@ async def get_controller_config(config_name: str):
 async def create_or_update_controller_config(config_name: str, config: Dict):
     """
     Create or update controller configuration.
-    
+
     Args:
         config_name: Name of the configuration file
         config: Configuration dictionary to save
-        
+
     Returns:
         Success message when configuration is saved
-        
+
     Raises:
         HTTPException: 400 if save error occurs
     """
@@ -112,13 +134,13 @@ async def create_or_update_controller_config(config_name: str, config: Dict):
 async def delete_controller_config(config_name: str):
     """
     Delete controller configuration.
-    
+
     Args:
         config_name: Name of the configuration file to delete
-        
+
     Returns:
         Success message when configuration is deleted
-        
+
     Raises:
         HTTPException: 404 if configuration not found
     """
@@ -133,61 +155,79 @@ async def delete_controller_config(config_name: str):
 async def get_controller(controller_type: ControllerType, controller_name: str):
     """
     Get controller content by type and name.
-    
+
+    Supports both single-file controllers (controller.py) and
+    package-style controllers (controller/controller.py).
+
     Args:
         controller_type: Type of the controller
         controller_name: Name of the controller
-        
+
     Returns:
         Dictionary with controller name, type, and content
-        
+
     Raises:
         HTTPException: 404 if controller not found
     """
-    try:
-        content = fs_util.read_file(f"controllers/{controller_type.value}/{controller_name}.py")
-        return {
-            "name": controller_name,
-            "type": controller_type.value,
-            "content": content
-        }
-    except FileNotFoundError:
-        raise HTTPException(
-            status_code=404, 
-            detail=f"Controller '{controller_name}' not found in '{controller_type.value}'"
-        )
+    # Try single-file first, then package-style
+    paths_to_try = [
+        f"controllers/{controller_type.value}/{controller_name}.py",
+        f"controllers/{controller_type.value}/{controller_name}/{controller_name}.py",
+    ]
+
+    for path in paths_to_try:
+        try:
+            content = fs_util.read_file(path)
+            return {
+                "name": controller_name,
+                "type": controller_type.value,
+                "content": content
+            }
+        except FileNotFoundError:
+            continue
+
+    raise HTTPException(
+        status_code=404,
+        detail=f"Controller '{controller_name}' not found in '{controller_type.value}'"
+    )
 
 
 @router.post("/{controller_type}/{controller_name}", status_code=status.HTTP_201_CREATED)
 async def create_or_update_controller(controller_type: ControllerType, controller_name: str, controller: Controller):
     """
     Create or update a controller.
-    
+
+    If controller exists as a package (folder), updates the file inside.
+    Otherwise creates/updates as a single file.
+
     Args:
         controller_type: Type of controller to create/update
         controller_name: Name of the controller (from URL path)
         controller: Controller object with content (and optional type for validation)
-        
+
     Returns:
         Success message when controller is saved
-        
+
     Raises:
         HTTPException: 400 if controller type mismatch or save error
     """
     # If type is provided in body, validate it matches URL
     if controller.type is not None and controller.type != controller_type:
         raise HTTPException(
-            status_code=400, 
+            status_code=400,
             detail=f"Controller type mismatch: URL has '{controller_type}', body has '{controller.type}'"
         )
-    
+
     try:
-        fs_util.add_file(
-            f'controllers/{controller_type.value}', 
-            f"{controller_name}.py", 
-            controller.content, 
-            override=True
-        )
+        type_path = f'controllers/{controller_type.value}'
+        package_path = f'{type_path}/{controller_name}'
+
+        # Check if controller exists as a package (folder with same-named .py file)
+        if fs_util.path_exists(package_path):
+            fs_util.add_file(package_path, f"{controller_name}.py", controller.content, override=True)
+        else:
+            fs_util.add_file(type_path, f"{controller_name}.py", controller.content, override=True)
+
         return {"message": f"Controller '{controller_name}' saved successfully in '{controller_type.value}'"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -197,23 +237,35 @@ async def create_or_update_controller(controller_type: ControllerType, controlle
 async def delete_controller(controller_type: ControllerType, controller_name: str):
     """
     Delete a controller.
-    
+
+    Handles both single-file and package-style controllers.
+
     Args:
         controller_type: Type of the controller
         controller_name: Name of the controller to delete
-        
+
     Returns:
         Success message when controller is deleted
-        
+
     Raises:
         HTTPException: 404 if controller not found
     """
+    type_path = f'controllers/{controller_type.value}'
+
+    # Try single-file first
     try:
-        fs_util.delete_file(f'controllers/{controller_type.value}', f"{controller_name}.py")
+        fs_util.delete_file(type_path, f"{controller_name}.py")
+        return {"message": f"Controller '{controller_name}' deleted successfully from '{controller_type.value}'"}
+    except FileNotFoundError:
+        pass
+
+    # Try package-style (delete entire folder)
+    try:
+        fs_util.delete_folder(type_path, controller_name)
         return {"message": f"Controller '{controller_name}' deleted successfully from '{controller_type.value}'"}
     except FileNotFoundError:
         raise HTTPException(
-            status_code=404, 
+            status_code=404,
             detail=f"Controller '{controller_name}' not found in '{controller_type.value}'"
         )
 
@@ -222,21 +274,21 @@ async def delete_controller(controller_type: ControllerType, controller_name: st
 async def get_controller_config_template(controller_type: ControllerType, controller_name: str):
     """
     Get controller configuration template with default values.
-    
+
     Args:
         controller_type: Type of the controller
         controller_name: Name of the controller
-        
+
     Returns:
         Dictionary with configuration template and default values
-        
+
     Raises:
         HTTPException: 404 if controller configuration class not found
     """
     config_class = fs_util.load_controller_config_class(controller_type.value, controller_name)
     if config_class is None:
         raise HTTPException(
-            status_code=404, 
+            status_code=404,
             detail=f"Controller configuration class for '{controller_name}' not found"
         )
 
@@ -246,6 +298,7 @@ async def get_controller_config_template(controller_type: ControllerType, contro
                             "required": field.required if hasattr(field, 'required') else False,
                             } for name, field in config_class.model_fields.items()}
     return json.loads(json.dumps(config_fields, default=str))
+
 
 @router.post("/{controller_type}/{controller_name}/config/validate")
 async def validate_controller_config(controller_type: ControllerType, controller_name: str, config: Dict):
@@ -282,20 +335,20 @@ async def validate_controller_config(controller_type: ControllerType, controller
 async def get_bot_controller_configs(bot_name: str):
     """
     Get all controller configurations for a specific bot.
-    
+
     Args:
         bot_name: Name of the bot to get configurations for
-        
+
     Returns:
         List of controller configurations for the bot
-        
+
     Raises:
         HTTPException: 404 if bot not found
     """
     bots_config_path = f"instances/{bot_name}/conf/controllers"
     if not fs_util.path_exists(bots_config_path):
         raise HTTPException(status_code=404, detail=f"Bot '{bot_name}' not found")
-    
+
     configs = []
     for controller_file in fs_util.list_files(bots_config_path):
         if controller_file.endswith('.yml'):
@@ -309,22 +362,22 @@ async def get_bot_controller_configs(bot_name: str):
 async def update_bot_controller_config(bot_name: str, controller_name: str, config: Dict):
     """
     Update controller configuration for a specific bot.
-    
+
     Args:
         bot_name: Name of the bot
         controller_name: Name of the controller to update
         config: Configuration dictionary to update with
-        
+
     Returns:
         Success message when configuration is updated
-        
+
     Raises:
         HTTPException: 404 if bot or controller not found, 400 if update error
     """
     bots_config_path = f"instances/{bot_name}/conf/controllers"
     if not fs_util.path_exists(bots_config_path):
         raise HTTPException(status_code=404, detail=f"Bot '{bot_name}' not found")
-    
+
     try:
         current_config = fs_util.read_yaml_file(f"{bots_config_path}/{controller_name}.yml")
         current_config.update(config)
@@ -332,7 +385,7 @@ async def update_bot_controller_config(bot_name: str, controller_name: str, conf
         return {"message": f"Controller configuration for bot '{bot_name}' updated successfully"}
     except FileNotFoundError:
         raise HTTPException(
-            status_code=404, 
+            status_code=404,
             detail=f"Controller configuration '{controller_name}' not found for bot '{bot_name}'"
         )
     except Exception as e:

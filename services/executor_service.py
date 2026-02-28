@@ -20,6 +20,8 @@ from hummingbot.strategy_v2.executors.dca_executor.dca_executor import DCAExecut
 from hummingbot.strategy_v2.executors.executor_base import ExecutorBase
 from hummingbot.strategy_v2.executors.grid_executor.data_types import GridExecutorConfig
 from hummingbot.strategy_v2.executors.grid_executor.grid_executor import GridExecutor
+from hummingbot.strategy_v2.executors.lp_executor.data_types import LPExecutorConfig
+from hummingbot.strategy_v2.executors.lp_executor.lp_executor import LPExecutor
 from hummingbot.strategy_v2.executors.order_executor.data_types import OrderExecutorConfig
 from hummingbot.strategy_v2.executors.order_executor.order_executor import OrderExecutor
 from hummingbot.strategy_v2.executors.position_executor.data_types import PositionExecutorConfig
@@ -79,6 +81,7 @@ class ExecutorService:
         "twap_executor": (TWAPExecutor, TWAPExecutorConfig),
         "xemm_executor": (XEMMExecutor, XEMMExecutorConfig),
         "order_executor": (OrderExecutor, OrderExecutorConfig),
+        "lp_executor": (LPExecutor, LPExecutorConfig),
     }
 
     def __init__(
@@ -345,7 +348,6 @@ class ExecutorService:
         # Extract connector and trading pair from config
         connector_name = executor_config.get("connector_name")
         trading_pair = executor_config.get("trading_pair")
-
         if not connector_name:
             raise HTTPException(status_code=400, detail="connector_name is required in executor_config")
         if not trading_pair:

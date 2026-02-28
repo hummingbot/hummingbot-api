@@ -1,0 +1,87 @@
+# Development docker-compose - uses custom hummingbot-api:dev image
+# Usage: docker compose -f docker-compose.dev.yml up -d
+
+services:
+  hummingbot-api:
+    container_name: hummingbot-api
+    image: hummingbot/hummingbot-api:dev
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./bots:/hummingbot-api/bots
+      - /var/run/docker.sock:/var/run/docker.sock
+    env_file:
+      - .env
+    environment:
+      # Override specific values for Docker networking
+      - BROKER_HOST=emqx
+      - DATABASE_URL=postgresql+asyncpg://hbot:hummingbot-api@postgres:5432/hummingbot_api
+      - GATEWAY_URL=http://host.docker.internal:15888
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - emqx-bridge
+    depends_on:
+      - postgres
+  emqx:
+    container_name: hummingbot-broker
+    image: emqx:5
+    restart: unless-stopped
+    environment:
+      - EMQX_NAME=emqx
+      - EMQX_HOST=node1.emqx.local
+      - EMQX_CLUSTER__DISCOVERY_STRATEGY=static
+      - EMQX_CLUSTER__STATIC__SEEDS=[emqx@node1.emqx.local]
+      - EMQX_LOADED_PLUGINS="emqx_recon,emqx_retainer,emqx_management,emqx_dashboard"
+    volumes:
+      - emqx-data:/opt/emqx/data
+      - emqx-log:/opt/emqx/log
+      - emqx-etc:/opt/emqx/etc
+    ports:
+      - "1883:1883"
+      - "8883:8883"
+      - "8083:8083"
+      - "8084:8084"
+      - "8081:8081"
+      - "18083:18083"
+      - "61613:61613"
+    networks:
+      emqx-bridge:
+        aliases:
+          - node1.emqx.local
+    healthcheck:
+      test: [ "CMD", "/opt/emqx/bin/emqx_ctl", "status" ]
+      interval: 5s
+      timeout: 25s
+      retries: 5
+  postgres:
+    container_name: hummingbot-postgres
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=hummingbot_api
+      - POSTGRES_USER=hbot
+      - POSTGRES_PASSWORD=hummingbot-api
+      - POSTGRES_INITDB_ARGS=--encoding=UTF8
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    ports:
+      - "5432:5432"
+    networks:
+      - emqx-bridge
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hbot -d hummingbot_api"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+networks:
+  emqx-bridge:
+    driver: bridge
+
+volumes:
+  emqx-data: { }
+  emqx-log: { }
+  emqx-etc: { }
+  postgres-data: { }

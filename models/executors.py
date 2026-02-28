@@ -210,7 +210,8 @@ EXECUTOR_TYPES = Literal[
     "arbitrage_executor",
     "twap_executor",
     "xemm_executor",
-    "order_executor"
+    "order_executor",
+    "lp_executor"
 ]
 
 
@@ -222,22 +223,50 @@ class CreateExecutorRequest(BaseModel):
     """Request to create a new executor."""
     model_config = ConfigDict(
         json_schema_extra={
-            "example": {
-                "account_name": "master_account",
-                "executor_config": {
-                    "type": "position_executor",
-                    "connector_name": "binance_perpetual",
-                    "trading_pair": "BTC-USDT",
-                    "side": "BUY",
-                    "amount": "0.01",
-                    "leverage": 10,
-                    "triple_barrier_config": {
-                        "stop_loss": "0.02",
-                        "take_profit": "0.04",
-                        "time_limit": 3600
+            "examples": [
+                {
+                    "summary": "Position Executor",
+                    "description": "Create a position executor with triple barrier",
+                    "value": {
+                        "account_name": "master_account",
+                        "executor_config": {
+                            "type": "position_executor",
+                            "connector_name": "binance_perpetual",
+                            "trading_pair": "BTC-USDT",
+                            "side": "BUY",
+                            "amount": "0.01",
+                            "leverage": 10,
+                            "triple_barrier_config": {
+                                "stop_loss": "0.02",
+                                "take_profit": "0.04",
+                                "time_limit": 3600
+                            }
+                        }
+                    }
+                },
+                {
+                    "summary": "LP Executor",
+                    "description": "Create an LP position on a CLMM DEX (Meteora, Raydium)",
+                    "value": {
+                        "account_name": "master_account",
+                        "executor_config": {
+                            "type": "lp_executor",
+                            "connector_name": "meteora/clmm",
+                            "trading_pair": "SOL-USDC",
+                            "pool_address": "HTvjzsfX3yU6BUodCjZ5vZkUrAxMDTrBs3CJaq43ashR",
+                            "lower_price": "80",
+                            "upper_price": "100",
+                            "base_amount": "0",
+                            "quote_amount": "10.0",
+                            "side": 1,
+                            "auto_close_above_range_seconds": None,
+                            "auto_close_below_range_seconds": 300,
+                            "extra_params": {"strategyType": 0},
+                            "keep_position": False
+                        }
                     }
                 }
-            }
+            ]
         }
     )
 

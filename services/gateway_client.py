@@ -1,7 +1,8 @@
 import logging
-from typing import Dict, List, Optional
-import aiohttp
 from decimal import Decimal
+from typing import Dict, List, Optional
+
+import aiohttp
 
 logger = logging.getLogger(__name__)
 
@@ -111,14 +112,10 @@ class GatewayClient:
         return await self._request("GET", "wallet")
 
     async def get_default_wallet_address(self, chain: str) -> Optional[str]:
-        """Get default wallet address for a chain"""
+        """Get default wallet address for a chain from Gateway config"""
         try:
-            wallets = await self.get_wallets()
-            for wallet in wallets:
-                if wallet.get("chain") == chain:
-                    addresses = wallet.get("walletAddresses", [])
-                    return addresses[0] if addresses else None
-            return None
+            config = await self._request("GET", "config", params={"namespace": chain})
+            return config.get("defaultWallet")
         except Exception as e:
             logger.error(f"Error getting default wallet for chain {chain}: {e}")
             return None

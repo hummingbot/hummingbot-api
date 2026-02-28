@@ -1,0 +1,64 @@
+# Hummingbot API Development Environment
+#
+# Copy this file to environment.yml and modify as needed:
+#   cp environment.yml.example environment.yml
+#
+# For development with custom hummingbot branch, update the wheel path below.
+# See DEVELOPERS.md for detailed instructions.
+
+name: hummingbot-api
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  - fastapi
+  - uvicorn
+  - boto3
+  - libcxx
+  - libta-lib>=0.6.4
+  - python-dotenv
+  - pandas>=2.3.2
+  - numba>=0.61.2
+  - numpy>=2.2.6
+  - pandas-ta>=0.4.71b
+  - ta-lib>=0.6.4
+  - tqdm>=4.67.1
+  - docker-py
+  - pip
+  - pip:
+      # =============================================================
+      # HUMMINGBOT INSTALLATION OPTIONS (choose ONE):
+      # =============================================================
+
+      # Option 1: Local wheel (for testing specific branches)
+      # Build from hummingbot repo: python -m build --wheel --no-isolation
+      # Update path to match your wheel file:
+      # - /path/to/hummingbot/dist/hummingbot-YYYYMMDD-cp312-cp312-<platform>.whl
+
+      # Option 2: Editable install (for active development)
+      # Remove wheel line above, then after env creation run:
+      #   pip install -e /path/to/hummingbot
+
+      # Option 3: PyPI (if/when available)
+      # - hummingbot
+
+      # =============================================================
+      # Current configuration (UPDATE THIS PATH):
+      # =============================================================
+      - /path/to/hummingbot/dist/hummingbot-YYYYMMDD-cp312-cp312-platform.whl
+
+      # Required dependencies
+      - msgpack>=1.0.5
+      - flake8
+      - isort
+      - pre-commit
+      - logfire
+      - logfire[fastapi]
+      - logfire[system-metrics]
+      - aiomqtt>=2.0.0
+      - sqlalchemy>=2.0.0
+      - asyncpg
+      - psycopg2-binary
+      - greenlet
+      - pydantic-settings
