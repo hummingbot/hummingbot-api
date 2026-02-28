@@ -1,11 +1,10 @@
 import os
 from decimal import Decimal
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional
 
 from hummingbot.client.hummingbot_application import HummingbotApplication
 from hummingbot.connector.connector_base import ConnectorBase
 from hummingbot.core.event.events import MarketOrderFailureEvent
-from hummingbot.data_feed.candles_feed.data_types import CandlesConfig
 from hummingbot.strategy.strategy_v2_base import StrategyV2Base, StrategyV2ConfigBase
 from hummingbot.strategy_v2.models.base import RunnableStatus
 from hummingbot.strategy_v2.models.executor_actions import CreateExecutorAction, StopExecutorAction
@@ -13,8 +12,6 @@ from hummingbot.strategy_v2.models.executor_actions import CreateExecutorAction,
 
 class V2WithControllersConfig(StrategyV2ConfigBase):
     script_file_name: str = os.path.basename(__file__)
-    candles_config: List[CandlesConfig] = []
-    markets: Dict[str, Set[str]] = {}
     max_global_drawdown_quote: Optional[float] = None
     max_controller_drawdown_quote: Optional[float] = None
 
@@ -72,12 +69,18 @@ class V2WithControllers(StrategyV2Base):
                         filter_func=lambda x: x.is_active and not x.is_trading,
                     )
                     self.executor_orchestrator.execute_actions(
-                        actions=[StopExecutorAction(controller_id=controller_id, executor_id=executor.id) for executor in executors_order_placed]
+                        actions=[
+                            StopExecutorAction(controller_id=controller_id, executor_id=executor.id)
+                            for executor in executors_order_placed
+                        ]
                     )
                     self.drawdown_exited_controllers.append(controller_id)
 
     def check_max_global_drawdown(self):
-        current_global_pnl = sum([self.get_performance_report(controller_id).global_pnl_quote for controller_id in self.controllers.keys()])
+        current_global_pnl = sum([
+            self.get_performance_report(controller_id).global_pnl_quote
+            for controller_id in self.controllers.keys()
+        ])
         if current_global_pnl > self.max_global_pnl:
             self.max_global_pnl = current_global_pnl
         else:
@@ -100,7 +103,10 @@ class V2WithControllers(StrategyV2Base):
 
     def send_performance_report(self):
         if self.current_timestamp - self._last_performance_report_timestamp >= self.performance_report_interval and self._pub:
-            controller_reports = {controller_id: self.get_controller_report(controller_id) for controller_id in self.controllers.keys()}
+            controller_reports = {
+                controller_id: self.get_controller_report(controller_id)
+                for controller_id in self.controllers.keys()
+            }
             self._pub(controller_reports)
             self._last_performance_report_timestamp = self.current_timestamp
 

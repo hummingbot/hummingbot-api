@@ -193,6 +193,59 @@ async def get_executor_logs(
         raise HTTPException(status_code=500, detail=f"Error getting executor logs: {str(e)}")
 
 
+@router.get("/types/available")
+async def get_available_executor_types():
+    """
+    Get list of available executor types with descriptions.
+
+    Returns information about each supported executor type.
+    """
+    return {
+        "executor_types": [
+            {
+                "type": "position_executor",
+                "description": "Single position with triple barrier (stop loss, take profit, time limit)",
+                "use_case": "Directional trading with risk management"
+            },
+            {
+                "type": "grid_executor",
+                "description": "Grid trading with multiple buy/sell levels",
+                "use_case": "Range-bound market trading"
+            },
+            {
+                "type": "dca_executor",
+                "description": "Dollar-cost averaging with multiple entry points",
+                "use_case": "Gradual position building"
+            },
+            {
+                "type": "twap_executor",
+                "description": "Time-weighted average price execution",
+                "use_case": "Large order execution with minimal market impact"
+            },
+            {
+                "type": "arbitrage_executor",
+                "description": "Cross-exchange price arbitrage",
+                "use_case": "Exploiting price differences between exchanges"
+            },
+            {
+                "type": "xemm_executor",
+                "description": "Cross-exchange market making",
+                "use_case": "Providing liquidity across exchanges"
+            },
+            {
+                "type": "order_executor",
+                "description": "Simple order execution with retry logic",
+                "use_case": "Basic order placement with reliability"
+            },
+            {
+                "type": "lp_executor",
+                "description": "LP position management for CLMM pools (Meteora, Raydium) ",
+                "use_case": "Automated liquidity provision with position tracking"
+            }
+        ]
+    }
+
+
 @router.get("/{executor_id}", response_model=ExecutorDetailResponse)
 async def get_executor(
     executor_id: str,
@@ -418,59 +471,6 @@ async def clear_position_held(
     except Exception as e:
         logger.error(f"Error clearing position: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error clearing position: {str(e)}")
-
-
-@router.get("/types/available")
-async def get_available_executor_types():
-    """
-    Get list of available executor types with descriptions.
-
-    Returns information about each supported executor type.
-    """
-    return {
-        "executor_types": [
-            {
-                "type": "position_executor",
-                "description": "Single position with triple barrier (stop loss, take profit, time limit)",
-                "use_case": "Directional trading with risk management"
-            },
-            {
-                "type": "grid_executor",
-                "description": "Grid trading with multiple buy/sell levels",
-                "use_case": "Range-bound market trading"
-            },
-            {
-                "type": "dca_executor",
-                "description": "Dollar-cost averaging with multiple entry points",
-                "use_case": "Gradual position building"
-            },
-            {
-                "type": "twap_executor",
-                "description": "Time-weighted average price execution",
-                "use_case": "Large order execution with minimal market impact"
-            },
-            {
-                "type": "arbitrage_executor",
-                "description": "Cross-exchange price arbitrage",
-                "use_case": "Exploiting price differences between exchanges"
-            },
-            {
-                "type": "xemm_executor",
-                "description": "Cross-exchange market making",
-                "use_case": "Providing liquidity across exchanges"
-            },
-            {
-                "type": "order_executor",
-                "description": "Simple order execution with retry logic",
-                "use_case": "Basic order placement with reliability"
-            },
-            {
-                "type": "lp_executor",
-                "description": "LP position management for CLMM pools (Meteora, Raydium)",
-                "use_case": "Automated liquidity provision with position tracking"
-            }
-        ]
-    }
 
 
 def _extract_field_info(schema: dict, definitions: dict) -> list:
