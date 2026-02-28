@@ -430,19 +430,18 @@ class GatewayClient:
     ) -> Dict:
         """Add more liquidity to an existing CLMM position"""
         payload = {
-            "connector": connector,
             "network": network,
-            "address": wallet_address,
+            "walletAddress": wallet_address,
             "positionAddress": position_address
         }
         if base_token_amount is not None:
-            payload["baseTokenAmount"] = str(base_token_amount)
+            payload["baseTokenAmount"] = base_token_amount
         if quote_token_amount is not None:
-            payload["quoteTokenAmount"] = str(quote_token_amount)
+            payload["quoteTokenAmount"] = quote_token_amount
         if slippage_pct is not None:
             payload["slippagePct"] = slippage_pct
 
-        return await self._request("POST", "clmm/liquidity/add", json=payload)
+        return await self._request("POST", f"connectors/{connector}/clmm/add-liquidity", json=payload)
 
     async def clmm_close_position(
         self,
@@ -467,13 +466,13 @@ class GatewayClient:
         percentage: float
     ) -> Dict:
         """Remove liquidity from a CLMM position (partial)"""
-        return await self._request("POST", "clmm/liquidity/remove", json={
-            "connector": connector,
+        payload = {
             "network": network,
-            "address": wallet_address,
+            "walletAddress": wallet_address,
             "positionAddress": position_address,
             "percentage": percentage
-        })
+        }
+        return await self._request("POST", f"connectors/{connector}/clmm/remove-liquidity", json=payload)
 
     async def clmm_position_info(
         self,
