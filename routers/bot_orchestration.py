@@ -628,10 +628,10 @@ async def deploy_v2_controllers(
                 controllers_with_extension.append(controller)
 
         # Create the script config content
+        # Note: candles_config and markets removed - they're optional and empty,
+        # and older hummingbot versions don't expect them in the config
         script_config_content = {
             "script_file_name": "v2_with_controllers.py",
-            "candles_config": [],
-            "markets": {},
             "controllers_config": controllers_with_extension,
         }
 

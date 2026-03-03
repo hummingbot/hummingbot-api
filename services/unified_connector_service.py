@@ -22,6 +22,7 @@ from hummingbot.client.settings import AllConnectorSettings
 from hummingbot.connector.connector_base import ConnectorBase
 from hummingbot.connector.connector_metrics_collector import TradeVolumeMetricCollector
 from hummingbot.connector.exchange_py_base import ExchangePyBase
+from hummingbot.connector.gateway.gateway_lp import GatewayLp
 from hummingbot.connector.perpetual_derivative_py_base import PerpetualDerivativePyBase
 from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, TradeType
 from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderState
@@ -427,7 +428,7 @@ class UnifiedConnectorService:
                     await asyncio.wait_for(tracker.wait_ready(), timeout=30.0)
                     logger.info(f"Order book tracker ready for {type(connector).__name__}")
                 except asyncio.TimeoutError:
-                    logger.warning(f"Timeout waiting for tracker to be ready")
+                    logger.warning("Timeout waiting for tracker to be ready")
 
                 if trading_pair in tracker.order_books:
                     logger.info(f"Order book for {trading_pair} initialized")
@@ -632,11 +633,27 @@ class UnifiedConnectorService:
         account_name: str,
         connector_name: str
     ) -> ConnectorBase:
-        """Create a trading connector with API keys."""
+        """Create a trading connector with API keys.
+
+        For gateway connectors (containing '/'), creates a GatewayLp connector
+        which auto-detects chain/network and uses the default wallet.
+        """
         BackendAPISecurity.login_account(
             account_name=account_name,
             secrets_manager=self.secrets_manager
         )
+
+        # Gateway connectors (e.g., 'meteora/clmm', 'raydium/clmm') are not in AllConnectorSettings
+        # They use GatewayLp which auto-detects chain/network from gateway config
+        if '/' in connector_name:
+            logger.info(f"Creating gateway connector: {connector_name}")
+            # GatewayLp handles chain/network auto-detection and default wallet lookup
+            # via start_network() call
+            return GatewayLp(
+                connector_name=connector_name,
+                trading_pairs=[],
+                trading_required=True,
+            )
 
         conn_setting = self._conn_settings[connector_name]
         keys = BackendAPISecurity.api_keys(connector_name)
@@ -720,7 +737,7 @@ class UnifiedConnectorService:
             # (in _add_trading_pair_to_tracker). Starting it here with no subscriptions
             # causes exchanges like Binance to immediately disconnect (close code 1008).
 
-            logger.debug(f"Started network tasks for connector")
+            logger.debug("Started network tasks for connector")
 
         except Exception as e:
             logger.error(f"Error starting connector network: {e}")
@@ -1342,7 +1359,7 @@ class UnifiedConnectorService:
             try:
                 await asyncio.wait_for(tracker.wait_ready(), timeout=30.0)
             except asyncio.TimeoutError:
-                logger.warning(f"Timeout waiting for tracker to be ready, continuing anyway...")
+                logger.warning("Timeout waiting for tracker to be ready, continuing anyway...")
 
             # Wait for WebSocket to be ready
             await self._wait_for_websocket_ready(connector, timeout=10.0)
