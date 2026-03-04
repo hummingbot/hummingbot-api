@@ -2,16 +2,16 @@
 Gateway Proxy Router
 
 Catch-all router that forwards requests to Gateway server unchanged.
-Dashboard calls /api/gateway-proxy/* and this router forwards to Gateway at localhost:15888/*.
+Dashboard calls /gateway-proxy/* and this router forwards to Gateway at localhost:15888/*.
 
 This allows the dashboard to access all Gateway endpoints through the API without
 needing each endpoint to be explicitly defined.
 
 Examples:
-    GET /api/gateway-proxy/wallet -> GET localhost:15888/wallet
-    POST /api/gateway-proxy/wallet/add -> POST localhost:15888/wallet/add
-    GET /api/gateway-proxy/config -> GET localhost:15888/config
-    GET /api/gateway-proxy/trading/clmm/positions-owned -> GET localhost:15888/trading/clmm/positions-owned
+    GET /gateway-proxy/wallet -> GET localhost:15888/wallet
+    POST /gateway-proxy/wallet/add -> POST localhost:15888/wallet/add
+    GET /gateway-proxy/config -> GET localhost:15888/config
+    GET /gateway-proxy/trading/clmm/positions-owned -> GET localhost:15888/trading/clmm/positions-owned
 """
 
 import json
@@ -29,24 +29,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Gateway Proxy"], prefix="/gateway-proxy")
 
 
-@router.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
-async def forward_to_gateway(
+async def _forward_to_gateway(
     path: str,
     request: Request,
-    accounts_service: AccountsService = Depends(get_accounts_service)
+    accounts_service: AccountsService
 ):
-    """
-    Forward request to Gateway server unchanged.
-
-    This catch-all route forwards any request to /api/gateway-proxy/* to the Gateway server.
-    The request body, headers, and query parameters are passed through unchanged.
-    The response from Gateway is returned unchanged.
-
-    Examples:
-        GET /api/gateway-proxy/wallet -> GET localhost:15888/wallet
-        POST /api/gateway-proxy/wallet/add -> POST localhost:15888/wallet/add
-        GET /api/gateway-proxy/config -> GET localhost:15888/config
-    """
+    """Internal handler that forwards requests to Gateway."""
     gateway_client = accounts_service.gateway_client
     gateway_url = gateway_client.base_url
 
@@ -111,6 +99,56 @@ async def forward_to_gateway(
             status_code=500,
             detail=f"Gateway proxy error: {str(e)}"
         )
+
+
+@router.get("/{path:path}", operation_id="gateway_proxy_get")
+async def gateway_proxy_get(
+    path: str,
+    request: Request,
+    accounts_service: AccountsService = Depends(get_accounts_service)
+):
+    """GET request to Gateway. Example: GET /gateway-proxy/wallet"""
+    return await _forward_to_gateway(path, request, accounts_service)
+
+
+@router.post("/{path:path}", operation_id="gateway_proxy_post")
+async def gateway_proxy_post(
+    path: str,
+    request: Request,
+    accounts_service: AccountsService = Depends(get_accounts_service)
+):
+    """POST request to Gateway. Example: POST /gateway-proxy/wallet/add"""
+    return await _forward_to_gateway(path, request, accounts_service)
+
+
+@router.put("/{path:path}", operation_id="gateway_proxy_put")
+async def gateway_proxy_put(
+    path: str,
+    request: Request,
+    accounts_service: AccountsService = Depends(get_accounts_service)
+):
+    """PUT request to Gateway."""
+    return await _forward_to_gateway(path, request, accounts_service)
+
+
+@router.delete("/{path:path}", operation_id="gateway_proxy_delete")
+async def gateway_proxy_delete(
+    path: str,
+    request: Request,
+    accounts_service: AccountsService = Depends(get_accounts_service)
+):
+    """DELETE request to Gateway."""
+    return await _forward_to_gateway(path, request, accounts_service)
+
+
+@router.patch("/{path:path}", operation_id="gateway_proxy_patch")
+async def gateway_proxy_patch(
+    path: str,
+    request: Request,
+    accounts_service: AccountsService = Depends(get_accounts_service)
+):
+    """PATCH request to Gateway."""
+    return await _forward_to_gateway(path, request, accounts_service)
 
 
 # Also expose the root endpoint for health checks
