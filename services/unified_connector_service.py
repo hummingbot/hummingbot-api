@@ -17,15 +17,12 @@ from decimal import Decimal
 from typing import Dict, List, Optional
 
 from hummingbot.client.config.config_crypt import ETHKeyFileSecretManger
-from hummingbot.client.config.config_helpers import (
-    api_keys_from_connector_config_map,
-    get_connector_class,
-    ClientConfigAdapter,
-)
+from hummingbot.client.config.config_helpers import ClientConfigAdapter, api_keys_from_connector_config_map, get_connector_class
 from hummingbot.client.settings import AllConnectorSettings
 from hummingbot.connector.connector_base import ConnectorBase
 from hummingbot.connector.connector_metrics_collector import TradeVolumeMetricCollector
 from hummingbot.connector.exchange_py_base import ExchangePyBase
+from hummingbot.connector.gateway.gateway_lp import GatewayLp
 from hummingbot.connector.perpetual_derivative_py_base import PerpetualDerivativePyBase
 from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, TradeType
 from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderState
@@ -325,6 +322,11 @@ class UnifiedConnectorService:
             logger.error(f"No connector available for {connector_name}")
             return False
 
+        # Gateway/AMM connectors don't have order book trackers - skip initialization
+        if not hasattr(connector, 'order_book_tracker') or connector.order_book_tracker is None:
+            logger.info(f"Connector {connector_name} doesn't have order book tracker (AMM/Gateway) - skipping")
+            return True
+
         tracker = connector.order_book_tracker
 
         # Check if already initialized
@@ -393,6 +395,11 @@ class UnifiedConnectorService:
         2. Otherwise, register the pair and start the tracker
         """
         try:
+            # Safety check - gateway/AMM connectors don't have order book trackers
+            if not hasattr(connector, 'order_book_tracker') or connector.order_book_tracker is None:
+                logger.debug(f"Connector {type(connector).__name__} doesn't have order book tracker")
+                return True
+
             tracker = connector.order_book_tracker
 
             # Case 1: Tracker is already running and ready
@@ -421,7 +428,7 @@ class UnifiedConnectorService:
                     await asyncio.wait_for(tracker.wait_ready(), timeout=30.0)
                     logger.info(f"Order book tracker ready for {type(connector).__name__}")
                 except asyncio.TimeoutError:
-                    logger.warning(f"Timeout waiting for tracker to be ready")
+                    logger.warning("Timeout waiting for tracker to be ready")
 
                 if trading_pair in tracker.order_books:
                     logger.info(f"Order book for {trading_pair} initialized")
@@ -494,7 +501,9 @@ class UnifiedConnectorService:
                 logger.info(f"Removed trading pair {trading_pair}")
                 return True
 
-            # Fallback: Manual removal from tracker
+            # Fallback: Manual removal from tracker (if connector has one)
+            if not hasattr(connector, 'order_book_tracker') or connector.order_book_tracker is None:
+                return True  # No tracker to clean up for AMM/Gateway connectors
             tracker = connector.order_book_tracker
             if trading_pair in tracker.order_books:
                 del tracker.order_books[trading_pair]
@@ -624,11 +633,27 @@ class UnifiedConnectorService:
         account_name: str,
         connector_name: str
     ) -> ConnectorBase:
-        """Create a trading connector with API keys."""
+        """Create a trading connector with API keys.
+
+        For gateway connectors (containing '/'), creates a GatewayLp connector
+        which auto-detects chain/network and uses the default wallet.
+        """
         BackendAPISecurity.login_account(
             account_name=account_name,
             secrets_manager=self.secrets_manager
         )
+
+        # Gateway connectors (e.g., 'meteora/clmm', 'raydium/clmm') are not in AllConnectorSettings
+        # They use GatewayLp which auto-detects chain/network from gateway config
+        if '/' in connector_name:
+            logger.info(f"Creating gateway connector: {connector_name}")
+            # GatewayLp handles chain/network auto-detection and default wallet lookup
+            # via start_network() call
+            return GatewayLp(
+                connector_name=connector_name,
+                trading_pairs=[],
+                trading_required=True,
+            )
 
         conn_setting = self._conn_settings[connector_name]
         keys = BackendAPISecurity.api_keys(connector_name)
@@ -684,25 +709,35 @@ class UnifiedConnectorService:
         try:
             await self._stop_connector_network(connector)
 
-            connector._trading_rules_polling_task = safe_ensure_future(
-                connector._trading_rules_polling_loop()
-            )
-            connector._trading_fees_polling_task = safe_ensure_future(
-                connector._trading_fees_polling_loop()
-            )
-            connector._user_stream_tracker_task = connector._create_user_stream_tracker_task()
-            connector._user_stream_event_listener_task = safe_ensure_future(
-                connector._user_stream_event_listener()
-            )
-            connector._lost_orders_update_task = safe_ensure_future(
-                connector._lost_orders_update_polling_loop()
-            )
+            # Gateway/AMM connectors use start_network() instead of individual polling tasks
+            if hasattr(connector, '_trading_rules_polling_loop'):
+                connector._trading_rules_polling_task = safe_ensure_future(
+                    connector._trading_rules_polling_loop()
+                )
+            if hasattr(connector, '_trading_fees_polling_loop'):
+                connector._trading_fees_polling_task = safe_ensure_future(
+                    connector._trading_fees_polling_loop()
+                )
+            if hasattr(connector, '_create_user_stream_tracker_task'):
+                connector._user_stream_tracker_task = connector._create_user_stream_tracker_task()
+            if hasattr(connector, '_user_stream_event_listener'):
+                connector._user_stream_event_listener_task = safe_ensure_future(
+                    connector._user_stream_event_listener()
+                )
+            if hasattr(connector, '_lost_orders_update_polling_loop'):
+                connector._lost_orders_update_task = safe_ensure_future(
+                    connector._lost_orders_update_polling_loop()
+                )
+
+            # For gateway connectors, call start_network() which handles chain/network detection
+            if hasattr(connector, 'start_network') and not hasattr(connector, '_trading_rules_polling_loop'):
+                await connector.start_network()
 
             # NOTE: Order book tracker is started lazily when first trading pair is added
             # (in _add_trading_pair_to_tracker). Starting it here with no subscriptions
             # causes exchanges like Binance to immediately disconnect (close code 1008).
 
-            logger.debug(f"Started network tasks for connector")
+            logger.debug("Started network tasks for connector")
 
         except Exception as e:
             logger.error(f"Error starting connector network: {e}")
@@ -725,9 +760,13 @@ class UnifiedConnectorService:
                 task.cancel()
                 setattr(connector, task_name, None)
 
-        # Stop the order book tracker
-        if connector.order_book_tracker:
+        # Stop the order book tracker (if connector has one - AMM/Gateway connectors don't)
+        if hasattr(connector, 'order_book_tracker') and connector.order_book_tracker:
             connector.order_book_tracker.stop()
+
+        # For gateway connectors, call stop_network()
+        if hasattr(connector, 'stop_network'):
+            await connector.stop_network()
 
     async def _update_connector_state(
         self,
@@ -1289,6 +1328,10 @@ class UnifiedConnectorService:
         if not connector:
             return {"success": False, "error": f"No connector found for {connector_name}"}
 
+        # Gateway/AMM connectors don't have order book trackers
+        if not hasattr(connector, 'order_book_tracker') or connector.order_book_tracker is None:
+            return {"success": False, "error": f"Connector {connector_name} doesn't have order book tracker (AMM/Gateway)"}
+
         tracker = connector.order_book_tracker
         trading_pairs = list(tracker._trading_pairs)
 
@@ -1316,7 +1359,7 @@ class UnifiedConnectorService:
             try:
                 await asyncio.wait_for(tracker.wait_ready(), timeout=30.0)
             except asyncio.TimeoutError:
-                logger.warning(f"Timeout waiting for tracker to be ready, continuing anyway...")
+                logger.warning("Timeout waiting for tracker to be ready, continuing anyway...")
 
             # Wait for WebSocket to be ready
             await self._wait_for_websocket_ready(connector, timeout=10.0)

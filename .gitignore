@@ -165,9 +165,13 @@ cython_debug/
 # Hummingbot Gateway files
 gateway-files/
 
+# Hummingbot wheel files (for local Docker builds)
+*.whl
+
 # Hummingbot credentials and local data
 bots/credentials/
 bots/instances/
+bots/conf/
 
 # Local MCP configuration (project-specific overrides)
 .mcp.json

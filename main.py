@@ -15,8 +15,9 @@ load_dotenv()
 
 VERSION = "1.0.1"
 
-
 # Monkey patch save_to_yml to prevent writes to library directory
+
+
 def patched_save_to_yml(yml_path, cm):
     """Patched version of save_to_yml that prevents writes to library directory"""
     import logging
@@ -50,6 +51,7 @@ from routers import (  # noqa: E402
     executors,
     gateway,
     gateway_clmm,
+    gateway_proxy,
     gateway_swap,
     market_data,
     portfolio,
@@ -209,6 +211,17 @@ async def lifespan(app: FastAPI):
         max_retries=10
     )
     logging.info("ExecutorService initialized")
+    # Ensure lp_executor is in the registry (workspace hummingbot may load after class definition)
+    try:
+        from hummingbot.strategy_v2.executors.lp_executor.data_types import LPExecutorConfig
+        from hummingbot.strategy_v2.executors.lp_executor.lp_executor import LPExecutor
+        print(f"[LP-FIX] imports OK. Registry before: {list(ExecutorService.EXECUTOR_REGISTRY.keys())}", flush=True)
+        ExecutorService.EXECUTOR_REGISTRY["lp_executor"] = (LPExecutor, LPExecutorConfig)
+        print(f"[LP-FIX] Registry after: {list(ExecutorService.EXECUTOR_REGISTRY.keys())}", flush=True)
+    except Exception as e:
+        import traceback
+        print(f"[LP-FIX] FAILED: {e}", flush=True)
+        traceback.print_exc()
 
     # =========================================================================
     # 5. Other Services
@@ -281,7 +294,6 @@ async def lifespan(app: FastAPI):
 
     logging.info("All services stopped")
 
-
 # Initialize FastAPI with metadata and lifespan
 app = FastAPI(
     title="Hummingbot API",
@@ -323,7 +335,6 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         content={"detail": exc.errors()},
     )
 
-
 logfire.configure(send_to_logfire="if-token-present", environment=settings.app.logfire_environment,
                   service_name="hummingbot-api")
 logfire.instrument_fastapi(app)
@@ -349,6 +360,7 @@ def auth_user(
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Basic"},
         )
+
     return credentials.username
 
 
@@ -368,7 +380,9 @@ app.include_router(market_data.router, dependencies=[Depends(auth_user)])
 app.include_router(rate_oracle.router, dependencies=[Depends(auth_user)])
 app.include_router(backtesting.router, dependencies=[Depends(auth_user)])
 app.include_router(archived_bots.router, dependencies=[Depends(auth_user)])
+
 app.include_router(executors.router, dependencies=[Depends(auth_user)])
+app.include_router(gateway_proxy.router, dependencies=[Depends(auth_user)])
 
 
 @app.get("/")
