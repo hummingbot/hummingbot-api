@@ -1932,6 +1932,11 @@ class AccountsService:
                     logger.debug(f"Chain '{chain}' missing defaultWallet, skipping")
                     continue
 
+                # Skip placeholder wallet addresses (e.g., "ethereum-default-wallet", "solana-default-wallet")
+                if default_wallet.endswith("-default-wallet"):
+                    logger.debug(f"Chain '{chain}' has placeholder defaultWallet '{default_wallet}', skipping")
+                    continue
+
                 if not default_networks:
                     # Fall back to defaultNetwork (singular) if defaultNetworks not set
                     default_network = config.get("defaultNetwork")
