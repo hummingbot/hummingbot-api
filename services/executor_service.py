@@ -26,6 +26,8 @@ from hummingbot.strategy_v2.executors.order_executor.data_types import OrderExec
 from hummingbot.strategy_v2.executors.order_executor.order_executor import OrderExecutor
 from hummingbot.strategy_v2.executors.position_executor.data_types import PositionExecutorConfig
 from hummingbot.strategy_v2.executors.position_executor.position_executor import PositionExecutor
+from hummingbot.strategy_v2.executors.swap_executor.data_types import SwapExecutorConfig
+from hummingbot.strategy_v2.executors.swap_executor.swap_executor import SwapExecutor
 from hummingbot.strategy_v2.executors.twap_executor.data_types import TWAPExecutorConfig
 from hummingbot.strategy_v2.executors.twap_executor.twap_executor import TWAPExecutor
 from hummingbot.strategy_v2.executors.xemm_executor.data_types import XEMMExecutorConfig
@@ -82,6 +84,7 @@ class ExecutorService:
         "xemm_executor": (XEMMExecutor, XEMMExecutorConfig),
         "order_executor": (OrderExecutor, OrderExecutorConfig),
         "lp_executor": (LPExecutor, LPExecutorConfig),
+        "swap_executor": (SwapExecutor, SwapExecutorConfig),
     }
 
     def __init__(
