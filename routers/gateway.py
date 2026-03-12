@@ -1,19 +1,20 @@
-from fastapi import APIRouter, HTTPException, Depends, Query
-from typing import Optional, Dict, List
 import re
+from typing import Dict, List, Optional
 
+from fastapi import APIRouter, Depends, HTTPException, Query
+
+from deps import get_accounts_service, get_gateway_service
 from models import (
-    GatewayConfig,
-    GatewayStatus,
     AddPoolRequest,
     AddTokenRequest,
     CreateWalletRequest,
-    ShowPrivateKeyRequest,
+    GatewayConfig,
+    GatewayStatus,
     SendTransactionRequest,
+    ShowPrivateKeyRequest,
 )
-from services.gateway_service import GatewayService
 from services.accounts_service import AccountsService
-from deps import get_gateway_service, get_accounts_service
+from services.gateway_service import GatewayService
 
 router = APIRouter(tags=["Gateway"], prefix="/gateway")
 
@@ -605,9 +606,7 @@ async def add_network_token(
 
         return {
             "success": True,
-            "message": f"Token {token_request.symbol} added to {network_id}. Restart Gateway for changes to take effect.",
-            "restart_required": True,
-            "restart_endpoint": "POST /gateway/restart",
+            "message": f"Token {token_request.symbol} added to {network_id}.",
             "token": {
                 "symbol": token_request.symbol,
                 "address": token_request.address,
@@ -660,9 +659,7 @@ async def delete_network_token(
 
         return {
             "success": True,
-            "message": f"Token {token_address} deleted from {network_id}. Restart Gateway for changes to take effect.",
-            "restart_required": True,
-            "restart_endpoint": "POST /gateway/restart",
+            "message": f"Token {token_address} deleted from {network_id}.",
             "token_address": token_address,
             "network_id": network_id
         }
