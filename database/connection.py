@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from .models import Base
 
@@ -44,15 +44,40 @@ class AsyncDatabaseManager:
         try:
             async with self.engine.begin() as conn:
                 await conn.run_sync(Base.metadata.create_all)
-                
+
+                # Run lightweight migrations for existing tables
+                await self._run_migrations(conn)
+
                 # Drop Hummingbot's native tables since we use our custom orders/trades tables
                 await self._drop_hummingbot_tables(conn)
-                
+
             logger.info("Database tables created successfully")
         except Exception as e:
             logger.error(f"Failed to create database tables: {e}")
             raise
     
+    async def _run_migrations(self, conn):
+        """Run lightweight schema migrations for existing tables."""
+        migrations = [
+            # Add controller_id to executors table (default "main" for existing rows)
+            (
+                "executors", "controller_id",
+                "ALTER TABLE executors ADD COLUMN controller_id TEXT NOT NULL DEFAULT 'main'"
+            ),
+        ]
+        for table, column, sql in migrations:
+            try:
+                # Check if column already exists
+                result = await conn.execute(text(
+                    "SELECT column_name FROM information_schema.columns "
+                    f"WHERE table_name = '{table}' AND column_name = '{column}'"
+                ))
+                if result.fetchone() is None:
+                    await conn.execute(text(sql))
+                    logger.info(f"Migration: added {column} to {table}")
+            except Exception as e:
+                logger.debug(f"Migration check for {table}.{column}: {e}")
+
     async def _drop_hummingbot_tables(self, conn):
         """Drop Hummingbot's native database tables since we use custom ones."""
         hummingbot_tables = [

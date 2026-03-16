@@ -31,6 +31,7 @@ class PositionHold(BaseModel):
     trading_pair: str = Field(description="Trading pair (e.g., 'BTC-USDT')")
     connector_name: str = Field(description="Connector name")
     account_name: str = Field(description="Account name")
+    controller_id: str = Field(default="main", description="Controller that owns this position")
 
     # Buy side tracking
     buy_amount_base: Decimal = Field(default=Decimal("0"), description="Total bought amount in base currency")
@@ -172,6 +173,7 @@ class PositionHoldResponse(BaseModel):
     trading_pair: str
     connector_name: str
     account_name: str
+    controller_id: str = Field(default="main", description="Controller that owns this position")
     buy_amount_base: float
     buy_amount_quote: float
     sell_amount_base: float
@@ -310,6 +312,10 @@ class ExecutorFilterRequest(PaginationParams):
         None,
         description="Filter by status (RUNNING, TERMINATED, etc.)"
     )
+    controller_ids: Optional[List[str]] = Field(
+        None,
+        description="Filter by controller IDs"
+    )
 
 
 # ========================================
@@ -383,6 +389,7 @@ class CreateExecutorResponse(BaseModel):
     executor_type: str = Field(description="Type of executor created")
     connector_name: str = Field(description="Connector name")
     trading_pair: str = Field(description="Trading pair")
+    controller_id: str = Field(default="main", description="Controller that owns this executor")
     status: str = Field(description="Initial status")
     created_at: str = Field(description="Creation timestamp (ISO format)")
 

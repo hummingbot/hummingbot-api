@@ -97,7 +97,8 @@ async def list_executors(
             connector_name=filter_request.connector_names[0] if filter_request.connector_names else None,
             trading_pair=filter_request.trading_pairs[0] if filter_request.trading_pairs else None,
             executor_type=filter_request.executor_types[0] if filter_request.executor_types else None,
-            status=filter_request.status
+            status=filter_request.status,
+            controller_id=filter_request.controller_ids[0] if filter_request.controller_ids else None
         )
 
         # Apply additional multi-value filters
@@ -109,6 +110,8 @@ async def list_executors(
             executors = [e for e in executors if e.get("trading_pair") in filter_request.trading_pairs]
         if filter_request.executor_types and len(filter_request.executor_types) > 1:
             executors = [e for e in executors if e.get("executor_type") in filter_request.executor_types]
+        if filter_request.controller_ids and len(filter_request.controller_ids) > 1:
+            executors = [e for e in executors if e.get("controller_id") in filter_request.controller_ids]
 
         # Apply cursor-based pagination
         start_idx = 0
@@ -309,6 +312,7 @@ async def stop_executor(
 
 @router.get("/positions/summary", response_model=PositionsSummaryResponse)
 async def get_positions_summary(
+    controller_id: Optional[str] = None,
     executor_service: ExecutorService = Depends(get_executor_service),
     market_data_service: MarketDataService = Depends(get_market_data_service)
 ):
@@ -320,9 +324,12 @@ async def get_positions_summary(
     - Total realized PnL across all positions
     - Total unrealized PnL (when market rates are available)
     - List of all positions with breakeven prices and PnL
+
+    Query parameters:
+    - **controller_id**: Filter positions by controller ID
     """
     try:
-        positions = executor_service.get_positions_held()
+        positions = executor_service.get_positions_held(controller_id=controller_id)
         total_realized_pnl = sum(float(p.realized_pnl_quote) for p in positions)
         total_unrealized_pnl = None
         position_responses = []
@@ -343,6 +350,7 @@ async def get_positions_summary(
                 trading_pair=p.trading_pair,
                 connector_name=p.connector_name,
                 account_name=p.account_name,
+                controller_id=p.controller_id,
                 buy_amount_base=float(p.buy_amount_base),
                 buy_amount_quote=float(p.buy_amount_quote),
                 sell_amount_base=float(p.sell_amount_base),
@@ -378,6 +386,7 @@ async def get_position_held(
     connector_name: str,
     trading_pair: str,
     account_name: str = "master_account",
+    controller_id: str = "main",
     executor_service: ExecutorService = Depends(get_executor_service),
     market_data_service: MarketDataService = Depends(get_market_data_service)
 ):
@@ -386,12 +395,16 @@ async def get_position_held(
 
     Returns the aggregated position from executors stopped with keep_position=True,
     including breakeven prices, matched/unmatched volume, realized PnL, and unrealized PnL.
+
+    Query parameters:
+    - **controller_id**: Controller ID (default "main")
     """
     try:
         position = executor_service.get_position_held(
             account_name=account_name,
             connector_name=connector_name,
-            trading_pair=trading_pair
+            trading_pair=trading_pair,
+            controller_id=controller_id
         )
 
         if not position:
@@ -412,6 +425,7 @@ async def get_position_held(
             trading_pair=position.trading_pair,
             connector_name=position.connector_name,
             account_name=position.account_name,
+            controller_id=position.controller_id,
             buy_amount_base=float(position.buy_amount_base),
             buy_amount_quote=float(position.buy_amount_quote),
             sell_amount_base=float(position.sell_amount_base),
@@ -440,6 +454,7 @@ async def clear_position_held(
     connector_name: str,
     trading_pair: str,
     account_name: str = "master_account",
+    controller_id: str = "main",
     executor_service: ExecutorService = Depends(get_executor_service)
 ):
     """
@@ -447,12 +462,16 @@ async def clear_position_held(
 
     This removes the position from tracking but preserves historical data
     in completed executors.
+
+    Query parameters:
+    - **controller_id**: Controller ID (default "main")
     """
     try:
         cleared = executor_service.clear_position_held(
             account_name=account_name,
             connector_name=connector_name,
-            trading_pair=trading_pair
+            trading_pair=trading_pair,
+            controller_id=controller_id
         )
 
         if not cleared:

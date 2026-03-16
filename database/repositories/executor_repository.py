@@ -29,7 +29,8 @@ class ExecutorRepository:
         connector_name: str,
         trading_pair: str,
         config: Optional[str] = None,
-        status: str = "RUNNING"
+        status: str = "RUNNING",
+        controller_id: str = "main"
     ) -> ExecutorRecord:
         """Create a new executor record."""
         executor = ExecutorRecord(
@@ -38,6 +39,7 @@ class ExecutorRepository:
             account_name=account_name,
             connector_name=connector_name,
             trading_pair=trading_pair,
+            controller_id=controller_id,
             config=config,
             status=status
         )
@@ -98,6 +100,7 @@ class ExecutorRepository:
         trading_pair: Optional[str] = None,
         executor_type: Optional[str] = None,
         status: Optional[str] = None,
+        controller_id: Optional[str] = None,
         limit: int = 100,
         offset: int = 0
     ) -> List[ExecutorRecord]:
@@ -115,6 +118,8 @@ class ExecutorRepository:
             conditions.append(ExecutorRecord.executor_type == executor_type)
         if status:
             conditions.append(ExecutorRecord.status == status)
+        if controller_id:
+            conditions.append(ExecutorRecord.controller_id == controller_id)
 
         if conditions:
             stmt = stmt.where(and_(*conditions))
@@ -146,7 +151,8 @@ class ExecutorRepository:
         self,
         account_name: Optional[str] = None,
         connector_name: Optional[str] = None,
-        trading_pair: Optional[str] = None
+        trading_pair: Optional[str] = None,
+        controller_id: Optional[str] = None
     ) -> List[ExecutorRecord]:
         """Get executors that closed with POSITION_HOLD (keep_position=True)."""
         stmt = select(ExecutorRecord).where(ExecutorRecord.close_type == "POSITION_HOLD")
@@ -158,6 +164,8 @@ class ExecutorRepository:
             conditions.append(ExecutorRecord.connector_name == connector_name)
         if trading_pair:
             conditions.append(ExecutorRecord.trading_pair == trading_pair)
+        if controller_id:
+            conditions.append(ExecutorRecord.controller_id == controller_id)
 
         if conditions:
             stmt = stmt.where(and_(*conditions))
@@ -323,7 +331,7 @@ class ExecutorRepository:
             Number of executors cleaned up
         """
         from sqlalchemy import update
-        
+
         # Find executors that are RUNNING but not in the active list
         conditions = [ExecutorRecord.status == "RUNNING"]
         
