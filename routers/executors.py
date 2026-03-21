@@ -18,6 +18,7 @@ from models.executors import (
     ExecutorFilterRequest,
     ExecutorLogsResponse,
     ExecutorsSummaryResponse,
+    PerformanceReportResponse,
     PositionHoldResponse,
     PositionsSummaryResponse,
     StopExecutorRequest,
@@ -162,6 +163,40 @@ async def get_executors_summary(
     except Exception as e:
         logger.error(f"Error getting executor summary: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error getting summary: {str(e)}")
+
+
+@router.get("/performance", response_model=PerformanceReportResponse)
+async def get_performance_report(
+    controller_id: Optional[str] = None,
+    executor_service: ExecutorService = Depends(get_executor_service),
+    market_data_service: MarketDataService = Depends(get_market_data_service)
+):
+    """
+    Get a performance report for executors.
+
+    Aggregates metrics from all completed executors (optionally filtered by controller_id):
+    - Realized PnL (from completed executors, excluding POSITION_HOLD close type)
+    - Unrealized PnL (from active executors + position holds)
+    - Global PnL (realized + unrealized)
+    - Fees and volume totals
+    - Win rate and Sharpe ratio
+    - Breakdown by executor type
+    - Active position count
+
+    Query parameters:
+    - **controller_id**: Filter by controller ID (omit for all controllers)
+    """
+    try:
+        report = await executor_service.get_performance_report(
+            controller_id=controller_id,
+            market_data_service=market_data_service
+        )
+        return PerformanceReportResponse(**report)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating performance report: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error generating performance report: {str(e)}")
 
 
 @router.get("/{executor_id}/logs", response_model=ExecutorLogsResponse)

@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import and_, desc, func, select
+from sqlalchemy import and_, case, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import ExecutorOrder, ExecutorRecord
@@ -231,6 +231,112 @@ class ExecutorRepository:
             "type_counts": type_counts,
             "status_counts": status_counts,
             "connector_counts": connector_counts
+        }
+
+    async def get_performance_report(
+        self,
+        controller_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Get a performance report, optionally filtered by controller_id.
+
+        Returns aggregate metrics: total executors, PnL, fees, volume,
+        win rate, per-executor PnL list (for Sharpe), and breakdown by type.
+        """
+        base_filter = []
+        if controller_id:
+            base_filter.append(ExecutorRecord.controller_id == controller_id)
+
+        def _where(stmt):
+            return stmt.where(and_(*base_filter)) if base_filter else stmt
+
+        # --- Status counts ---
+        status_stmt = _where(
+            select(
+                ExecutorRecord.status,
+                func.count(ExecutorRecord.id).label("cnt"),
+            ).group_by(ExecutorRecord.status)
+        )
+        status_rows = await self.session.execute(status_stmt)
+        status_counts = {r.status: r.cnt for r in status_rows}
+
+        total_executors = sum(status_counts.values())
+
+        # --- Aggregate PnL / fees / volume (completed only, excluding POSITION_HOLD to avoid double-counting) ---
+        completed_filter = base_filter + [
+            ExecutorRecord.status != "RUNNING",
+            ExecutorRecord.close_type != "POSITION_HOLD",
+        ]
+        agg_stmt = select(
+            func.coalesce(func.sum(ExecutorRecord.net_pnl_quote), Decimal(0)).label("pnl"),
+            func.coalesce(func.sum(ExecutorRecord.cum_fees_quote), Decimal(0)).label("fees"),
+            func.coalesce(func.sum(ExecutorRecord.filled_amount_quote), Decimal(0)).label("vol"),
+            func.coalesce(func.avg(ExecutorRecord.net_pnl_pct), Decimal(0)).label("pnl_pct_avg"),
+            func.count(ExecutorRecord.id).label("completed_count"),
+            func.sum(case(
+                (ExecutorRecord.net_pnl_quote > 0, 1),
+                else_=0,
+            )).label("wins"),
+        )
+        if completed_filter:
+            agg_stmt = agg_stmt.where(and_(*completed_filter))
+        agg_row = (await self.session.execute(agg_stmt)).one()
+
+        completed_count = agg_row.completed_count or 0
+        wins = agg_row.wins or 0
+        win_rate = (wins / completed_count) if completed_count > 0 else 0.0
+
+        # --- Per-executor PnL list for Sharpe (excluding POSITION_HOLD) ---
+        pnl_list_stmt = _where(
+            select(ExecutorRecord.net_pnl_quote).where(
+                ExecutorRecord.status != "RUNNING",
+                ExecutorRecord.close_type != "POSITION_HOLD",
+            )
+        )
+        pnl_rows = await self.session.execute(pnl_list_stmt)
+        pnl_values = [float(r[0] or 0) for r in pnl_rows]
+
+        # --- Breakdown by executor type ---
+        type_stmt = _where(
+            select(
+                ExecutorRecord.executor_type,
+                func.count(ExecutorRecord.id).label("total"),
+                func.sum(case(
+                    (ExecutorRecord.status != "RUNNING", 1),
+                    else_=0,
+                )).label("completed"),
+                func.sum(case(
+                    (ExecutorRecord.status == "RUNNING", 1),
+                    else_=0,
+                )).label("running"),
+                func.coalesce(func.sum(ExecutorRecord.net_pnl_quote), Decimal(0)).label("pnl"),
+                func.coalesce(func.sum(ExecutorRecord.filled_amount_quote), Decimal(0)).label("vol"),
+                func.coalesce(func.sum(ExecutorRecord.cum_fees_quote), Decimal(0)).label("fees"),
+            ).group_by(ExecutorRecord.executor_type)
+        )
+        type_rows = await self.session.execute(type_stmt)
+        by_type = [
+            {
+                "executor_type": r.executor_type,
+                "total": r.total,
+                "completed": r.completed or 0,
+                "running": r.running or 0,
+                "pnl_quote": float(r.pnl),
+                "volume_quote": float(r.vol),
+                "fees_quote": float(r.fees),
+            }
+            for r in type_rows
+        ]
+
+        return {
+            "total_executors": total_executors,
+            "status_counts": status_counts,
+            "pnl_total_quote": float(agg_row.pnl),
+            "pnl_pct_avg": float(agg_row.pnl_pct_avg),
+            "fees_total_quote": float(agg_row.fees),
+            "volume_total_quote": float(agg_row.vol),
+            "win_rate": win_rate,
+            "pnl_values": pnl_values,
+            "by_type": by_type,
         }
 
     # ========================================

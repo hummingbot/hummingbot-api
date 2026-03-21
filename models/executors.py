@@ -424,6 +424,34 @@ class ExecutorsSummaryResponse(BaseModel):
     by_status: Dict[str, int] = Field(description="Executor count by status")
 
 
+class ExecutorTypeBreakdown(BaseModel):
+    """Performance breakdown for a single executor type."""
+    executor_type: str = Field(description="Executor type name")
+    total: int = Field(description="Total executors of this type")
+    completed: int = Field(description="Completed executors")
+    running: int = Field(description="Currently running executors")
+    pnl_quote: float = Field(description="Net PnL in quote currency")
+    volume_quote: float = Field(description="Total filled volume in quote currency")
+    fees_quote: float = Field(description="Cumulative fees in quote currency")
+
+
+class PerformanceReportResponse(BaseModel):
+    """Performance report for executors, optionally filtered by controller_id."""
+    controller_id: Optional[str] = Field(None, description="Controller ID filter (None = all)")
+    total_executors: int = Field(description="Total executor count")
+    by_status: Dict[str, int] = Field(description="Executor count by status")
+    pnl_total_quote: float = Field(description="Realized PnL from completed executors in quote currency")
+    unrealized_pnl_quote: float = Field(description="Unrealized PnL from active executors and position holds")
+    global_pnl_quote: float = Field(description="Global PnL (realized + unrealized)")
+    pnl_pct_avg: float = Field(description="Average PnL percentage across completed executors")
+    fees_total_quote: float = Field(description="Total cumulative fees in quote currency")
+    volume_total_quote: float = Field(description="Total filled volume in quote currency")
+    win_rate: float = Field(description="Win rate: fraction of completed executors with positive PnL")
+    sharpe_ratio: Optional[float] = Field(None, description="Sharpe ratio of PnL returns (null if <2 executors)")
+    by_type: List[ExecutorTypeBreakdown] = Field(description="Performance breakdown by executor type")
+    active_positions: int = Field(description="Number of active position holds")
+
+
 class ExecutorLogEntry(BaseModel):
     """A single log entry from an executor."""
     timestamp: str = Field(description="ISO-format timestamp")

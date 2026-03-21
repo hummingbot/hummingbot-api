@@ -68,10 +68,13 @@ class AsyncDatabaseManager:
         for table, column, sql in migrations:
             try:
                 # Check if column already exists
-                result = await conn.execute(text(
-                    "SELECT column_name FROM information_schema.columns "
-                    f"WHERE table_name = '{table}' AND column_name = '{column}'"
-                ))
+                result = await conn.execute(
+                    text(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_name = :table AND column_name = :column"
+                    ),
+                    {"table": table, "column": column}
+                )
                 if result.fetchone() is None:
                     await conn.execute(text(sql))
                     logger.info(f"Migration: added {column} to {table}")

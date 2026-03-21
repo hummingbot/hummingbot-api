@@ -723,6 +723,100 @@ class ExecutorService:
             "by_status": by_status
         }
 
+    async def get_performance_report(
+        self,
+        controller_id: Optional[str] = None,
+        market_data_service=None
+    ) -> Dict[str, Any]:
+        """
+        Generate a performance report aggregating executor metrics.
+
+        Combines database aggregations (completed executors) with in-memory
+        active executor and position hold unrealized PnL.
+        Excludes POSITION_HOLD close_type from realized PnL to avoid double-counting.
+
+        Args:
+            controller_id: Filter by controller ID (None = all)
+            market_data_service: MarketDataService for position hold unrealized PnL
+
+        Returns:
+            Dictionary with performance metrics ready for PerformanceReportResponse.
+        """
+        import math
+
+        report: Dict[str, Any] = {
+            "controller_id": controller_id,
+            "total_executors": 0,
+            "by_status": {},
+            "pnl_total_quote": 0.0,
+            "unrealized_pnl_quote": 0.0,
+            "global_pnl_quote": 0.0,
+            "pnl_pct_avg": 0.0,
+            "fees_total_quote": 0.0,
+            "volume_total_quote": 0.0,
+            "win_rate": 0.0,
+            "sharpe_ratio": None,
+            "by_type": [],
+            "active_positions": 0,
+        }
+
+        if self.db_manager:
+            try:
+                async with self.db_manager.get_session_context() as session:
+                    from database.repositories.executor_repository import ExecutorRepository
+                    repo = ExecutorRepository(session)
+                    db_data = await repo.get_performance_report(controller_id=controller_id)
+
+                report["total_executors"] = db_data["total_executors"]
+                report["by_status"] = db_data["status_counts"]
+                report["pnl_total_quote"] = db_data["pnl_total_quote"]
+                report["pnl_pct_avg"] = db_data["pnl_pct_avg"]
+                report["fees_total_quote"] = db_data["fees_total_quote"]
+                report["volume_total_quote"] = db_data["volume_total_quote"]
+                report["win_rate"] = db_data["win_rate"]
+                report["by_type"] = db_data["by_type"]
+
+                # Sharpe ratio: mean(pnl) / std(pnl), requires >= 2 values
+                pnl_values = db_data.get("pnl_values", [])
+                if len(pnl_values) >= 2:
+                    mean_pnl = sum(pnl_values) / len(pnl_values)
+                    variance = sum((v - mean_pnl) ** 2 for v in pnl_values) / (len(pnl_values) - 1)
+                    std_pnl = math.sqrt(variance)
+                    if std_pnl > 0:
+                        report["sharpe_ratio"] = round(mean_pnl / std_pnl, 4)
+
+            except Exception as e:
+                logger.error(f"Error generating performance report: {e}", exc_info=True)
+
+        # --- Unrealized PnL from active executors ---
+        unrealized_pnl = 0.0
+        for executor_id, executor in self._active_executors.items():
+            metadata = self._executor_metadata.get(executor_id, {})
+            if controller_id and metadata.get("controller_id", "main") != controller_id:
+                continue
+            try:
+                unrealized_pnl += float(executor.executor_info.net_pnl_quote)
+            except Exception:
+                pass
+
+        # --- Unrealized PnL from position holds ---
+        positions = self.get_positions_held(controller_id=controller_id)
+        report["active_positions"] = len(positions)
+
+        if market_data_service:
+            for p in positions:
+                parts = p.trading_pair.split("-")
+                if len(parts) == 2:
+                    base, quote = parts
+                    rate = market_data_service.get_rate(base, quote)
+                    if rate is not None:
+                        unrealized_pnl += float(p.get_unrealized_pnl(rate))
+
+        report["unrealized_pnl_quote"] = round(unrealized_pnl, 8)
+        report["global_pnl_quote"] = round(report["pnl_total_quote"] + unrealized_pnl, 8)
+
+        return report
+
     async def _persist_executor_created(self, executor_id: str, executor: ExecutorBase):
         """Persist executor creation to database."""
         if not self.db_manager:
