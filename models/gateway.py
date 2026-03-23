@@ -50,10 +50,9 @@ class SendTransactionRequest(BaseModel):
 
 
 class GatewayWalletCredential(BaseModel):
-    """Credentials for connecting a Gateway wallet"""
+    """Credentials for adding an existing wallet to Gateway"""
     chain: str = Field(description="Blockchain chain (e.g., 'solana', 'ethereum')")
     private_key: str = Field(description="Wallet private key")
-    network: Optional[str] = Field(default=None, description="Network to use (defaults to chain's default)")
     set_default: bool = Field(default=True, description="Set as default wallet for this chain")
 
 
