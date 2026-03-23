@@ -171,7 +171,7 @@ async def add_gateway_wallet(
     Add a wallet to Gateway. Gateway handles encryption and storage internally.
 
     Args:
-        wallet_credential: Wallet credentials (chain and private_key)
+        wallet_credential: Wallet credentials (chain, private_key, and optional set_default)
 
     Returns:
         Wallet information from Gateway including address
@@ -182,7 +182,8 @@ async def add_gateway_wallet(
     try:
         result = await accounts_service.add_gateway_wallet(
             chain=wallet_credential.chain,
-            private_key=wallet_credential.private_key
+            private_key=wallet_credential.private_key,
+            set_default=wallet_credential.set_default
         )
         return result
     except HTTPException:

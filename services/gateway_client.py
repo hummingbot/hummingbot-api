@@ -199,6 +199,13 @@ class GatewayClient:
             "address": address
         })
 
+    async def set_default_wallet(self, chain: str, address: str) -> Dict:
+        """Set the default wallet for a chain in Gateway"""
+        return await self._request("POST", "wallet/setDefault", json={
+            "chain": chain,
+            "address": address
+        })
+
     async def get_balances(self, chain: str, network: str, address: str, tokens: Optional[List[str]] = None) -> Dict:
         """Get token balances for a wallet"""
         return await self._request("POST", f"chains/{chain}/balances", json={

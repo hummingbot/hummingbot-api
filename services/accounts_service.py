@@ -2017,13 +2017,14 @@ class AccountsService:
             logger.error(f"Error getting Gateway wallets: {e}")
             raise HTTPException(status_code=500, detail=f"Failed to get wallets: {str(e)}")
 
-    async def add_gateway_wallet(self, chain: str, private_key: str) -> Dict:
+    async def add_gateway_wallet(self, chain: str, private_key: str, set_default: bool = True) -> Dict:
         """
         Add a wallet to Gateway. Gateway handles encryption internally.
 
         Args:
             chain: Blockchain chain (e.g., 'solana', 'ethereum')
             private_key: Wallet private key
+            set_default: Set as default wallet for this chain (default: True)
 
         Returns:
             Dictionary with wallet information from Gateway
@@ -2032,7 +2033,7 @@ class AccountsService:
             raise HTTPException(status_code=503, detail="Gateway service is not available")
 
         try:
-            result = await self.gateway_client.add_wallet(chain, private_key, set_default=True)
+            result = await self.gateway_client.add_wallet(chain, private_key, set_default=set_default)
 
             if "error" in result:
                 raise HTTPException(status_code=400, detail=f"Gateway error: {result['error']}")
