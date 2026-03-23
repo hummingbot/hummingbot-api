@@ -39,6 +39,9 @@ class GatewayClient:
         default_wallet = await self.get_default_wallet_address(chain)
         if not default_wallet:
             raise ValueError(f"No wallet configured for chain '{chain}'")
+        # Skip placeholder wallet addresses (e.g., "ethereum-default-wallet", "solana-default-wallet")
+        if default_wallet.endswith("-default-wallet"):
+            raise ValueError(f"No valid wallet configured for chain '{chain}' (found placeholder: {default_wallet})")
         return default_wallet
 
     async def _get_session(self) -> aiohttp.ClientSession:
