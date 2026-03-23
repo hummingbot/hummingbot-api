@@ -201,7 +201,7 @@ async def add_gateway_wallet(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.delete("/gateway/{chain}/{address}")
+@router.delete("/gateway/wallet/{chain}/{address}")
 async def remove_gateway_wallet(
     chain: str,
     address: str,
