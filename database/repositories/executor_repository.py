@@ -22,15 +22,15 @@ class ExecutorRepository:
     # ========================================
 
     async def create_executor(
-        self,
-        executor_id: str,
-        executor_type: str,
-        account_name: str,
-        connector_name: str,
-        trading_pair: str,
-        config: Optional[str] = None,
-        status: str = "RUNNING",
-        controller_id: str = "main"
+            self,
+            executor_id: str,
+            executor_type: str,
+            account_name: str,
+            connector_name: str,
+            trading_pair: str,
+            config: Optional[str] = None,
+            status: str = "RUNNING",
+            controller_id: str = "main"
     ) -> ExecutorRecord:
         """Create a new executor record."""
         executor = ExecutorRecord(
@@ -50,15 +50,15 @@ class ExecutorRepository:
         return executor
 
     async def update_executor(
-        self,
-        executor_id: str,
-        status: Optional[str] = None,
-        close_type: Optional[str] = None,
-        net_pnl_quote: Optional[Decimal] = None,
-        net_pnl_pct: Optional[Decimal] = None,
-        cum_fees_quote: Optional[Decimal] = None,
-        filled_amount_quote: Optional[Decimal] = None,
-        final_state: Optional[str] = None
+            self,
+            executor_id: str,
+            status: Optional[str] = None,
+            close_type: Optional[str] = None,
+            net_pnl_quote: Optional[Decimal] = None,
+            net_pnl_pct: Optional[Decimal] = None,
+            cum_fees_quote: Optional[Decimal] = None,
+            filled_amount_quote: Optional[Decimal] = None,
+            final_state: Optional[str] = None
     ) -> Optional[ExecutorRecord]:
         """Update an executor record."""
         stmt = select(ExecutorRecord).where(ExecutorRecord.executor_id == executor_id)
@@ -94,15 +94,15 @@ class ExecutorRepository:
         return result.scalar_one_or_none()
 
     async def get_executors(
-        self,
-        account_name: Optional[str] = None,
-        connector_name: Optional[str] = None,
-        trading_pair: Optional[str] = None,
-        executor_type: Optional[str] = None,
-        status: Optional[str] = None,
-        controller_id: Optional[str] = None,
-        limit: int = 100,
-        offset: int = 0
+            self,
+            account_name: Optional[str] = None,
+            connector_name: Optional[str] = None,
+            trading_pair: Optional[str] = None,
+            executor_type: Optional[str] = None,
+            status: Optional[str] = None,
+            controller_id: Optional[str] = None,
+            limit: int = 100,
+            offset: int = 0
     ) -> List[ExecutorRecord]:
         """Get executors with optional filters."""
         stmt = select(ExecutorRecord)
@@ -130,9 +130,9 @@ class ExecutorRepository:
         return list(result.scalars().all())
 
     async def get_active_executors(
-        self,
-        account_name: Optional[str] = None,
-        connector_name: Optional[str] = None
+            self,
+            account_name: Optional[str] = None,
+            connector_name: Optional[str] = None
     ) -> List[ExecutorRecord]:
         """Get all active (running) executors."""
         stmt = select(ExecutorRecord).where(ExecutorRecord.status == "RUNNING")
@@ -148,11 +148,11 @@ class ExecutorRepository:
         return list(result.scalars().all())
 
     async def get_position_hold_executors(
-        self,
-        account_name: Optional[str] = None,
-        connector_name: Optional[str] = None,
-        trading_pair: Optional[str] = None,
-        controller_id: Optional[str] = None
+            self,
+            account_name: Optional[str] = None,
+            connector_name: Optional[str] = None,
+            trading_pair: Optional[str] = None,
+            controller_id: Optional[str] = None
     ) -> List[ExecutorRecord]:
         """Get executors that closed with POSITION_HOLD (keep_position=True)."""
         stmt = select(ExecutorRecord).where(ExecutorRecord.close_type == "POSITION_HOLD")
@@ -234,8 +234,8 @@ class ExecutorRepository:
         }
 
     async def get_performance_report(
-        self,
-        controller_id: Optional[str] = None
+            self,
+            controller_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """Get a performance report, optionally filtered by controller_id.
 
@@ -246,16 +246,13 @@ class ExecutorRepository:
         if controller_id:
             base_filter.append(ExecutorRecord.controller_id == controller_id)
 
-        def _where(stmt):
-            return stmt.where(and_(*base_filter)) if base_filter else stmt
-
         # --- Status counts ---
-        status_stmt = _where(
-            select(
-                ExecutorRecord.status,
-                func.count(ExecutorRecord.id).label("cnt"),
-            ).group_by(ExecutorRecord.status)
-        )
+        status_stmt = select(
+            ExecutorRecord.status,
+            func.count(ExecutorRecord.id).label("cnt"),
+        ).group_by(ExecutorRecord.status)
+        if base_filter:
+            status_stmt = status_stmt.where(and_(*base_filter))
         status_rows = await self.session.execute(status_stmt)
         status_counts = {r.status: r.cnt for r in status_rows}
 
@@ -276,9 +273,7 @@ class ExecutorRepository:
                 (ExecutorRecord.net_pnl_quote > 0, 1),
                 else_=0,
             )).label("wins"),
-        )
-        if completed_filter:
-            agg_stmt = agg_stmt.where(and_(*completed_filter))
+        ).where(and_(*completed_filter))
         agg_row = (await self.session.execute(agg_stmt)).one()
 
         completed_count = agg_row.completed_count or 0
@@ -286,33 +281,30 @@ class ExecutorRepository:
         win_rate = (wins / completed_count) if completed_count > 0 else 0.0
 
         # --- Per-executor PnL list for Sharpe (excluding POSITION_HOLD) ---
-        pnl_list_stmt = _where(
-            select(ExecutorRecord.net_pnl_quote).where(
-                ExecutorRecord.status != "RUNNING",
-                ExecutorRecord.close_type != "POSITION_HOLD",
-            )
+        pnl_list_stmt = select(ExecutorRecord.net_pnl_quote).where(
+            and_(*completed_filter)
         )
         pnl_rows = await self.session.execute(pnl_list_stmt)
         pnl_values = [float(r[0] or 0) for r in pnl_rows]
 
-        # --- Breakdown by executor type ---
-        type_stmt = _where(
-            select(
-                ExecutorRecord.executor_type,
-                func.count(ExecutorRecord.id).label("total"),
-                func.sum(case(
-                    (ExecutorRecord.status != "RUNNING", 1),
-                    else_=0,
-                )).label("completed"),
-                func.sum(case(
-                    (ExecutorRecord.status == "RUNNING", 1),
-                    else_=0,
-                )).label("running"),
-                func.coalesce(func.sum(ExecutorRecord.net_pnl_quote), Decimal(0)).label("pnl"),
-                func.coalesce(func.sum(ExecutorRecord.filled_amount_quote), Decimal(0)).label("vol"),
-                func.coalesce(func.sum(ExecutorRecord.cum_fees_quote), Decimal(0)).label("fees"),
-            ).group_by(ExecutorRecord.executor_type)
-        )
+        # --- Breakdown by executor type (also excluding POSITION_HOLD to match aggregate totals) ---
+        type_stmt = select(
+            ExecutorRecord.executor_type,
+            func.count(ExecutorRecord.id).label("total"),
+            func.sum(case(
+                (ExecutorRecord.status != "RUNNING", 1),
+                else_=0,
+            )).label("completed"),
+            func.sum(case(
+                (ExecutorRecord.status == "RUNNING", 1),
+                else_=0,
+            )).label("running"),
+            func.coalesce(func.sum(ExecutorRecord.net_pnl_quote), Decimal(0)).label("pnl"),
+            func.coalesce(func.sum(ExecutorRecord.filled_amount_quote), Decimal(0)).label("vol"),
+            func.coalesce(func.sum(ExecutorRecord.cum_fees_quote), Decimal(0)).label("fees"),
+        ).where(
+            and_(*completed_filter)
+        ).group_by(ExecutorRecord.executor_type)
         type_rows = await self.session.execute(type_stmt)
         by_type = [
             {
@@ -344,15 +336,15 @@ class ExecutorRepository:
     # ========================================
 
     async def create_executor_order(
-        self,
-        executor_id: str,
-        client_order_id: str,
-        order_type: str,
-        trade_type: str,
-        amount: Decimal,
-        price: Optional[Decimal] = None,
-        exchange_order_id: Optional[str] = None,
-        status: str = "SUBMITTED"
+            self,
+            executor_id: str,
+            client_order_id: str,
+            order_type: str,
+            trade_type: str,
+            amount: Decimal,
+            price: Optional[Decimal] = None,
+            exchange_order_id: Optional[str] = None,
+            status: str = "SUBMITTED"
     ) -> ExecutorOrder:
         """Create a new executor order record."""
         order = ExecutorOrder(
@@ -372,12 +364,12 @@ class ExecutorRepository:
         return order
 
     async def update_executor_order(
-        self,
-        client_order_id: str,
-        status: Optional[str] = None,
-        filled_amount: Optional[Decimal] = None,
-        average_fill_price: Optional[Decimal] = None,
-        exchange_order_id: Optional[str] = None
+            self,
+            client_order_id: str,
+            status: Optional[str] = None,
+            filled_amount: Optional[Decimal] = None,
+            average_fill_price: Optional[Decimal] = None,
+            exchange_order_id: Optional[str] = None
     ) -> Optional[ExecutorOrder]:
         """Update an executor order record."""
         stmt = select(ExecutorOrder).where(ExecutorOrder.client_order_id == client_order_id)
@@ -400,9 +392,9 @@ class ExecutorRepository:
         return order
 
     async def get_executor_orders(
-        self,
-        executor_id: str,
-        status: Optional[str] = None
+            self,
+            executor_id: str,
+            status: Optional[str] = None
     ) -> List[ExecutorOrder]:
         """Get orders for an executor."""
         stmt = select(ExecutorOrder).where(ExecutorOrder.executor_id == executor_id)
@@ -422,17 +414,15 @@ class ExecutorRepository:
         return result.scalar_one_or_none()
 
     async def cleanup_orphaned_executors(
-        self,
-        active_executor_ids: List[str],
-        close_type: str = "SYSTEM_CLEANUP"
+            self,
+            active_executor_ids: List[str],
+            close_type: str = "SYSTEM_CLEANUP"
     ) -> int:
         """
         Clean up orphaned executors - those marked as RUNNING but not in active memory.
-        
         Args:
             active_executor_ids: List of executor IDs currently active in memory
             close_type: Close type to set for cleaned up executors
-            
         Returns:
             Number of executors cleaned up
         """
@@ -440,15 +430,15 @@ class ExecutorRepository:
 
         # Find executors that are RUNNING but not in the active list
         conditions = [ExecutorRecord.status == "RUNNING"]
-        
+
         if active_executor_ids:
             conditions.append(~ExecutorRecord.executor_id.in_(active_executor_ids))
-        
+
         # First, get the count of orphaned executors for logging
         count_stmt = select(func.count(ExecutorRecord.id)).where(and_(*conditions))
         count_result = await self.session.execute(count_stmt)
         orphaned_count = count_result.scalar() or 0
-        
+
         if orphaned_count > 0:
             # Update orphaned executors to TERMINATED status
             update_stmt = (
@@ -460,8 +450,8 @@ class ExecutorRepository:
                     closed_at=datetime.now(timezone.utc)
                 )
             )
-            
+
             await self.session.execute(update_stmt)
             await self.session.flush()
-        
+
         return orphaned_count

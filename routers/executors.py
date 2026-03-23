@@ -62,7 +62,8 @@ async def create_executor(
     try:
         result = await executor_service.create_executor(
             executor_config=request.executor_config,
-            account_name=request.account_name
+            account_name=request.account_name,
+            controller_id=request.controller_id
         )
         return CreateExecutorResponse(**result)
     except HTTPException:

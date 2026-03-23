@@ -316,7 +316,8 @@ class ExecutorService:
     async def create_executor(
         self,
         executor_config: Dict[str, Any],
-        account_name: Optional[str] = None
+        account_name: Optional[str] = None,
+        controller_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Create and start a new executor.
@@ -389,7 +390,7 @@ class ExecutorService:
 
         # Store executor and metadata
         executor_id = typed_config.id
-        controller_id = getattr(typed_config, "controller_id", "main") or "main"
+        controller_id = controller_id or getattr(typed_config, "controller_id", "main") or "main"
         self._active_executors[executor_id] = executor
         self._executor_metadata[executor_id] = {
             "account_name": account,
