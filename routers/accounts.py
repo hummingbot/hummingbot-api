@@ -170,13 +170,14 @@ async def list_gateway_wallets(accounts_service: AccountsService = Depends(get_a
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/gateway/add-wallet", status_code=status.HTTP_201_CREATED)
+@router.post("/gateway/wallet/add", status_code=status.HTTP_201_CREATED)
 async def add_gateway_wallet(
     wallet_credential: GatewayWalletCredential,
     accounts_service: AccountsService = Depends(get_accounts_service)
 ):
     """
-    Add a wallet to Gateway. Gateway handles encryption and storage internally.
+    Add an existing wallet to Gateway using its private key.
+    Gateway handles encryption and storage internally.
 
     Args:
         wallet_credential: Wallet credentials (chain, private_key, and optional set_default)
@@ -416,5 +417,3 @@ async def set_default_gateway_wallet(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error setting default wallet: {str(e)}")
-
-
