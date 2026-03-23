@@ -201,6 +201,57 @@ async def add_gateway_wallet(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/gateway/wallet/set-default")
+async def set_default_gateway_wallet(
+    request: SetDefaultWalletRequest,
+    accounts_service: AccountsService = Depends(get_accounts_service)
+) -> Dict:
+    """
+    Set the default wallet for a chain in Gateway.
+
+    When multiple wallets are configured for a chain, this endpoint allows
+    switching which wallet is used as the default for operations.
+
+    Args:
+        request: Contains chain and wallet address to set as default
+
+    Returns:
+        Dict with success status and updated wallet info.
+
+    Example: POST /accounts/gateway/wallet/set-default
+    {
+        "chain": "solana",
+        "address": "82SggYRE2Vo4jN4a2pk3aQ4SET4ctafZJGbowmCqyHx5"
+    }
+    """
+    try:
+        if not await accounts_service.gateway_client.ping():
+            raise HTTPException(status_code=503, detail="Gateway service is not available")
+
+        result = await accounts_service.gateway_client.set_default_wallet(
+            chain=request.chain,
+            address=request.address
+        )
+
+        if result is None:
+            raise HTTPException(status_code=502, detail="Failed to set default wallet: Gateway returned no response")
+
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=f"Failed to set default wallet: {result.get('error')}")
+
+        return {
+            "success": True,
+            "message": f"Set {request.address} as default wallet for {request.chain}",
+            "chain": request.chain,
+            "address": request.address
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error setting default wallet: {str(e)}")
+
+
 @router.delete("/gateway/wallet/{chain}/{address}")
 async def remove_gateway_wallet(
     chain: str,
@@ -366,54 +417,3 @@ async def send_gateway_wallet_transaction(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error sending transaction: {str(e)}")
-
-
-@router.post("/gateway/wallet/set-default")
-async def set_default_gateway_wallet(
-    request: SetDefaultWalletRequest,
-    accounts_service: AccountsService = Depends(get_accounts_service)
-) -> Dict:
-    """
-    Set the default wallet for a chain in Gateway.
-
-    When multiple wallets are configured for a chain, this endpoint allows
-    switching which wallet is used as the default for operations.
-
-    Args:
-        request: Contains chain and wallet address to set as default
-
-    Returns:
-        Dict with success status and updated wallet info.
-
-    Example: POST /accounts/gateway/wallet/set-default
-    {
-        "chain": "solana",
-        "address": "82SggYRE2Vo4jN4a2pk3aQ4SET4ctafZJGbowmCqyHx5"
-    }
-    """
-    try:
-        if not await accounts_service.gateway_client.ping():
-            raise HTTPException(status_code=503, detail="Gateway service is not available")
-
-        result = await accounts_service.gateway_client.set_default_wallet(
-            chain=request.chain,
-            address=request.address
-        )
-
-        if result is None:
-            raise HTTPException(status_code=502, detail="Failed to set default wallet: Gateway returned no response")
-
-        if "error" in result:
-            raise HTTPException(status_code=400, detail=f"Failed to set default wallet: {result.get('error')}")
-
-        return {
-            "success": True,
-            "message": f"Set {request.address} as default wallet for {request.chain}",
-            "chain": request.chain,
-            "address": request.address
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error setting default wallet: {str(e)}")
