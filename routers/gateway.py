@@ -679,7 +679,7 @@ async def delete_network_token(
 # ============================================
 
 @router.post("/wallets/create")
-async def create_gateway_wallet(
+async def create_wallet(
     request: CreateWalletRequest,
     accounts_service: AccountsService = Depends(get_accounts_service)
 ) -> Dict:
@@ -722,7 +722,7 @@ async def create_gateway_wallet(
 
 
 @router.post("/wallets/show-private-key")
-async def show_gateway_wallet_private_key(
+async def show_private_key(
     request: ShowPrivateKeyRequest,
     accounts_service: AccountsService = Depends(get_accounts_service)
 ) -> Dict:
@@ -769,7 +769,7 @@ async def show_gateway_wallet_private_key(
 
 
 @router.post("/wallets/send")
-async def send_gateway_wallet_transaction(
+async def send_transaction(
     request: SendTransactionRequest,
     accounts_service: AccountsService = Depends(get_accounts_service)
 ) -> Dict:
