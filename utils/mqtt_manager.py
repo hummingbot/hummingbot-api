@@ -151,7 +151,7 @@ class MQTTManager:
                         await self._handle_command_response(bot_id, channel, data)
                     elif channel.startswith("external/event/"):
                         await self._handle_external_event(bot_id, channel, data)
-                    elif channel in ["history", "start", "stop", "config", "import_strategy"]:
+                    elif channel in ["history", "lphistory", "start", "stop", "config", "import_strategy"]:
                         # These are command channels - responses should come on response/* topics
                         logger.debug(f"Command channel '{channel}' for bot {bot_id} - waiting for response")
                     else:
