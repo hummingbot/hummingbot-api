@@ -58,11 +58,13 @@ from routers import (  # noqa: E402
     rate_oracle,
     scripts,
     trading,
+    websocket,
 )
 from services.accounts_service import AccountsService  # noqa: E402
 from services.bots_orchestrator import BotsOrchestrator  # noqa: E402
 from services.docker_service import DockerService  # noqa: E402
 from services.executor_service import ExecutorService  # noqa: E402
+from services.executor_ws_manager import ExecutorWebSocketManager  # noqa: E402
 from services.gateway_service import GatewayService  # noqa: E402
 from services.market_data_service import MarketDataService  # noqa: E402
 from services.trading_service import TradingService  # noqa: E402
@@ -271,6 +273,10 @@ async def lifespan(app: FastAPI):
     app.state.gateway_service = gateway_service
     app.state.bot_archiver = bot_archiver
 
+    # WebSocket manager for executor streaming
+    executor_ws_manager = ExecutorWebSocketManager(executor_service, market_data_service)
+    app.state.executor_ws_manager = executor_ws_manager
+
     logging.info("All services started successfully")
 
     yield
@@ -281,6 +287,7 @@ async def lifespan(app: FastAPI):
 
     logging.info("Shutting down services...")
 
+    await executor_ws_manager.shutdown()
     bots_orchestrator.stop()
     await accounts_service.stop()
     await executor_service.stop()
@@ -380,6 +387,9 @@ app.include_router(archived_bots.router, dependencies=[Depends(auth_user)])
 
 app.include_router(executors.router, dependencies=[Depends(auth_user)])
 app.include_router(gateway_proxy.router, dependencies=[Depends(auth_user)])
+
+# WebSocket router (handles its own auth)
+app.include_router(websocket.router)
 
 
 @app.get("/")

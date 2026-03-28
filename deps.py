@@ -1,14 +1,16 @@
 from fastapi import Request
-from services.bots_orchestrator import BotsOrchestrator
+
+from database import AsyncDatabaseManager
 from services.accounts_service import AccountsService
+from services.bots_orchestrator import BotsOrchestrator
 from services.docker_service import DockerService
+from services.executor_service import ExecutorService
+from services.executor_ws_manager import ExecutorWebSocketManager
 from services.gateway_service import GatewayService
-from services.unified_connector_service import UnifiedConnectorService
 from services.market_data_service import MarketDataService
 from services.trading_service import TradingService
-from services.executor_service import ExecutorService
+from services.unified_connector_service import UnifiedConnectorService
 from utils.bot_archiver import BotArchiver
-from database import AsyncDatabaseManager
 
 
 def get_bots_orchestrator(request: Request) -> BotsOrchestrator:
@@ -59,3 +61,8 @@ def get_bot_archiver(request: Request) -> BotArchiver:
 def get_database_manager(request: Request) -> AsyncDatabaseManager:
     """Get AsyncDatabaseManager from app state."""
     return request.app.state.db_manager
+
+
+def get_executor_ws_manager(request: Request) -> ExecutorWebSocketManager:
+    """Get ExecutorWebSocketManager from app state."""
+    return request.app.state.executor_ws_manager
