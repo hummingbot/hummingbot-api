@@ -69,6 +69,7 @@ from services.gateway_service import GatewayService  # noqa: E402
 from services.market_data_service import MarketDataService  # noqa: E402
 from services.trading_service import TradingService  # noqa: E402
 from services.unified_connector_service import UnifiedConnectorService  # noqa: E402
+from services.websocket_manager import WebSocketManager  # noqa: E402
 from utils.bot_archiver import BotArchiver  # noqa: E402
 from utils.security import BackendAPISecurity  # noqa: E402
 
@@ -213,17 +214,6 @@ async def lifespan(app: FastAPI):
         max_retries=10
     )
     logging.info("ExecutorService initialized")
-    # Ensure lp_executor is in the registry (workspace hummingbot may load after class definition)
-    try:
-        from hummingbot.strategy_v2.executors.lp_executor.data_types import LPExecutorConfig
-        from hummingbot.strategy_v2.executors.lp_executor.lp_executor import LPExecutor
-        print(f"[LP-FIX] imports OK. Registry before: {list(ExecutorService.EXECUTOR_REGISTRY.keys())}", flush=True)
-        ExecutorService.EXECUTOR_REGISTRY["lp_executor"] = (LPExecutor, LPExecutorConfig)
-        print(f"[LP-FIX] Registry after: {list(ExecutorService.EXECUTOR_REGISTRY.keys())}", flush=True)
-    except Exception as e:
-        import traceback
-        print(f"[LP-FIX] FAILED: {e}", flush=True)
-        traceback.print_exc()
 
     # =========================================================================
     # 5. Other Services
@@ -271,6 +261,9 @@ async def lifespan(app: FastAPI):
     app.state.trading_service = trading_service
     app.state.accounts_service = accounts_service
     app.state.executor_service = executor_service
+    websocket_manager = WebSocketManager(market_data_service)
+    app.state.websocket_manager = websocket_manager
+
     app.state.bots_orchestrator = bots_orchestrator
     app.state.docker_service = docker_service
     app.state.gateway_service = gateway_service
@@ -290,6 +283,7 @@ async def lifespan(app: FastAPI):
 
     logging.info("Shutting down services...")
 
+    websocket_manager.shutdown()
     await executor_ws_manager.shutdown()
     bots_orchestrator.stop()
     await accounts_service.stop()
