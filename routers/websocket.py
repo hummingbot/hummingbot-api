@@ -1,5 +1,5 @@
 """
-WebSocket router for real-time executor data streaming.
+WebSocket router for real-time market data and executor data streaming.
 """
 import asyncio
 import base64
@@ -11,6 +11,7 @@ import uuid
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from config import settings
+from services.websocket_manager import WebSocketManager
 
 logger = logging.getLogger(__name__)
 
@@ -37,9 +38,18 @@ def _authenticate_websocket(websocket: WebSocket) -> bool:
         except Exception:
             return False
     else:
-        # Fallback to query parameters
-        ws_user = websocket.query_params.get("username", "")
-        ws_pass = websocket.query_params.get("password", "")
+        # Fallback: ?token=base64(user:pass) query param
+        token = websocket.query_params.get("token")
+        if token:
+            try:
+                decoded = base64.b64decode(token).decode("utf-8")
+                ws_user, ws_pass = decoded.split(":", 1)
+            except Exception:
+                return False
+        else:
+            # Fallback to query parameters
+            ws_user = websocket.query_params.get("username", "")
+            ws_pass = websocket.query_params.get("password", "")
 
     correct_user = secrets.compare_digest(
         ws_user.encode(), settings.security.username.encode()
@@ -65,13 +75,94 @@ async def _heartbeat_loop(websocket: WebSocket) -> None:
         pass
 
 
+@router.websocket("/ws/market-data")
+async def market_data_websocket(websocket: WebSocket) -> None:
+    """
+    WebSocket endpoint for streaming market data.
+
+    Authentication: Basic Auth via Authorization header, ?token=base64(user:pass),
+    or query params (?username=...&password=...).
+
+    Subscribe/unsubscribe protocol:
+        -> {"action": "subscribe", "type": "candles", "connector": "binance",
+            "trading_pair": "BTC-USDT", "interval": "1m", "update_interval": 1.0}
+        <- {"type": "subscribed", "subscription_id": "candles_binance_BTC-USDT_1m"}
+        <- {"type": "candles", "subscription_id": "...", "data": [...], ...}
+        -> {"action": "unsubscribe", "subscription_id": "candles_binance_BTC-USDT_1m"}
+        <- {"type": "unsubscribed", "subscription_id": "..."}
+
+    Subscription types:
+        - candles: streaming candle data for a trading pair
+        - order_book: order book snapshots with configurable depth
+        - trades: real-time trade events
+    """
+    await websocket.accept()
+
+    if not _authenticate_websocket(websocket):
+        await websocket.send_json({
+            "type": "error",
+            "message": "Authentication failed",
+        })
+        await websocket.close(code=4001, reason="Authentication failed")
+        return
+
+    manager: WebSocketManager = websocket.app.state.websocket_manager
+    conn_id = manager.generate_connection_id()
+
+    await websocket.send_json({
+        "type": "connected",
+        "connection_id": conn_id,
+        "timestamp": time.time(),
+    })
+    logger.info(f"[WS-MD] Client connected: {conn_id}")
+
+    heartbeat_task = asyncio.create_task(
+        _heartbeat_loop(websocket), name=f"ws-md-hb-{conn_id}"
+    )
+
+    try:
+        while True:
+            msg = await websocket.receive_json()
+            action = msg.get("action")
+
+            if action == "subscribe":
+                await manager.handle_subscribe(conn_id, websocket, msg)
+            elif action == "unsubscribe":
+                sub_id = msg.get("subscription_id")
+                if sub_id:
+                    await manager.handle_unsubscribe(conn_id, websocket, sub_id)
+                else:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": "unsubscribe requires 'subscription_id'",
+                    })
+            elif action == "ping":
+                await websocket.send_json({
+                    "type": "pong",
+                    "timestamp": time.time(),
+                })
+            else:
+                await websocket.send_json({
+                    "type": "error",
+                    "message": f"Unknown action: {action}. "
+                               f"Valid actions: subscribe, unsubscribe, ping",
+                })
+    except WebSocketDisconnect:
+        logger.info(f"[WS-MD] Client disconnected: {conn_id}")
+    except Exception as e:
+        logger.error(f"[WS-MD] Error for {conn_id}: {e}", exc_info=True)
+    finally:
+        heartbeat_task.cancel()
+        manager.remove_connection(conn_id)
+
+
 @router.websocket("/ws/executors")
 async def executors_websocket(websocket: WebSocket) -> None:
     """
     WebSocket endpoint for streaming executor data.
 
-    Authentication: Basic Auth via Authorization header or query params
-    (?username=...&password=...).
+    Authentication: Basic Auth via Authorization header, ?token=base64(user:pass),
+    or query params (?username=...&password=...).
 
     Subscribe/unsubscribe protocol:
         -> {"action": "subscribe", "type": "executor_summary", "update_interval": 2.0}
