@@ -94,6 +94,16 @@ class StopAndArchiveResponse(BaseModel):
 
 
 # Bot deployment models
+class V2ScriptDeployment(BaseModel):
+    """Configuration for deploying a bot with a script"""
+    instance_name: str = Field(description="Unique name for the bot instance")
+    credentials_profile: str = Field(description="Name of the credentials profile to use")
+    image: str = Field(default="hummingbot/hummingbot:latest", description="Docker image for the Hummingbot instance")
+    script: Optional[str] = Field(default=None, description="Script name to run (without .py extension)")
+    script_config: Optional[str] = Field(default=None, description="Script configuration file name (without .yml extension)")
+    headless: bool = Field(default=False, description="Run in headless mode (no UI)")
+
+
 class V2ControllerDeployment(BaseModel):
     """Configuration for deploying a bot with controllers"""
     instance_name: str = Field(description="Unique name for the bot instance")

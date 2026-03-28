@@ -289,6 +289,18 @@ ensure_docker_and_compose() {
 }
 
 # --------------------------
+# Pull Hummingbot Docker Image
+# --------------------------
+pull_hummingbot_image() {
+  echo "[INFO] Pulling latest Hummingbot image (hummingbot/hummingbot:latest)..."
+  if docker pull hummingbot/hummingbot:latest; then
+    echo "[OK] Hummingbot image pulled successfully."
+  else
+    echo "[WARN] Could not pull hummingbot/hummingbot:latest (network issue?). You may need to run 'docker pull hummingbot/hummingbot:latest' manually."
+  fi
+}
+
+# --------------------------
 # Pre-flight (deps + docker)
 # --------------------------
 echo "[INFO] OS=${OS} ARCH=${ARCH}"
@@ -310,6 +322,11 @@ elif [ "$COMPOSE_ALREADY_PRESENT" = true ]; then
 else
   echo "[OK] Docker and Docker Compose have been installed."
 fi
+
+echo ""
+
+# Always pull latest Hummingbot image (first install and upgrade)
+pull_hummingbot_image
 
 echo ""
 
