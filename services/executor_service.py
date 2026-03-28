@@ -349,15 +349,38 @@ class ExecutorService:
         trading_interface = self._get_trading_interface(account)
 
         # Extract connector and trading pair from config
+        # Note: swap_executor uses 'network' instead of 'connector_name' since it calls Gateway directly
         connector_name = executor_config.get("connector_name")
         trading_pair = executor_config.get("trading_pair")
-        if not connector_name:
-            raise HTTPException(status_code=400, detail="connector_name is required in executor_config")
-        if not trading_pair:
-            raise HTTPException(status_code=400, detail="trading_pair is required in executor_config")
 
-        # Ensure connector and market are ready
-        await trading_interface.add_market(connector_name, trading_pair)
+        if executor_type == "swap_executor":
+            # SwapExecutor uses network, not connector_name
+            network = executor_config.get("network")
+            if not network:
+                raise HTTPException(status_code=400, detail="network is required for swap_executor")
+            if not trading_pair:
+                raise HTTPException(status_code=400, detail="trading_pair is required in executor_config")
+            # Use network as connector_name for metadata tracking
+            connector_name = network
+        elif executor_type == "lp_executor":
+            # LPExecutor: trading_pair is optional (resolved from pool_address)
+            if not connector_name:
+                raise HTTPException(status_code=400, detail="connector_name is required for lp_executor")
+            pool_address = executor_config.get("pool_address")
+            if not pool_address:
+                raise HTTPException(status_code=400, detail="pool_address is required for lp_executor")
+            # Ensure connector is ready (trading_pair resolved in executor on_start)
+            await trading_interface.ensure_connector(connector_name)
+            # Use pool_address as trading_pair placeholder for metadata if not provided
+            if not trading_pair:
+                trading_pair = pool_address
+        else:
+            if not connector_name:
+                raise HTTPException(status_code=400, detail="connector_name is required in executor_config")
+            if not trading_pair:
+                raise HTTPException(status_code=400, detail="trading_pair is required in executor_config")
+            # Ensure connector and market are ready
+            await trading_interface.add_market(connector_name, trading_pair)
 
         # Set timestamp if not provided (required for time-based features like time_limit)
         if "timestamp" not in executor_config or executor_config["timestamp"] is None:
