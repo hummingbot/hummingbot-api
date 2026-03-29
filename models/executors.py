@@ -274,6 +274,7 @@ class CreateExecutorRequest(BaseModel):
                         "account_name": "master_account",
                         "executor_config": {
                             "type": "swap_executor",
+                            "connector_name": "jupiter/router",
                             "network": "solana-mainnet-beta",
                             "trading_pair": "SOL-USDC",
                             "side": 2,
