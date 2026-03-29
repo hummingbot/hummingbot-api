@@ -43,6 +43,7 @@ from .bot_orchestration import (
     StopAndArchiveResponse,
     StopBotAction,
     V2ControllerDeployment,
+    V2ScriptDeployment,
 )
 
 # Connector models
@@ -84,6 +85,7 @@ from .gateway import (
     GatewayWalletCredential,
     GatewayWalletInfo,
     SendTransactionRequest,
+    SetDefaultWalletRequest,
     ShowPrivateKeyRequest,
 )
 
@@ -213,6 +215,7 @@ __all__ = [
     "StopAndArchiveRequest",
     "StopAndArchiveResponse",
     "V2ControllerDeployment",
+    "V2ScriptDeployment",
     # Trading models
     "TradeRequest",
     "TradeResponse",
@@ -282,6 +285,7 @@ __all__ = [
     "CreateWalletRequest",
     "ShowPrivateKeyRequest",
     "SendTransactionRequest",
+    "SetDefaultWalletRequest",
     "GatewayWalletCredential",
     "GatewayWalletInfo",
     "GatewayBalanceRequest",

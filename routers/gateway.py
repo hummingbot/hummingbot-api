@@ -1,19 +1,20 @@
-from fastapi import APIRouter, HTTPException, Depends, Query
-from typing import Optional, Dict, List
 import re
+from typing import Dict, List, Optional
 
+from fastapi import APIRouter, Depends, HTTPException, Query
+
+from deps import get_accounts_service, get_gateway_service
 from models import (
-    GatewayConfig,
-    GatewayStatus,
     AddPoolRequest,
     AddTokenRequest,
     CreateWalletRequest,
-    ShowPrivateKeyRequest,
+    GatewayConfig,
+    GatewayStatus,
     SendTransactionRequest,
+    ShowPrivateKeyRequest,
 )
-from services.gateway_service import GatewayService
 from services.accounts_service import AccountsService
-from deps import get_gateway_service, get_accounts_service
+from services.gateway_service import GatewayService
 
 router = APIRouter(tags=["Gateway"], prefix="/gateway")
 

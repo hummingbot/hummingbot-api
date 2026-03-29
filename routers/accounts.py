@@ -1,12 +1,11 @@
-from typing import Dict, List, Optional
-from datetime import datetime
+from typing import Dict, List
 
-from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException
 from starlette import status
 
-from services.accounts_service import AccountsService
 from deps import get_accounts_service
-from models import PaginatedResponse, GatewayWalletCredential, GatewayWalletInfo
+from models import GatewayWalletCredential, SetDefaultWalletRequest
+from services.accounts_service import AccountsService
 
 router = APIRouter(tags=["Accounts"], prefix="/accounts")
 
@@ -15,7 +14,7 @@ router = APIRouter(tags=["Accounts"], prefix="/accounts")
 async def list_accounts(accounts_service: AccountsService = Depends(get_accounts_service)):
     """
     Get a list of all account names in the system.
-    
+
     Returns:
         List of account names
     """
@@ -51,13 +50,13 @@ async def list_account_credentials(account_name: str,
 async def add_account(account_name: str, accounts_service: AccountsService = Depends(get_accounts_service)):
     """
     Create a new account with default configuration files.
-    
+
     Args:
         account_name: Name of the new account to create
-        
+
     Returns:
         Success message when account is created
-        
+
     Raises:
         HTTPException: 400 if account already exists
     """
@@ -72,13 +71,13 @@ async def add_account(account_name: str, accounts_service: AccountsService = Dep
 async def delete_account(account_name: str, accounts_service: AccountsService = Depends(get_accounts_service)):
     """
     Delete an account and all its associated credentials.
-    
+
     Args:
         account_name: Name of the account to delete
-        
+
     Returns:
         Success message when account is deleted
-        
+
     Raises:
         HTTPException: 400 if trying to delete master account, 404 if account not found
     """
@@ -95,14 +94,14 @@ async def delete_account(account_name: str, accounts_service: AccountsService = 
 async def delete_credential(account_name: str, connector_name: str, accounts_service: AccountsService = Depends(get_accounts_service)):
     """
     Delete a specific connector credential for an account.
-    
+
     Args:
         account_name: Name of the account
         connector_name: Name of the connector to delete credentials for
-        
+
     Returns:
         Success message when credential is deleted
-        
+
     Raises:
         HTTPException: 404 if credential not found
     """
@@ -168,10 +167,11 @@ async def add_gateway_wallet(
     accounts_service: AccountsService = Depends(get_accounts_service)
 ):
     """
-    Add a wallet to Gateway. Gateway handles encryption and storage internally.
+    Add an existing wallet to Gateway using its private key.
+    Gateway handles encryption and storage internally.
 
     Args:
-        wallet_credential: Wallet credentials (chain and private_key)
+        wallet_credential: Wallet credentials (chain, private_key, and optional set_default)
 
     Returns:
         Wallet information from Gateway including address
@@ -182,13 +182,65 @@ async def add_gateway_wallet(
     try:
         result = await accounts_service.add_gateway_wallet(
             chain=wallet_credential.chain,
-            private_key=wallet_credential.private_key
+            private_key=wallet_credential.private_key,
+            set_default=wallet_credential.set_default
         )
         return result
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/gateway/wallet/set-default")
+async def set_default_gateway_wallet(
+    request: SetDefaultWalletRequest,
+    accounts_service: AccountsService = Depends(get_accounts_service)
+) -> Dict:
+    """
+    Set the default wallet for a chain in Gateway.
+
+    When multiple wallets are configured for a chain, this endpoint allows
+    switching which wallet is used as the default for operations.
+
+    Args:
+        request: Contains chain and wallet address to set as default
+
+    Returns:
+        Dict with success status and updated wallet info.
+
+    Example: POST /accounts/gateway/wallet/set-default
+    {
+        "chain": "solana",
+        "address": "82SggYRE2Vo4jN4a2pk3aQ4SET4ctafZJGbowmCqyHx5"
+    }
+    """
+    try:
+        if not await accounts_service.gateway_client.ping():
+            raise HTTPException(status_code=503, detail="Gateway service is not available")
+
+        result = await accounts_service.gateway_client.set_default_wallet(
+            chain=request.chain,
+            address=request.address
+        )
+
+        if result is None:
+            raise HTTPException(status_code=502, detail="Failed to set default wallet: Gateway returned no response")
+
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=f"Failed to set default wallet: {result.get('error')}")
+
+        return {
+            "success": True,
+            "message": f"Set {request.address} as default wallet for {request.chain}",
+            "chain": request.chain,
+            "address": request.address
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error setting default wallet: {str(e)}")
 
 
 @router.delete("/gateway/{chain}/{address}")
@@ -217,5 +269,3 @@ async def remove_gateway_wallet(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-

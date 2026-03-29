@@ -215,13 +215,10 @@ async def lifespan(app: FastAPI):
     try:
         from hummingbot.strategy_v2.executors.lp_executor.data_types import LPExecutorConfig
         from hummingbot.strategy_v2.executors.lp_executor.lp_executor import LPExecutor
-        print(f"[LP-FIX] imports OK. Registry before: {list(ExecutorService.EXECUTOR_REGISTRY.keys())}", flush=True)
         ExecutorService.EXECUTOR_REGISTRY["lp_executor"] = (LPExecutor, LPExecutorConfig)
-        print(f"[LP-FIX] Registry after: {list(ExecutorService.EXECUTOR_REGISTRY.keys())}", flush=True)
+        logging.debug("lp_executor registered in ExecutorService")
     except Exception as e:
-        import traceback
-        print(f"[LP-FIX] FAILED: {e}", flush=True)
-        traceback.print_exc()
+        logging.warning(f"Failed to register lp_executor: {e}")
 
     # =========================================================================
     # 5. Other Services
