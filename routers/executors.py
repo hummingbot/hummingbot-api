@@ -280,6 +280,11 @@ async def get_available_executor_types():
                 "type": "lp_executor",
                 "description": "LP position management for CLMM pools (Meteora, Raydium) ",
                 "use_case": "Automated liquidity provision with position tracking"
+            },
+            {
+                "type": "swap_executor",
+                "description": "Single swap execution on Gateway AMM connectors",
+                "use_case": "Executing swaps on DEXs like Jupiter with retry logic"
             }
         ]
     }

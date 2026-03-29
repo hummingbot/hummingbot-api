@@ -26,6 +26,8 @@ from hummingbot.strategy_v2.executors.order_executor.data_types import OrderExec
 from hummingbot.strategy_v2.executors.order_executor.order_executor import OrderExecutor
 from hummingbot.strategy_v2.executors.position_executor.data_types import PositionExecutorConfig
 from hummingbot.strategy_v2.executors.position_executor.position_executor import PositionExecutor
+from hummingbot.strategy_v2.executors.swap_executor.data_types import SwapExecutorConfig
+from hummingbot.strategy_v2.executors.swap_executor.swap_executor import SwapExecutor
 from hummingbot.strategy_v2.executors.twap_executor.data_types import TWAPExecutorConfig
 from hummingbot.strategy_v2.executors.twap_executor.twap_executor import TWAPExecutor
 from hummingbot.strategy_v2.executors.xemm_executor.data_types import XEMMExecutorConfig
@@ -82,6 +84,7 @@ class ExecutorService:
         "xemm_executor": (XEMMExecutor, XEMMExecutorConfig),
         "order_executor": (OrderExecutor, OrderExecutorConfig),
         "lp_executor": (LPExecutor, LPExecutorConfig),
+        "swap_executor": (SwapExecutor, SwapExecutorConfig),
     }
 
     def __init__(
@@ -350,15 +353,43 @@ class ExecutorService:
         trading_interface = self._get_trading_interface(account)
 
         # Extract connector and trading pair from config
+        # Note: swap_executor uses 'network' instead of 'connector_name' since it calls Gateway directly
         connector_name = executor_config.get("connector_name")
         trading_pair = executor_config.get("trading_pair")
-        if not connector_name:
-            raise HTTPException(status_code=400, detail="connector_name is required in executor_config")
-        if not trading_pair:
-            raise HTTPException(status_code=400, detail="trading_pair is required in executor_config")
 
-        # Ensure connector and market are ready
-        await trading_interface.add_market(connector_name, trading_pair)
+        if executor_type == "swap_executor":
+            # SwapExecutor requires connector_name (e.g., "jupiter/router") and network
+            swap_connector_name = executor_config.get("connector_name")
+            network = executor_config.get("network")
+            if not swap_connector_name:
+                raise HTTPException(status_code=400, detail="connector_name is required for swap_executor")
+            if not network:
+                raise HTTPException(status_code=400, detail="network is required for swap_executor")
+            if not trading_pair:
+                raise HTTPException(status_code=400, detail="trading_pair is required in executor_config")
+            # Ensure the swap connector is loaded
+            await trading_interface.ensure_connector(swap_connector_name)
+            # Use connector_name for metadata tracking
+            connector_name = swap_connector_name
+        elif executor_type == "lp_executor":
+            # LPExecutor: trading_pair is optional (resolved from pool_address)
+            if not connector_name:
+                raise HTTPException(status_code=400, detail="connector_name is required for lp_executor")
+            pool_address = executor_config.get("pool_address")
+            if not pool_address:
+                raise HTTPException(status_code=400, detail="pool_address is required for lp_executor")
+            # Ensure connector is ready (trading_pair resolved in executor on_start)
+            await trading_interface.ensure_connector(connector_name)
+            # Use pool_address as trading_pair placeholder for metadata if not provided
+            if not trading_pair:
+                trading_pair = pool_address
+        else:
+            if not connector_name:
+                raise HTTPException(status_code=400, detail="connector_name is required in executor_config")
+            if not trading_pair:
+                raise HTTPException(status_code=400, detail="trading_pair is required in executor_config")
+            # Ensure connector and market are ready
+            await trading_interface.add_market(connector_name, trading_pair)
 
         # Set timestamp if not provided (required for time-based features like time_limit)
         if "timestamp" not in executor_config or executor_config["timestamp"] is None:

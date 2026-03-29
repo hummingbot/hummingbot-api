@@ -1,7 +1,7 @@
 import asyncio
 import logging
-from typing import Optional
 import re
+from typing import Optional
 
 import docker
 
@@ -210,6 +210,36 @@ class BotsOrchestrator:
         # Use the new RPC method to wait for response
         timeout = kwargs.get("timeout", 30.0)  # Default 30 second timeout
         response = await self.mqtt_manager.publish_command_and_wait(bot_name, "history", data, timeout=timeout)
+
+        if response is None:
+            return {
+                "success": False,
+                "message": f"No response received from {bot_name} within {timeout} seconds",
+                "timeout": True,
+            }
+
+        return {"success": True, "data": response}
+
+    async def get_bot_lp_history(self, bot_name, **kwargs):
+        """
+        Request bot LP (liquidity provider) history and wait for the response.
+        This returns LP position updates from RangePositionUpdate records.
+        """
+        if bot_name not in self.active_bots:
+            logger.warning(f"Bot {bot_name} not found in active bots")
+            return {"success": False, "message": f"Bot {bot_name} not found"}
+
+        # Create LPHistoryCommandMessage.Request format
+        data = {
+            "days": kwargs.get("days", 0),
+            "verbose": kwargs.get("verbose", False),
+            "precision": kwargs.get("precision"),
+            "async_backend": kwargs.get("async_backend", False),
+        }
+
+        # Use the new RPC method to wait for response
+        timeout = kwargs.get("timeout", 30.0)  # Default 30 second timeout
+        response = await self.mqtt_manager.publish_command_and_wait(bot_name, "lphistory", data, timeout=timeout)
 
         if response is None:
             return {

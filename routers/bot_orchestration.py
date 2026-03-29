@@ -122,6 +122,51 @@ async def get_bot_history(
     return {"status": "success", "response": response}
 
 
+@router.get("/{bot_name}/lphistory")
+async def get_bot_lp_history(
+    bot_name: str,
+    days: int = 0,
+    verbose: bool = False,
+    precision: int = None,
+    timeout: float = 30.0,
+    bots_manager: BotsOrchestrator = Depends(get_bots_orchestrator)
+):
+    """
+    Get LP (liquidity provider) position history for a bot.
+
+    This endpoint returns LP-specific data including position updates,
+    fees collected, and liquidity additions/removals. Use this for
+    AMM/CLMM strategies like Meteora.
+
+    Args:
+        bot_name: Name of the bot to get LP history for
+        days: Number of days of history to retrieve (0 for all)
+        verbose: Whether to include verbose output
+        precision: Decimal precision for numerical values
+        timeout: Timeout in seconds for the operation
+        bots_manager: Bot orchestrator service dependency
+
+    Returns:
+        Dictionary with LP position history including:
+        - position_address: The LP position address
+        - order_action: ADD or REMOVE
+        - trading_pair: The trading pair (e.g., SOL-USDC)
+        - base_amount, quote_amount: Amounts added/removed
+        - base_fee, quote_fee: Fees collected
+        - lower_price, upper_price: Price range of position
+        - mid_price: Price at time of operation
+        - trade_fee: Transaction fees paid
+    """
+    response = await bots_manager.get_bot_lp_history(
+        bot_name,
+        days=days,
+        verbose=verbose,
+        precision=precision,
+        timeout=timeout
+    )
+    return {"status": "success", "response": response}
+
+
 @router.post("/start-bot")
 async def start_bot(
     action: StartBotAction,

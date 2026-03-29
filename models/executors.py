@@ -213,7 +213,8 @@ EXECUTOR_TYPES = Literal[
     "twap_executor",
     "xemm_executor",
     "order_executor",
-    "lp_executor"
+    "lp_executor",
+    "swap_executor"
 ]
 
 
@@ -248,14 +249,14 @@ class CreateExecutorRequest(BaseModel):
                 },
                 {
                     "summary": "LP Executor",
-                    "description": "Create an LP position on a CLMM DEX (Meteora, Raydium)",
+                    "description": "Create an LP position on a CLMM DEX",
                     "value": {
                         "account_name": "master_account",
                         "executor_config": {
                             "type": "lp_executor",
-                            "connector_name": "meteora/clmm",
-                            "trading_pair": "SOL-USDC",
+                            "connector_name": "meteora",
                             "pool_address": "HTvjzsfX3yU6BUodCjZ5vZkUrAxMDTrBs3CJaq43ashR",
+                            "network": "solana-mainnet-beta",
                             "lower_price": "80",
                             "upper_price": "100",
                             "base_amount": "0",
@@ -265,6 +266,23 @@ class CreateExecutorRequest(BaseModel):
                             "auto_close_below_range_seconds": 300,
                             "extra_params": {"strategyType": 0},
                             "keep_position": False
+                        }
+                    }
+                },
+                {
+                    "summary": "Swap Executor",
+                    "description": "Execute a single swap on Gateway AMM connectors (Jupiter, Raydium, etc.)",
+                    "value": {
+                        "account_name": "master_account",
+                        "executor_config": {
+                            "type": "swap_executor",
+                            "connector_name": "jupiter/router",
+                            "network": "solana-mainnet-beta",
+                            "trading_pair": "SOL-USDC",
+                            "side": 2,
+                            "amount": "0.1",
+                            "slippage_pct": "0.5",
+                            "swap_providers": ["jupiter/router", "meteora/clmm", "orca/clmm"]
                         }
                     }
                 }
