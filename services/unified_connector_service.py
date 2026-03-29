@@ -23,6 +23,7 @@ from hummingbot.connector.connector_base import ConnectorBase
 from hummingbot.connector.connector_metrics_collector import TradeVolumeMetricCollector
 from hummingbot.connector.exchange_py_base import ExchangePyBase
 from hummingbot.connector.gateway.gateway_lp import GatewayLp
+from hummingbot.connector.gateway.gateway_swap import GatewaySwap
 from hummingbot.connector.perpetual_derivative_py_base import PerpetualDerivativePyBase
 from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, TradeType
 from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderState
@@ -643,17 +644,25 @@ class UnifiedConnectorService:
             secrets_manager=self.secrets_manager
         )
 
-        # Gateway connectors (e.g., 'meteora/clmm', 'raydium/clmm') are not in AllConnectorSettings
-        # They use GatewayLp which auto-detects chain/network from gateway config
+        # Gateway connectors (e.g., 'meteora/clmm', 'jupiter/router') are not in AllConnectorSettings
+        # Router connectors use GatewaySwap, LP connectors use GatewayLp
+        # Both auto-detect chain/network from gateway config
         if '/' in connector_name:
-            logger.info(f"Creating gateway connector: {connector_name}")
-            # GatewayLp handles chain/network auto-detection and default wallet lookup
-            # via start_network() call
-            return GatewayLp(
-                connector_name=connector_name,
-                trading_pairs=[],
-                trading_required=True,
-            )
+            _, connector_type = connector_name.split('/', 1)
+            if connector_type == 'router':
+                logger.info(f"Creating gateway swap connector: {connector_name}")
+                return GatewaySwap(
+                    connector_name=connector_name,
+                    trading_pairs=[],
+                    trading_required=True,
+                )
+            else:
+                logger.info(f"Creating gateway LP connector: {connector_name}")
+                return GatewayLp(
+                    connector_name=connector_name,
+                    trading_pairs=[],
+                    trading_required=True,
+                )
 
         conn_setting = self._conn_settings[connector_name]
         keys = BackendAPISecurity.api_keys(connector_name)

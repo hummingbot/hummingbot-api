@@ -354,14 +354,19 @@ class ExecutorService:
         trading_pair = executor_config.get("trading_pair")
 
         if executor_type == "swap_executor":
-            # SwapExecutor uses network, not connector_name
+            # SwapExecutor requires connector_name (e.g., "jupiter/router") and network
+            swap_connector_name = executor_config.get("connector_name")
             network = executor_config.get("network")
+            if not swap_connector_name:
+                raise HTTPException(status_code=400, detail="connector_name is required for swap_executor")
             if not network:
                 raise HTTPException(status_code=400, detail="network is required for swap_executor")
             if not trading_pair:
                 raise HTTPException(status_code=400, detail="trading_pair is required in executor_config")
-            # Use network as connector_name for metadata tracking
-            connector_name = network
+            # Ensure the swap connector is loaded
+            await trading_interface.ensure_connector(swap_connector_name)
+            # Use connector_name for metadata tracking
+            connector_name = swap_connector_name
         elif executor_type == "lp_executor":
             # LPExecutor: trading_pair is optional (resolved from pool_address)
             if not connector_name:
