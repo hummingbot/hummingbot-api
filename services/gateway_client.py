@@ -1,5 +1,4 @@
 import logging
-from decimal import Decimal
 from typing import Dict, List, Optional
 
 import aiohttp
@@ -582,7 +581,6 @@ class GatewayClient:
         self,
         network_id: str,
         tx_hash: str,
-        wallet_address: Optional[str] = None
     ) -> Optional[Dict]:
         """
         Poll transaction status on blockchain.
@@ -590,12 +588,12 @@ class GatewayClient:
         Args:
             network_id: Network ID in format 'chain-network' (e.g., 'solana-mainnet-beta', 'ethereum-mainnet')
             tx_hash: Transaction hash/signature
-            wallet_address: Optional wallet address for verification
 
         Returns:
             Transaction status dict with fields:
-            - txStatus: 1 for confirmed, 0 for failed/pending
+            - txStatus: 1 for confirmed, 0 for pending, -1 for failed
             - fee: Transaction fee amount
+            - error: Parsed error message if transaction failed (e.g., "SLIPPAGE_EXCEEDED (0x1771): ...")
             - txData: Full transaction data including meta.err
             Returns None if Gateway is unavailable or request fails.
         """
@@ -612,11 +610,8 @@ class GatewayClient:
                 "network": network,
                 "signature": tx_hash
             }
-            if wallet_address:
-                payload["walletAddress"] = wallet_address
 
             return await self._request("POST", f"chains/{chain}/poll", json=payload)
         except Exception as e:
             logger.error(f"Error polling transaction {tx_hash}: {e}")
             return None
-
