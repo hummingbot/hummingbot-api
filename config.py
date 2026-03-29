@@ -1,11 +1,12 @@
 from typing import List
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class BrokerSettings(BaseSettings):
     """MQTT Broker configuration for bot communication."""
-    
+
     host: str = Field(default="localhost", description="MQTT broker host")
     port: int = Field(default=1883, description="MQTT broker port")
     username: str = Field(default="admin", description="MQTT broker username")
@@ -16,7 +17,7 @@ class BrokerSettings(BaseSettings):
 
 class DatabaseSettings(BaseSettings):
     """Database configuration."""
-    
+
     url: str = Field(
         default="postgresql+asyncpg://hbot:hummingbot-api@localhost:5432/hummingbot_api",
         description="Database connection URL"
@@ -27,7 +28,7 @@ class DatabaseSettings(BaseSettings):
 
 class MarketDataSettings(BaseSettings):
     """Market data feed manager configuration."""
-    
+
     cleanup_interval: int = Field(
         default=300,
         description="How often to run feed cleanup in seconds"
@@ -40,13 +41,25 @@ class MarketDataSettings(BaseSettings):
         default=30,
         description="How long to wait for a candle feed to become ready in seconds"
     )
+    ws_heartbeat_interval: int = Field(
+        default=30,
+        description="WebSocket heartbeat interval in seconds"
+    )
+    ws_min_update_interval: float = Field(
+        default=0.25,
+        description="Minimum allowed WebSocket subscription update interval in seconds"
+    )
+    ws_max_update_interval: float = Field(
+        default=60.0,
+        description="Maximum allowed WebSocket subscription update interval in seconds"
+    )
 
     model_config = SettingsConfigDict(env_prefix="MARKET_DATA_", extra="ignore")
 
 
 class SecuritySettings(BaseSettings):
     """Security and authentication configuration."""
-    
+
     username: str = Field(default="admin", description="API basic auth username")
     password: str = Field(default="admin", description="API basic auth password")
     debug_mode: bool = Field(default=False, description="Enable debug mode (disables auth)")
@@ -81,18 +94,18 @@ class GatewaySettings(BaseSettings):
 
 class AppSettings(BaseSettings):
     """Main application settings."""
-    
+
     # Static paths
     controllers_path: str = "bots/conf/controllers"
     controllers_module: str = "bots.controllers"
     password_verification_path: str = "credentials/master_account/.password_verification"
-    
+
     # Environment-configurable settings
     logfire_environment: str = Field(
         default="dev",
         description="Logfire environment name"
     )
-    
+
     # Account state update interval
     account_update_interval: int = Field(
         default=5,
@@ -117,7 +130,7 @@ class Settings(BaseSettings):
     aws: AWSSettings = Field(default_factory=AWSSettings)
     gateway: GatewaySettings = Field(default_factory=GatewaySettings)
     app: AppSettings = Field(default_factory=AppSettings)
-    
+
     # Direct banned_tokens field to handle env parsing
     banned_tokens: List[str] = Field(
         default=["NAV", "ARS", "ETHW", "ETHF"],

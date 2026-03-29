@@ -10,6 +10,7 @@ from services.gateway_service import GatewayService
 from services.market_data_service import MarketDataService
 from services.trading_service import TradingService
 from services.unified_connector_service import UnifiedConnectorService
+from services.websocket_manager import WebSocketManager
 from utils.bot_archiver import BotArchiver
 
 
@@ -66,3 +67,8 @@ def get_database_manager(request: Request) -> AsyncDatabaseManager:
 def get_executor_ws_manager(request: Request) -> ExecutorWebSocketManager:
     """Get ExecutorWebSocketManager from app state."""
     return request.app.state.executor_ws_manager
+
+
+def get_websocket_manager(request: Request) -> WebSocketManager:
+    """Get WebSocketManager from app state."""
+    return request.app.state.websocket_manager
