@@ -2,20 +2,14 @@ import asyncio
 import logging
 import math
 import time
-
-from typing import Any, Optional, Union
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
+from typing import Any, Optional, Union
 
-from hummingbot.core.event.event_forwarder import SourceInfoEventForwarder
-from hummingbot.core.event.events import (
-    TradeType,
-    BuyOrderCreatedEvent,
-    SellOrderCreatedEvent,
-    OrderFilledEvent,
-    MarketEvent
-)
 from hummingbot.connector.connector_base import ConnectorBase
+from hummingbot.core.event.event_forwarder import SourceInfoEventForwarder
+from hummingbot.core.event.events import BuyOrderCreatedEvent, MarketEvent, OrderFilledEvent, SellOrderCreatedEvent, TradeType
+
 from database import AsyncDatabaseManager, OrderRepository, TradeRepository
 
 # Initialize logger
@@ -378,14 +372,21 @@ class OrdersRecorder:
     
     async def _handle_order_completed(self, event: Any):
         """Handle order completion events"""
+        logger.info(f"OrdersRecorder: _handle_order_completed called for {event.order_id}")
         try:
             async with self.db_manager.get_session_context() as session:
                 order_repo = OrderRepository(session)
                 order = await order_repo.get_order_by_client_id(event.order_id)
                 if order:
+                    old_status = order.status
                     order.status = "FILLED"
                     order.exchange_order_id = getattr(event, 'exchange_order_id', None)
-                    
-            logger.debug(f"Recorded order completed: {event.order_id}")
+                    logger.info(
+                        f"OrdersRecorder: Updated order {event.order_id} from {old_status} to FILLED"
+                    )
+                else:
+                    logger.warning(f"OrdersRecorder: Order {event.order_id} not found in DB")
+
+            logger.info(f"OrdersRecorder: Completed handling order {event.order_id}")
         except Exception as e:
-            logger.error(f"Error recording order completion: {e}")
+            logger.error(f"OrdersRecorder: Error recording order completion for {event.order_id}: {e}")
