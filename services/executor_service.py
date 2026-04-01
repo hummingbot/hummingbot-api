@@ -349,37 +349,31 @@ class ExecutorService:
         trading_interface = self._get_trading_interface(account)
 
         # Extract connector and trading pair from config
-        # Note: swap_executor uses 'network' instead of 'connector_name' since it calls Gateway directly
         connector_name = executor_config.get("connector_name")
         trading_pair = executor_config.get("trading_pair")
 
-        if executor_type == "swap_executor":
-            # SwapExecutor requires connector_name (e.g., "jupiter/router") and network
-            swap_connector_name = executor_config.get("connector_name")
-            network = executor_config.get("network")
-            if not swap_connector_name:
-                raise HTTPException(status_code=400, detail="connector_name is required for swap_executor")
-            if not network:
-                raise HTTPException(status_code=400, detail="network is required for swap_executor")
-            if not trading_pair:
-                raise HTTPException(status_code=400, detail="trading_pair is required in executor_config")
-            # Ensure the swap connector is loaded
-            await trading_interface.ensure_connector(swap_connector_name)
-            # Use connector_name for metadata tracking
-            connector_name = swap_connector_name
-        elif executor_type == "lp_executor":
-            # LPExecutor: trading_pair is optional (resolved from pool_address)
+        if executor_type in ("swap_executor", "lp_executor"):
+            # Gateway executors: connector_name required, trading_pair optional
+            # Network is optional - uses connector's defaultNetwork if not provided
             if not connector_name:
-                raise HTTPException(status_code=400, detail="connector_name is required for lp_executor")
-            pool_address = executor_config.get("pool_address")
-            if not pool_address:
-                raise HTTPException(status_code=400, detail="pool_address is required for lp_executor")
-            # Ensure connector is ready (trading_pair resolved in executor on_start)
+                raise HTTPException(status_code=400, detail=f"connector_name is required for {executor_type}")
+
+            if executor_type == "lp_executor":
+                pool_address = executor_config.get("pool_address")
+                if not pool_address:
+                    raise HTTPException(status_code=400, detail="pool_address is required for lp_executor")
+                # Use pool_address as trading_pair placeholder for metadata if not provided
+                if not trading_pair:
+                    trading_pair = pool_address
+            else:
+                # swap_executor requires trading_pair
+                if not trading_pair:
+                    raise HTTPException(status_code=400, detail="trading_pair is required for swap_executor")
+
+            # Ensure connector is ready (executor handles connector normalization in on_start)
             await trading_interface.ensure_connector(connector_name)
-            # Use pool_address as trading_pair placeholder for metadata if not provided
-            if not trading_pair:
-                trading_pair = pool_address
         else:
+            # Standard executors: both connector_name and trading_pair required
             if not connector_name:
                 raise HTTPException(status_code=400, detail="connector_name is required in executor_config")
             if not trading_pair:
