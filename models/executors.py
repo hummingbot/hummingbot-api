@@ -252,16 +252,15 @@ class CreateExecutorRequest(BaseModel):
                         "account_name": "master_account",
                         "executor_config": {
                             "type": "lp_executor",
-                            "connector_name": "meteora",
+                            "connector_name": "solana-mainnet-beta",
+                            "dex_name": "meteora",
+                            "trading_type": "clmm",
                             "pool_address": "HTvjzsfX3yU6BUodCjZ5vZkUrAxMDTrBs3CJaq43ashR",
-                            "network": "solana-mainnet-beta",
                             "lower_price": "80",
                             "upper_price": "100",
                             "base_amount": "0",
                             "quote_amount": "10.0",
                             "side": 1,
-                            "auto_close_above_range_seconds": None,
-                            "auto_close_below_range_seconds": 300,
                             "extra_params": {"strategyType": 0},
                             "keep_position": False
                         }
@@ -274,13 +273,13 @@ class CreateExecutorRequest(BaseModel):
                         "account_name": "master_account",
                         "executor_config": {
                             "type": "swap_executor",
-                            "connector_name": "jupiter/router",
-                            "network": "solana-mainnet-beta",
+                            "connector_name": "solana-mainnet-beta",
+                            "swap_provider": "jupiter/router",
                             "trading_pair": "SOL-USDC",
                             "side": 2,
                             "amount": "0.1",
                             "slippage_pct": "0.5",
-                            "swap_providers": ["jupiter/router", "meteora/clmm", "orca/clmm"]
+                            "additional_swap_providers": ["meteora/clmm", "orca/clmm"]
                         }
                     }
                 }
