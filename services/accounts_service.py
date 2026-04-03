@@ -2190,6 +2190,13 @@ class AccountsService:
             logger.warning(f"No pricing connector configured for chain '{chain}', skipping immediate price fetch")
             return prices
 
+        # Parse pricing connector into dex and trading_type (e.g., "jupiter/router" -> "jupiter", "router")
+        if "/" in pricing_connector:
+            dex_name, trading_type = pricing_connector.split("/", 1)
+        else:
+            dex_name = pricing_connector
+            trading_type = "router"
+
         # Create tasks for all tokens in parallel
         tasks = []
         task_tokens = []
@@ -2225,7 +2232,8 @@ class AccountsService:
                 task = gateway_client.get_price(
                     chain=chain,
                     network=network,
-                    connector=pricing_connector,
+                    dex=dex_name,
+                    trading_type=trading_type,
                     base_asset=token,
                     quote_asset=quote_asset,
                     amount=Decimal("1"),
