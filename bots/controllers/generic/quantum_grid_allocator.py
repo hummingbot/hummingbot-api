@@ -128,8 +128,8 @@ class QuantumGridAllocator(ControllerBase):
             if len(candles) == 0:
                 bb_width = self.config.grid_range
             else:
-                bb = ta.bbands(candles["close"], length=self.config.bb_length, std=self.config.bb_std_dev)
-                bb_width = bb[f"BBB_{self.config.bb_length}_{self.config.bb_std_dev}"].iloc[-1] / 100
+                bb = ta.bbands(candles["close"], length=self.config.bb_length, lower_std=self.config.bb_std_dev, upper_std=self.config.bb_std_dev)
+                bb_width = bb[f"BBB_{self.config.bb_length}_{self.config.bb_std_dev}_{self.config.bb_std_dev}"].iloc[-1] / 100
             self.processed_data[trading_pair] = {
                 "bb_width": bb_width
             }
