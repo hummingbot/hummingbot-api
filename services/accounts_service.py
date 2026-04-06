@@ -300,6 +300,7 @@ class AccountTradingInterface:
         connector = self.connectors.get(connector_name)
         if not connector:
             raise ValueError(f"Connector {connector_name} not loaded. Call ensure_connector first.")
+        connector._set_current_timestamp(time.time())
 
         return connector.buy(
             trading_pair=trading_pair,
@@ -335,6 +336,7 @@ class AccountTradingInterface:
         connector = self.connectors.get(connector_name)
         if not connector:
             raise ValueError(f"Connector {connector_name} not loaded. Call ensure_connector first.")
+        connector._set_current_timestamp(time.time())
 
         return connector.sell(
             trading_pair=trading_pair,
@@ -1070,48 +1072,6 @@ class AccountsService:
             async with self.db_manager.get_session_context() as session:
                 repository = AccountRepository(session)
                 return await repository.get_account_state_history(
-                    account_name=account_name,
-                    limit=limit,
-                    cursor=cursor,
-                    start_time=start_time,
-                    end_time=end_time,
-                    interval=interval
-                )
-        except Exception as e:
-            logger.error(f"Error getting account state history: {e}")
-            return [], None, False
-    
-    async def get_connector_current_state(self, account_name: str, connector_name: str) -> List[Dict]:
-        """
-        Get current state for a specific connector.
-        """
-        await self.ensure_db_initialized()
-        
-        try:
-            async with self.db_manager.get_session_context() as session:
-                repository = AccountRepository(session)
-                return await repository.get_connector_current_state(account_name, connector_name)
-        except Exception as e:
-            logger.error(f"Error getting connector current state: {e}")
-            # Fallback to in-memory state
-            return self.accounts_state.get(account_name, {}).get(connector_name, [])
-    
-    async def get_connector_state_history(self, 
-                                          account_name: str, 
-                                          connector_name: str, 
-                                          limit: Optional[int] = None,
-                                          cursor: Optional[str] = None,
-                                          start_time: Optional[datetime] = None,
-                                          end_time: Optional[datetime] = None):
-        """
-        Get historical state for a specific connector with pagination.
-        """
-        await self.ensure_db_initialized()
-        
-        try:
-            async with self.db_manager.get_session_context() as session:
-                repository = AccountRepository(session)
-                return await repository.get_account_state_history(
                     account_name=account_name, 
                     connector_name=connector_name,
                     limit=limit,
@@ -1448,6 +1408,7 @@ class AccountsService:
 
 
         try:
+            connector._set_current_timestamp(time.time())
             # Place the order using the connector with quantized values
             # (position_action will be ignored by non-perpetual connectors)
             if trade_type == TradeType.BUY:
@@ -1994,7 +1955,7 @@ class AccountsService:
                             stale_keys.append(key)
 
                 for key in stale_keys:
-                    logger.info(f"Removing stale Gateway balance data for {key} (no longer default network)")
+                    logger.info(f"Removing stale Gateway balance data for {key} (no longer default network )")
                     del self.accounts_state["master_account"][key]
 
         except Exception as e:
@@ -2072,196 +2033,4 @@ class AccountsService:
         except HTTPException:
             raise
         except Exception as e:
-            logger.error(f"Error removing Gateway wallet: {e}")
-            raise HTTPException(status_code=500, detail=f"Failed to remove wallet: {str(e)}")
-
-    async def get_gateway_balances(self, chain: str, address: str, network: Optional[str] = None, tokens: Optional[List[str]] = None) -> List[Dict]:
-        """
-        Get Gateway wallet balances with pricing from rate sources.
-
-        Args:
-            chain: Blockchain chain
-            address: Wallet address
-            network: Optional network name (if not provided, uses default network for chain)
-            tokens: Optional list of token symbols to query
-
-        Returns:
-            List of token balance dictionaries with prices from rate sources
-        """
-        if not await self.gateway_client.ping():
-            raise HTTPException(status_code=503, detail="Gateway service is not available")
-
-        try:
-            # Get default network for chain if not provided
-            if not network:
-                network = await self.gateway_client.get_default_network(chain)
-            if not network:
-                raise HTTPException(status_code=400, detail=f"Could not determine network for chain '{chain}'")
-
-            # Get balances from Gateway
-            balances_response = await self.gateway_client.get_balances(chain, network, address, tokens=tokens)
-
-            if "error" in balances_response:
-                raise HTTPException(status_code=400, detail=f"Gateway error: {balances_response['error']}")
-
-            # Format balances list
-            balances = balances_response.get("balances", {})
-            balances_list = []
-
-            for token, balance in balances.items():
-                if balance and float(balance) > 0:
-                    balances_list.append({
-                        "token": token,
-                        "units": Decimal(str(balance))
-                    })
-
-            # Get prices for tokens
-            unique_tokens = [b["token"] for b in balances_list]
-            all_prices = {}
-
-            # Fetch prices for Gateway tokens
-            if unique_tokens:
-                try:
-                    fetched_prices = await self._fetch_gateway_prices_immediate(
-                        chain, network, unique_tokens
-                    )
-                    for token, price in fetched_prices.items():
-                        if price > 0:
-                            all_prices[token] = price
-                except Exception as e:
-                    logger.warning(f"Error fetching gateway prices: {e}")
-
-            # Format final result with prices
-            formatted_balances = []
-            for balance in balances_list:
-                token = balance["token"]
-                if "USD" in token:
-                    price = Decimal("1")
-                else:
-                    # all_prices is now keyed by token name directly
-                    price = Decimal(str(all_prices.get(token, 0)))
-
-                formatted_balances.append({
-                    "token": token,
-                    "units": float(balance["units"]),
-                    "price": float(price),
-                    "value": float(price * balance["units"]),
-                    "available_units": float(balance["units"])
-                })
-
-            return formatted_balances
-
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Error getting Gateway balances: {e}")
-            raise HTTPException(status_code=500, detail=f"Failed to get balances: {str(e)}")
-
-    async def _fetch_gateway_prices_immediate(self, chain: str, network: str,
-                                               tokens: List[str]) -> Dict[str, Decimal]:
-        """
-        Fetch prices immediately from Gateway for the given tokens.
-        This is used to get prices right away instead of waiting for the background update task.
-
-        Uses the same pricing connector resolution as MarketDataProvider.update_rates_task():
-        - solana -> jupiter/router
-        - ethereum -> uniswap/router
-
-        Args:
-            chain: Blockchain chain (e.g., 'solana', 'ethereum')
-            network: Network name (e.g., 'mainnet-beta', 'mainnet')
-            tokens: List of token symbols to get prices for
-
-        Returns:
-            Dictionary mapping token symbol to price in USDC
-        """
-        from hummingbot.core.data_type.common import TradeType
-        from hummingbot.core.gateway.gateway_http_client import GatewayHttpClient
-        from hummingbot.core.rate_oracle.rate_oracle import RateOracle
-
-        gateway_client = GatewayHttpClient.get_instance()
-        rate_oracle = RateOracle.get_instance()
-        prices = {}
-
-        # Resolve pricing connector based on chain (same logic as MarketDataProvider)
-        pricing_connector = self.gateway_default_pricing_connector.get(chain)
-        if not pricing_connector:
-            logger.warning(f"No pricing connector configured for chain '{chain}', skipping immediate price fetch")
-            return prices
-
-        # Create tasks for all tokens in parallel
-        tasks = []
-        task_tokens = []
-        quote_asset = "USDC"
-
-        # On ethereum networks, use WETH price for ETH to avoid duplicate calls
-        eth_needs_weth_price = False
-        if chain == "ethereum":
-            has_eth = any(t.upper() == "ETH" for t in tokens)
-            has_weth = any(t.upper() == "WETH" for t in tokens)
-            if has_eth and not has_weth:
-                # Replace ETH with WETH for fetching
-                tokens = [t if t.upper() != "ETH" else "WETH" for t in tokens]
-                eth_needs_weth_price = True
-                logger.debug("Replacing ETH with WETH for price fetch on ethereum")
-            elif has_eth and has_weth:
-                # Remove ETH, will copy WETH price later
-                tokens = [t for t in tokens if t.upper() != "ETH"]
-                eth_needs_weth_price = True
-                logger.debug("Removing duplicate ETH, will use WETH price on ethereum")
-
-        for token in tokens:
-            token_upper = token.upper()
-
-            # Skip same-token quotes (e.g., USDC/USDC) - price is always 1
-            if token_upper == quote_asset.upper():
-                prices[token] = Decimal("1")
-                rate_oracle.set_price(f"{token}-{quote_asset}", Decimal("1"))
-                logger.debug(f"Skipping same-token quote for {token}, price=1")
-                continue
-
-            try:
-                task = gateway_client.get_price(
-                    chain=chain,
-                    network=network,
-                    connector=pricing_connector,
-                    base_asset=token,
-                    quote_asset=quote_asset,
-                    amount=Decimal("1"),
-                    side=TradeType.SELL
-                )
-                tasks.append(task)
-                task_tokens.append(token)
-            except Exception as e:
-                logger.warning(f"Error preparing price request for {token}: {e}")
-                continue
-
-        if tasks:
-            try:
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                for token, result in zip(task_tokens, results):
-                    if isinstance(result, Exception):
-                        logger.warning(f"Error fetching price for {token}: {result}")
-                    elif result and "price" in result:
-                        price = Decimal(str(result["price"]))
-                        prices[token] = price
-                        # Also update the rate oracle so future lookups can find it
-                        trading_pair = f"{token}-USDC"
-                        rate_oracle.set_price(trading_pair, price)
-                        logger.debug(f"Fetched immediate price for {token}: {price} USDC")
-            except Exception as e:
-                logger.error(f"Error fetching gateway prices: {e}", exc_info=True)
-
-        # Copy WETH price to ETH on ethereum networks
-        if eth_needs_weth_price and "WETH" in prices:
-            prices["ETH"] = prices["WETH"]
-            rate_oracle.set_price("ETH-USDC", prices["WETH"])
-            logger.debug(f"Copied WETH price to ETH: {prices['WETH']} USDC")
-
-        return prices
-
-    def get_unwrapped_token(self, token: str) -> str:
-        """Get the unwrapped version of a wrapped token symbol (e.g., WSOL -> SOL)."""
-        if token.startswith("W") and token[1:] in self.potential_wrapped_tokens:
-            return token[1:]
-        return token
+            logger.errow"

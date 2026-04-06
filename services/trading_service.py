@@ -256,6 +256,7 @@ class AccountTradingInterface:
         connector = self.connectors.get(connector_name)
         if not connector:
             raise ValueError(f"Connector {connector_name} not loaded. Call ensure_connector first.")
+        connector._set_current_timestamp(time.time())
 
         return connector.buy(
             trading_pair=trading_pair,
@@ -291,6 +292,7 @@ class AccountTradingInterface:
         connector = self.connectors.get(connector_name)
         if not connector:
             raise ValueError(f"Connector {connector_name} not loaded. Call ensure_connector first.")
+        connector._set_current_timestamp(time.time())
 
         return connector.sell(
             trading_pair=trading_pair,
