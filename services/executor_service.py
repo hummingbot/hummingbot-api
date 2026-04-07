@@ -360,13 +360,16 @@ class ExecutorService:
 
             if executor_type == "lp_executor":
                 pool_address = executor_config.get("pool_address")
+                lp_provider = executor_config.get("lp_provider")
                 if not pool_address:
                     raise HTTPException(status_code=400, detail="pool_address is required for lp_executor")
+                if not lp_provider:
+                    raise HTTPException(status_code=400, detail="lp_provider is required for lp_executor (e.g., 'meteora/clmm')")
                 # Use pool_address as trading_pair placeholder for metadata if not provided
                 if not trading_pair:
                     trading_pair = pool_address
             else:
-                # swap_executor requires trading_pair
+                # swap_executor: trading_pair required, swap_provider optional (uses network default)
                 if not trading_pair:
                     raise HTTPException(status_code=400, detail="trading_pair is required for swap_executor")
 

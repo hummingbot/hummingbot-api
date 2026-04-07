@@ -253,8 +253,7 @@ class CreateExecutorRequest(BaseModel):
                         "executor_config": {
                             "type": "lp_executor",
                             "connector_name": "solana-mainnet-beta",
-                            "dex_name": "meteora",
-                            "trading_type": "clmm",
+                            "lp_provider": "meteora/clmm",
                             "pool_address": "HTvjzsfX3yU6BUodCjZ5vZkUrAxMDTrBs3CJaq43ashR",
                             "lower_price": "80",
                             "upper_price": "100",
