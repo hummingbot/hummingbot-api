@@ -350,31 +350,15 @@ class ExecutorService:
         trading_pair = executor_config.get("trading_pair")
 
         if executor_type == "lp_executor":
-            # LP executor: connector_name required, trading_pair optional
-            # Network is optional - uses connector's defaultNetwork if not provided
-            if not connector_name:
-                raise HTTPException(status_code=400, detail="connector_name is required for lp_executor")
-
-            pool_address = executor_config.get("pool_address")
-            lp_provider = executor_config.get("lp_provider")
-            if not pool_address:
-                raise HTTPException(status_code=400, detail="pool_address is required for lp_executor")
-            if not lp_provider:
-                raise HTTPException(status_code=400, detail="lp_provider is required for lp_executor (e.g., 'meteora/clmm')")
-            # Use pool_address as trading_pair placeholder for metadata if not provided
+            # LP executor doesn't need trading_pair for market init - use pool_address for metadata
             if not trading_pair:
-                trading_pair = pool_address
-
-            # Ensure connector is ready (executor handles connector normalization in on_start)
-            await trading_interface.ensure_connector(connector_name)
+                trading_pair = executor_config.get("pool_address")
+            if connector_name:
+                await trading_interface.ensure_connector(connector_name)
         else:
-            # Standard executors: both connector_name and trading_pair required
-            if not connector_name:
-                raise HTTPException(status_code=400, detail="connector_name is required in executor_config")
-            if not trading_pair:
-                raise HTTPException(status_code=400, detail="trading_pair is required in executor_config")
-            # Ensure connector and market are ready
-            await trading_interface.add_market(connector_name, trading_pair)
+            # Standard executors need connector and market initialized
+            if connector_name and trading_pair:
+                await trading_interface.add_market(connector_name, trading_pair)
 
         # Set timestamp if not provided (required for time-based features like time_limit)
         if "timestamp" not in executor_config or executor_config["timestamp"] is None:
