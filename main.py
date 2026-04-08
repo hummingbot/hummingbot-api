@@ -47,7 +47,6 @@ from routers import (  # executors,
     docker,
     gateway,
     gateway_clmm,
-    gateway_proxy,
     gateway_swap,
     market_data,
     portfolio,
@@ -311,7 +310,6 @@ app.include_router(rate_oracle.router, dependencies=[Depends(auth_user)])
 app.include_router(backtesting.router, dependencies=[Depends(auth_user)])
 app.include_router(archived_bots.router, dependencies=[Depends(auth_user)])
 # app.include_router(executors.router, dependencies=[Depends(auth_user)])
-app.include_router(gateway_proxy.router, dependencies=[Depends(auth_user)])
 
 @app.get("/")
 async def root():
