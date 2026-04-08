@@ -10,7 +10,7 @@ from services.market_data_service import MarketDataService
 router = APIRouter(tags=["Connectors"], prefix="/connectors")
 
 
-@router.get("/", response_model=List[str])
+@router.get("", response_model=List[str])
 async def available_connectors():
     """
     Get a list of all available connectors.

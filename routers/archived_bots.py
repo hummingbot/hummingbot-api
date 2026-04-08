@@ -1,4 +1,5 @@
 from typing import List, Optional
+
 from fastapi import APIRouter, HTTPException, Query
 
 from utils.file_system import fs_util
@@ -7,7 +8,7 @@ from utils.hummingbot_database_reader import HummingbotDatabase
 router = APIRouter(tags=["Archived Bots"], prefix="/archived-bots")
 
 
-@router.get("/", response_model=List[str])
+@router.get("", response_model=List[str])
 async def list_databases():
     """
     List all available database files in the system.
