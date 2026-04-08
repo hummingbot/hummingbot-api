@@ -209,28 +209,9 @@ class OrdersRecorder:
                         trade_fee_paid = float(fee_in_quote)
                         trade_fee_currency = quote_asset
                     except Exception as e:
-                        logger.warning(f"Primary fee calculation failed: {e}. Attempting fallback...")
-                        try:
-                            base_asset, quote_asset = event.trading_pair.split("-")
-                            fallback_fee = await self._calculate_fee_fallback(
-                                trade_fee=event.trade_fee,
-                                base_asset=base_asset,
-                                quote_asset=quote_asset,
-                                fill_price=event.price,
-                                order_amount=event.amount,
-                            )
-                            if fallback_fee is not None:
-                                trade_fee_paid = float(fallback_fee)
-                                trade_fee_currency = quote_asset
-                                logger.info(f"Fallback fee calculation succeeded: {trade_fee_paid} {trade_fee_currency}")
-                            else:
-                                logger.error(f"Fallback fee calculation returned None for {event.order_id}")
-                                trade_fee_paid = 0
-                                trade_fee_currency = None
-                        except Exception as fallback_err:
-                            logger.error(f"Fallback fee calculation also failed: {fallback_err}")
-                            trade_fee_paid = 0
-                            trade_fee_currency = None
+                        logger.error(f"Error calculating trade fee: {e}")
+                        trade_fee_paid = 0
+                        trade_fee_currency = None
                 # Update order with fill information (handle potential NaN values like Hummingbot does)
                 try:
                     filled_amount = Decimal(str(event.amount))
@@ -279,7 +260,6 @@ class OrdersRecorder:
                             logger.debug(f"Trade {trade_id} already exists, skipping duplicate")
                     except (ValueError, TypeError) as e:
                         logger.error(f"Error creating trade record for {event.order_id}: {e}")
-                        logger.error(f"Trade data that failed: timestamp={event.timestamp}, amount={event.amount}, price={event.price}, fee={trade_fee_paid}")
                 
             logger.debug(f"Recorded order fill: {event.order_id} - {event.amount} @ {event.price}")
         except Exception as e:
@@ -315,66 +295,6 @@ class OrdersRecorder:
         except Exception as e:
             logger.error(f"Error getting order details from connector: {e}")
         return None
-
-    async def _fetch_conversion_rate(self, from_token: str, to_token: str) -> Optional[Decimal]:
-        """Fetch the conversion rate between two tokens using the connector's REST API.
-        Tries direct pair first, then inverse pair."""
-        if not self._connector:
-            return None
-        try:
-            direct_pair = f"{from_token}-{to_token}"
-            price = await asyncio.wait_for(
-                self._connector._get_last_traded_price(trading_pair=direct_pair),
-                timeout=5.0,
-            )
-            if price and price > 0:
-                return Decimal(str(price))
-        except Exception:
-            pass
-        try:
-            inverse_pair = f"{to_token}-{from_token}"
-            price = await asyncio.wait_for(
-                self._connector._get_last_traded_price(trading_pair=inverse_pair),
-                timeout=5.0,
-            )
-            if price and price > 0:
-                return Decimal(1) / Decimal(str(price))
-        except Exception:
-            pass
-        return None
-
-    async def _calculate_fee_fallback(
-        self,
-        trade_fee,
-        base_asset: str,
-        quote_asset: str,
-        fill_price: Decimal,
-        order_amount: Decimal,
-    ) -> Optional[Decimal]:
-        """Manually compute the trade fee in quote asset when the primary method fails."""
-        fee_amount = Decimal(0)
-
-        # Handle percent component
-        if trade_fee.percent and trade_fee.percent != Decimal(0):
-            fee_amount += (fill_price * order_amount) * trade_fee.percent
-
-        # Handle flat_fees component
-        for flat_fee in trade_fee.flat_fees:
-            if flat_fee.token == quote_asset:
-                fee_amount += flat_fee.amount
-            elif flat_fee.token == base_asset:
-                fee_amount += flat_fee.amount * fill_price
-            else:
-                rate = await self._fetch_conversion_rate(flat_fee.token, quote_asset)
-                if rate is not None:
-                    fee_amount += flat_fee.amount * rate
-                else:
-                    logger.error(
-                        f"Could not fetch conversion rate for {flat_fee.token} -> {quote_asset}"
-                    )
-                    return None
-
-        return fee_amount
 
     async def _handle_order_failed(self, event: Any):
         """Handle order failure events"""
