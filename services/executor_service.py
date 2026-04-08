@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Type
 from fastapi import HTTPException
 from hummingbot.strategy_v2.executors.arbitrage_executor.arbitrage_executor import ArbitrageExecutor
 from hummingbot.strategy_v2.executors.arbitrage_executor.data_types import ArbitrageExecutorConfig
-from hummingbot.strategy_v2.executors.data_types import ConnectorPair, ExecutorConfigBase
+from hummingbot.strategy_v2.executors.data_types import ExecutorConfigBase
 from hummingbot.strategy_v2.executors.dca_executor.data_types import DCAExecutorConfig
 from hummingbot.strategy_v2.executors.dca_executor.dca_executor import DCAExecutor
 from hummingbot.strategy_v2.executors.executor_base import ExecutorBase
@@ -411,12 +411,6 @@ class ExecutorService:
                 status_code=400,
                 detail=f"Failed to create executor: {str(e)}"
             )
-
-        # Initialize rate sources for gateway executors (needed for price lookups)
-        if executor_type in ("swap_executor", "lp_executor") and trading_pair:
-            trading_interface.market_data_provider.initialize_rate_sources([
-                ConnectorPair(connector_name=connector_name, trading_pair=trading_pair)
-            ])
 
         # Store executor and metadata
         executor_id = typed_config.id
