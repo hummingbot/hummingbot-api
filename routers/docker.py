@@ -39,7 +39,7 @@ async def available_images(image_name: str = None, docker_service: DockerService
     available_images = docker_service.get_available_images()
     if image_name:
         return [tag for image in available_images["images"] for tag in image.tags if image_name in tag]
-    return [tag for tag in available_images["images"]]
+    return [tag for image in available_images["images"] for tag in image.tags]
 
 
 @router.get("/active-containers")
