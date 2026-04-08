@@ -297,7 +297,6 @@ app = FastAPI(
     description="API for managing Hummingbot trading instances",
     version=VERSION,
     lifespan=lifespan,
-    redirect_slashes=False,
 )
 
 # Add CORS middleware
