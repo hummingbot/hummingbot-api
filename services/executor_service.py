@@ -349,16 +349,12 @@ class ExecutorService:
         connector_name = executor_config.get("connector_name")
         trading_pair = executor_config.get("trading_pair")
 
-        if executor_type == "lp_executor":
-            # LP executor doesn't need trading_pair for market init - use pool_address for metadata
-            if not trading_pair:
-                trading_pair = executor_config.get("pool_address")
-            if connector_name:
-                await trading_interface.ensure_connector(connector_name)
-        else:
-            # Standard executors need connector and market initialized
-            if connector_name and trading_pair:
+        # Ensure connector and market are ready
+        if connector_name:
+            if trading_pair:
                 await trading_interface.add_market(connector_name, trading_pair)
+            else:
+                await trading_interface.ensure_connector(connector_name)
 
         # Set timestamp if not provided (required for time-based features like time_limit)
         if "timestamp" not in executor_config or executor_config["timestamp"] is None:
