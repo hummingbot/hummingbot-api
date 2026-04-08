@@ -26,8 +26,6 @@ from hummingbot.strategy_v2.executors.order_executor.data_types import OrderExec
 from hummingbot.strategy_v2.executors.order_executor.order_executor import OrderExecutor
 from hummingbot.strategy_v2.executors.position_executor.data_types import PositionExecutorConfig
 from hummingbot.strategy_v2.executors.position_executor.position_executor import PositionExecutor
-from hummingbot.strategy_v2.executors.swap_executor.data_types import SwapExecutorConfig
-from hummingbot.strategy_v2.executors.swap_executor.swap_executor import SwapExecutor
 from hummingbot.strategy_v2.executors.twap_executor.data_types import TWAPExecutorConfig
 from hummingbot.strategy_v2.executors.twap_executor.twap_executor import TWAPExecutor
 from hummingbot.strategy_v2.executors.xemm_executor.data_types import XEMMExecutorConfig
@@ -84,7 +82,6 @@ class ExecutorService:
         "xemm_executor": (XEMMExecutor, XEMMExecutorConfig),
         "order_executor": (OrderExecutor, OrderExecutorConfig),
         "lp_executor": (LPExecutor, LPExecutorConfig),
-        "swap_executor": (SwapExecutor, SwapExecutorConfig),
     }
 
     def __init__(
@@ -352,26 +349,21 @@ class ExecutorService:
         connector_name = executor_config.get("connector_name")
         trading_pair = executor_config.get("trading_pair")
 
-        if executor_type in ("swap_executor", "lp_executor"):
-            # Gateway executors: connector_name required, trading_pair optional
+        if executor_type == "lp_executor":
+            # LP executor: connector_name required, trading_pair optional
             # Network is optional - uses connector's defaultNetwork if not provided
             if not connector_name:
-                raise HTTPException(status_code=400, detail=f"connector_name is required for {executor_type}")
+                raise HTTPException(status_code=400, detail="connector_name is required for lp_executor")
 
-            if executor_type == "lp_executor":
-                pool_address = executor_config.get("pool_address")
-                lp_provider = executor_config.get("lp_provider")
-                if not pool_address:
-                    raise HTTPException(status_code=400, detail="pool_address is required for lp_executor")
-                if not lp_provider:
-                    raise HTTPException(status_code=400, detail="lp_provider is required for lp_executor (e.g., 'meteora/clmm')")
-                # Use pool_address as trading_pair placeholder for metadata if not provided
-                if not trading_pair:
-                    trading_pair = pool_address
-            else:
-                # swap_executor: trading_pair required, swap_provider optional (uses network default)
-                if not trading_pair:
-                    raise HTTPException(status_code=400, detail="trading_pair is required for swap_executor")
+            pool_address = executor_config.get("pool_address")
+            lp_provider = executor_config.get("lp_provider")
+            if not pool_address:
+                raise HTTPException(status_code=400, detail="pool_address is required for lp_executor")
+            if not lp_provider:
+                raise HTTPException(status_code=400, detail="lp_provider is required for lp_executor (e.g., 'meteora/clmm')")
+            # Use pool_address as trading_pair placeholder for metadata if not provided
+            if not trading_pair:
+                trading_pair = pool_address
 
             # Ensure connector is ready (executor handles connector normalization in on_start)
             await trading_interface.ensure_connector(connector_name)

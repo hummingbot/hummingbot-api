@@ -212,7 +212,6 @@ EXECUTOR_TYPES = Literal[
     "xemm_executor",
     "order_executor",
     "lp_executor",
-    "swap_executor"
 ]
 
 
@@ -262,23 +261,6 @@ class CreateExecutorRequest(BaseModel):
                             "side": 1,
                             "extra_params": {"strategyType": 0},
                             "keep_position": False
-                        }
-                    }
-                },
-                {
-                    "summary": "Swap Executor",
-                    "description": "Execute a single swap on Gateway AMM connectors (Jupiter, Raydium, etc.)",
-                    "value": {
-                        "account_name": "master_account",
-                        "executor_config": {
-                            "type": "swap_executor",
-                            "connector_name": "solana-mainnet-beta",
-                            "swap_provider": "jupiter/router",
-                            "trading_pair": "SOL-USDC",
-                            "side": 2,
-                            "amount": "0.1",
-                            "slippage_pct": "0.5",
-                            "additional_swap_providers": ["meteora/clmm", "orca/clmm"]
                         }
                     }
                 }

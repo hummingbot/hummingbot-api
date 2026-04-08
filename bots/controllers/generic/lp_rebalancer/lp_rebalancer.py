@@ -10,8 +10,9 @@ from hummingbot.strategy_v2.controllers import ControllerBase, ControllerConfigB
 from hummingbot.strategy_v2.executors.data_types import ConnectorPair
 from hummingbot.strategy_v2.executors.gateway_utils import parse_provider
 from hummingbot.strategy_v2.executors.lp_executor.data_types import LPExecutorConfig, LPExecutorStates
-from hummingbot.strategy_v2.executors.swap_executor.data_types import SwapExecutorConfig, SwapExecutorStates
+from hummingbot.strategy_v2.executors.order_executor.data_types import ExecutionStrategy, OrderExecutorConfig
 from hummingbot.strategy_v2.models.executor_actions import CreateExecutorAction, ExecutorAction, StopExecutorAction
+from hummingbot.strategy_v2.models.executors import CloseType
 from hummingbot.strategy_v2.models.executors_info import ExecutorInfo
 from pydantic import Field, field_validator, model_validator
 
@@ -26,7 +27,7 @@ class LPRebalancerConfig(ControllerConfigBase):
     Provider Architecture:
     - connector_name: The network identifier (e.g., "solana-mainnet-beta")
     - lp_provider: LP provider in format "dex/trading_type" (e.g., "meteora/clmm")
-    - swap_provider: Optional swap provider for autoswap (e.g., "jupiter/router")
+    - autoswap: Uses OrderExecutor with network's configured swapProvider
     """
     controller_type: str = "generic"
     controller_name: str = "lp_rebalancer"
@@ -37,9 +38,9 @@ class LPRebalancerConfig(ControllerConfigBase):
 
     # LP provider (required) - format: "dex/trading_type"
     # Examples: "meteora/clmm", "orca/clmm", "raydium/clmm"
-    lp_provider: str = "meteora/clmm"
+    lp_provider: str = "orca/clmm"
 
-    # Pool configuration (required)
+    # Pool configuration
     trading_pair: str = ""
     pool_address: str = ""
 
@@ -77,17 +78,12 @@ class LPRebalancerConfig(ControllerConfigBase):
     autoswap: bool = Field(
         default=False,
         json_schema_extra={"is_updatable": True},
-        description="Automatically swap tokens if balance is insufficient for position"
+        description="Automatically swap tokens if balance is insufficient for position."
     )
     swap_buffer_pct: Decimal = Field(
         default=Decimal("0.01"),
         json_schema_extra={"is_updatable": True},
         description="Extra % to swap beyond deficit to account for slippage (e.g., 0.01 = 0.01%)"
-    )
-    swap_provider: Optional[str] = Field(
-        default=None,
-        json_schema_extra={"is_updatable": False},
-        description="Swap provider for autoswap (e.g., 'jupiter/router'). Required if autoswap=True."
     )
 
     @field_validator("sell_price_min", "sell_price_max", "buy_price_min", "buy_price_max", mode="before")
@@ -123,17 +119,11 @@ class LPRebalancerConfig(ControllerConfigBase):
                     f"For in-range positions, |position_offset_pct| ({abs(self.position_offset_pct)}) "
                     f"must not exceed position_width_pct ({self.position_width_pct})"
                 )
-        # swap_provider is required when autoswap is enabled
-        if self.autoswap and not self.swap_provider:
-            raise ValueError("swap_provider is required when autoswap=True")
         return self
 
     def update_markets(self, markets: MarketDict) -> MarketDict:
-        """Register the LP connector and swap provider with trading pair"""
+        """Register the LP connector with trading pair"""
         markets = markets.add_or_update(self.connector_name, self.trading_pair)
-        # Also register swap provider if autoswap is enabled
-        if self.autoswap and self.swap_provider:
-            markets = markets.add_or_update(self.swap_provider, self.trading_pair)
         return markets
 
 
@@ -248,14 +238,13 @@ class LPRebalancer(ControllerBase):
         swap_executor = self.get_swap_executor()
         if swap_executor is None:
             return True
-        state = swap_executor.custom_info.get("state")
-        return state in (SwapExecutorStates.COMPLETED.value, SwapExecutorStates.FAILED.value)
+        return swap_executor.is_done
 
-    def _check_autoswap_needed(self, side: int, current_price: Decimal) -> Optional[SwapExecutorConfig]:
+    def _check_autoswap_needed(self, side: int, current_price: Decimal) -> Optional[OrderExecutorConfig]:
         """
         Check if autoswap is needed and return swap config if so.
 
-        Returns SwapExecutorConfig if swap is needed, None otherwise.
+        Returns OrderExecutorConfig if swap is needed, None otherwise.
 
         Simply checks balance vs required amounts and swaps deficit + buffer if insufficient.
         Works for both positive offset (out-of-range) and negative offset (in-range) positions.
@@ -330,13 +319,13 @@ class LPRebalancer(ControllerBase):
                     f"(deficit={base_deficit:.6f} + {self.config.swap_buffer_pct}% buffer, "
                     f"have {quote_balance:.6f} {self._quote_token})"
                 )
-                return SwapExecutorConfig(
+                return OrderExecutorConfig(
                     timestamp=self.market_data_provider.time(),
                     connector_name=self.config.connector_name,
-                    swap_provider=self.config.swap_provider,
                     trading_pair=self.config.trading_pair,
                     side=TradeType.BUY,
                     amount=swap_amount,
+                    execution_strategy=ExecutionStrategy.MARKET,
                 )
             else:
                 self.logger().warning(
@@ -354,13 +343,13 @@ class LPRebalancer(ControllerBase):
                     f"Autoswap: SELL {swap_amount:.6f} {self._base_token} for ~{quote_deficit:.6f} {self._quote_token} "
                     f"(deficit + {self.config.swap_buffer_pct}% buffer, have {base_balance:.6f} {self._base_token})"
                 )
-                return SwapExecutorConfig(
+                return OrderExecutorConfig(
                     timestamp=self.market_data_provider.time(),
                     connector_name=self.config.connector_name,
-                    swap_provider=self.config.swap_provider,
                     trading_pair=self.config.trading_pair,
                     side=TradeType.SELL,
                     amount=swap_amount,
+                    execution_strategy=ExecutionStrategy.MARKET,
                 )
             else:
                 self.logger().warning(
@@ -412,7 +401,7 @@ class LPRebalancer(ControllerBase):
             # Find and track the swap executor if not already tracked
             if not self._swap_executor_id:
                 for e in self.executors_info:
-                    if e.config.type == "swap_executor" and e.is_active:
+                    if e.config.type == "order_executor" and e.is_active:
                         self._swap_executor_id = e.id
                         self.logger().info(f"Tracking swap executor: {e.id}")
                         break
@@ -431,14 +420,15 @@ class LPRebalancer(ControllerBase):
 
             # Swap executor completed - check result and proceed
             swap_executor = self.get_swap_executor()
-            swap_state = swap_executor.custom_info.get("state") if swap_executor else "unknown"
             pending_side = self._pending_swap_side
 
             # Clear swap tracking
             self._swap_executor_id = None
             self._pending_swap_side = None
 
-            if swap_state == SwapExecutorStates.COMPLETED.value:
+            # Check if swap succeeded (not failed)
+            swap_succeeded = swap_executor and swap_executor.close_type != CloseType.FAILED
+            if swap_succeeded:
                 self.logger().info("Autoswap completed successfully, proceeding to LP position")
                 # Trigger balance update after successful swap
                 self._trigger_balance_update()
@@ -455,8 +445,9 @@ class LPRebalancer(ControllerBase):
                         self._pending_balance_update = True
             else:
                 # Swap failed - log error and skip LP position creation this cycle
+                close_type = swap_executor.close_type if swap_executor else "unknown"
                 self.logger().error(
-                    f"Autoswap FAILED (state: {swap_state}). "
+                    f"Autoswap FAILED (close_type: {close_type}). "
                     f"Will retry autoswap check on next cycle for side={pending_side}"
                 )
                 # Don't create LP position - let the next cycle re-check balances
@@ -900,11 +891,15 @@ class LPRebalancer(ControllerBase):
         return 1
 
     async def update_processed_data(self):
-        """Called every tick - always fetch fresh pool price for accurate position creation."""
+        """Called every tick - fetch pool price."""
         try:
             connector = self.market_data_provider.get_connector(self.config.connector_name)
             if hasattr(connector, 'get_pool_info_by_address'):
-                pool_info = await connector.get_pool_info_by_address(self.config.pool_address)
+                pool_info = await connector.get_pool_info_by_address(
+                    self.config.pool_address,
+                    dex_name=self.lp_dex_name,
+                    trading_type=self.lp_trading_type,
+                )
                 if pool_info and pool_info.price:
                     self._pool_price = Decimal(str(pool_info.price))
         except Exception as e:
@@ -923,7 +918,7 @@ class LPRebalancer(ControllerBase):
         status.append("+" + "-" * box_width + "+")
 
         # === CONFIG SECTION ===
-        line = f"| Network: {self.config.connector_name}  LP: {self.config.lp_provider}"
+        line = f"| Network: {self.config.connector_name} | LP: {self.config.lp_provider}"
         status.append(line + " " * (box_width - len(line) + 1) + "|")
 
         line = f"| Pool: {self.config.pool_address}"
@@ -1123,7 +1118,7 @@ class LPRebalancer(ControllerBase):
 
         # Separate LP positions from swaps
         closed_lp = [e for e in closed if getattr(e.config, "type", None) == "lp_executor"]
-        closed_swaps = [e for e in closed if getattr(e.config, "type", None) == "swap_executor"]
+        closed_swaps = [e for e in closed if getattr(e.config, "type", None) == "order_executor"]
 
         # Count LP positions by side
         both_count = len([e for e in closed_lp if getattr(e.config, "side", None) == 0])
