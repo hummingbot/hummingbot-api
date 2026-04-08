@@ -33,7 +33,7 @@ class MQTTManager:
 
         # Auto-discovered bots
         self._discovered_bots: Dict[str, float] = {}  # bot_id: last_seen_timestamp
-        
+
         # Message deduplication tracking
         self._processed_messages: Dict[str, float] = {}  # message_hash: timestamp
         self._message_ttl = 300  # 5 minutes TTL for processed messages
@@ -90,7 +90,7 @@ class MQTTManager:
             for topic, qos in self._subscriptions:
                 await client.subscribe(topic, qos=qos)
             yield client
-            
+
         # Cleanup on exit
         self._connected = False
 
@@ -151,7 +151,7 @@ class MQTTManager:
                         await self._handle_command_response(bot_id, channel, data)
                     elif channel.startswith("external/event/"):
                         await self._handle_external_event(bot_id, channel, data)
-                    elif channel in ["history", "lphistory", "start", "stop", "config", "import_strategy"]:
+                    elif channel in ["history", "start", "stop", "config", "import_strategy"]:
                         # These are command channels - responses should come on response/* topics
                         logger.debug(f"Command channel '{channel}' for bot {bot_id} - waiting for response")
                     else:
@@ -205,14 +205,14 @@ class MQTTManager:
             level = data.get("level_name") or data.get("levelname") or data.get("level", "INFO")
             message = data.get("msg") or data.get("message", "")
             timestamp = data.get("timestamp") or data.get("time") or time.time()
-            
+
             # Create hash for deduplication (bot_id + message + timestamp within 1 second)
             message_hash = f"{bot_id}:{message}:{int(timestamp)}"
         elif isinstance(data, str):
             message = data
             timestamp = time.time()
             level = "INFO"
-            
+
             # Create hash for string messages
             message_hash = f"{bot_id}:{message}:{int(timestamp)}"
         else:
@@ -270,7 +270,7 @@ class MQTTManager:
 
     async def _handle_external_event(self, bot_id: str, channel: str, data: Any):
         """Handle external events."""
-        event_type = channel.split("/")[-1]
+        _ = channel.split("/")[-1]  # event_type for future use
 
     async def _handle_rpc_response(self, topic: str, message):
         """Handle RPC responses on hummingbot-api/response/* topics."""
@@ -297,7 +297,7 @@ class MQTTManager:
         # Extract command from response channel (e.g., response/start/1234567890 or response/history)
         channel_parts = channel.split("/")
         if len(channel_parts) >= 2:
-            command = channel_parts[1]
+            _ = channel_parts[1]  # command for future use
 
     async def start(self):
         """Start the MQTT client."""

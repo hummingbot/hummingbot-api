@@ -32,7 +32,7 @@ class BotsOrchestrator:
         # Active bots tracking
         self.active_bots = {}
         self._update_bots_task: Optional[asyncio.Task] = None
-        
+
         # Track bots that are currently being stopped and archived
         self.stopping_bots = set()
 
@@ -220,36 +220,6 @@ class BotsOrchestrator:
 
         return {"success": True, "data": response}
 
-    async def get_bot_lp_history(self, bot_name, **kwargs):
-        """
-        Request bot LP (liquidity provider) history and wait for the response.
-        This returns LP position updates from RangePositionUpdate records.
-        """
-        if bot_name not in self.active_bots:
-            logger.warning(f"Bot {bot_name} not found in active bots")
-            return {"success": False, "message": f"Bot {bot_name} not found"}
-
-        # Create LPHistoryCommandMessage.Request format
-        data = {
-            "days": kwargs.get("days", 0),
-            "verbose": kwargs.get("verbose", False),
-            "precision": kwargs.get("precision"),
-            "async_backend": kwargs.get("async_backend", False),
-        }
-
-        # Use the new RPC method to wait for response
-        timeout = kwargs.get("timeout", 30.0)  # Default 30 second timeout
-        response = await self.mqtt_manager.publish_command_and_wait(bot_name, "lphistory", data, timeout=timeout)
-
-        if response is None:
-            return {
-                "success": False,
-                "message": f"No response received from {bot_name} within {timeout} seconds",
-                "timeout": True,
-            }
-
-        return {"success": True, "data": response}
-
     @staticmethod
     def determine_controller_performance(controller_reports):
         """Process controller reports and extract performance and custom_info.
@@ -333,7 +303,7 @@ class BotsOrchestrator:
                     "general_logs": [],
                     "recently_active": False,
                 }
-            
+
             # Get data from MQTT manager
             controller_reports = self.mqtt_manager.get_bot_controller_reports(bot_name)
             performance = self.determine_controller_performance(controller_reports)
@@ -361,18 +331,17 @@ class BotsOrchestrator:
             }
         except Exception as e:
             return {"status": "error", "error": str(e)}
-    
+
     def set_bot_stopping(self, bot_name: str):
         """Mark a bot as currently being stopped and archived."""
         self.stopping_bots.add(bot_name)
         logger.info(f"Marked bot {bot_name} as stopping")
-    
+
     def clear_bot_stopping(self, bot_name: str):
         """Clear the stopping status for a bot."""
         self.stopping_bots.discard(bot_name)
         logger.info(f"Cleared stopping status for bot {bot_name}")
-    
+
     def is_bot_stopping(self, bot_name: str) -> bool:
         """Check if a bot is currently being stopped."""
         return bot_name in self.stopping_bots
-    
