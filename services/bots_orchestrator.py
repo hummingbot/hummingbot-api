@@ -1,7 +1,7 @@
 import asyncio
 import logging
-import re
 from typing import Optional
+import re
 
 import docker
 
@@ -32,7 +32,7 @@ class BotsOrchestrator:
         # Active bots tracking
         self.active_bots = {}
         self._update_bots_task: Optional[asyncio.Task] = None
-
+        
         # Track bots that are currently being stopped and archived
         self.stopping_bots = set()
 
@@ -303,7 +303,7 @@ class BotsOrchestrator:
                     "general_logs": [],
                     "recently_active": False,
                 }
-
+            
             # Get data from MQTT manager
             controller_reports = self.mqtt_manager.get_bot_controller_reports(bot_name)
             performance = self.determine_controller_performance(controller_reports)
@@ -331,17 +331,18 @@ class BotsOrchestrator:
             }
         except Exception as e:
             return {"status": "error", "error": str(e)}
-
+    
     def set_bot_stopping(self, bot_name: str):
         """Mark a bot as currently being stopped and archived."""
         self.stopping_bots.add(bot_name)
         logger.info(f"Marked bot {bot_name} as stopping")
-
+    
     def clear_bot_stopping(self, bot_name: str):
         """Clear the stopping status for a bot."""
         self.stopping_bots.discard(bot_name)
         logger.info(f"Cleared stopping status for bot {bot_name}")
-
+    
     def is_bot_stopping(self, bot_name: str) -> bool:
         """Check if a bot is currently being stopped."""
         return bot_name in self.stopping_bots
+    
