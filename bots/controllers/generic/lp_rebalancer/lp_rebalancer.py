@@ -40,9 +40,9 @@ class LPRebalancerConfig(ControllerConfigBase):
     # Examples: "meteora/clmm", "orca/clmm", "raydium/clmm"
     lp_provider: str = "orca/clmm"
 
-    # Pool configuration
-    trading_pair: str = ""
-    pool_address: str = ""
+    # Pool configuration (required)
+    trading_pair: str
+    pool_address: str
 
     # Position parameters
     total_amount_quote: Decimal = Field(default=Decimal("50"), json_schema_extra={"is_updatable": True})

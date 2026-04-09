@@ -635,6 +635,12 @@ class ExecutorService:
         result["close_type"] = executor.close_type.name if executor.close_type else None
         result["is_active"] = not executor.is_closed
 
+        # Add side from executor_info (it's a property, not serialized by model_dump)
+        side = executor_info.side
+        if side is not None:
+            # Convert TradeType enum or int to string
+            result["side"] = side.name if hasattr(side, 'name') else str(side)
+
         # For grid executors, filter out heavy fields from custom_info
         if executor_type == "grid_executor" and result.get("custom_info"):
             heavy_fields = {"levels_by_state", "filled_orders", "failed_orders", "canceled_orders"}
