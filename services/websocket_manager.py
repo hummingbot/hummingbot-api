@@ -100,6 +100,16 @@ class WebSocketManager:
         if sub_id in subs:
             self._cleanup_subscription(subs.pop(sub_id))
 
+        # Validate trading pair exists before starting feed
+        try:
+            if sub_type == "candles":
+                await self._market_data_service.validate_trading_pair(
+                    connector, trading_pair, sub.interval or "1m"
+                )
+        except ValueError as e:
+            await self._send_error(websocket, str(e))
+            return
+
         # Start the feed / ensure it exists
         try:
             if sub_type == "candles":
