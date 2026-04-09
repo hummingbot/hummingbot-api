@@ -1048,8 +1048,9 @@ class LPRebalancer(ControllerBase):
         closed_swaps = [e for e in self.executors_info
                         if e.is_done and getattr(e.config, "type", None) == "order_executor"]
 
-        buy_count = len([e for e in closed_lp if getattr(e.config, "side", None) == 1])
-        sell_count = len([e for e in closed_lp if getattr(e.config, "side", None) == 2])
+        buy_count = len([e for e in closed_lp if getattr(e.config, "side", None) == TradeType.BUY])
+        sell_count = len([e for e in closed_lp if getattr(e.config, "side", None) == TradeType.SELL])
+        range_count = len([e for e in closed_lp if getattr(e.config, "side", None) == TradeType.RANGE])
 
         total_fees_base = Decimal("0")
         total_fees_quote = Decimal("0")
@@ -1060,7 +1061,7 @@ class LPRebalancer(ControllerBase):
         pool_price = self._pool_price or Decimal("0")
         total_fees_value = total_fees_base * pool_price + total_fees_quote
 
-        line = f"| Closed Positions: {len(closed_lp)} (buy:{buy_count} sell:{sell_count})"
+        line = f"| Closed Positions: {len(closed_lp)} (buy:{buy_count} sell:{sell_count} range:{range_count})"
         status.append(line + " " * (box_width - len(line) + 1) + "|")
 
         if closed_swaps:
