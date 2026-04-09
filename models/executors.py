@@ -259,7 +259,7 @@ class CreateExecutorRequest(BaseModel):
                             "upper_price": "100",
                             "base_amount": "0",
                             "quote_amount": "10.0",
-                            "side": 1,
+                            "side": "BUY",
                             "extra_params": {"strategyType": 0},
                             "keep_position": False
                         }

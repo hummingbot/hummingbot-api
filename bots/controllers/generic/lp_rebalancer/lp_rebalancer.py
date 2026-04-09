@@ -46,7 +46,7 @@ class LPRebalancerConfig(ControllerConfigBase):
 
     # Position parameters
     total_amount_quote: Decimal = Field(default=Decimal("50"), json_schema_extra={"is_updatable": True})
-    side: int = Field(default=1, json_schema_extra={"is_updatable": True})  # 0=BOTH, 1=BUY, 2=SELL
+    side: TradeType = Field(default=TradeType.BUY, json_schema_extra={"is_updatable": True})  # BUY, SELL, or RANGE
     position_width_pct: Decimal = Field(default=Decimal("0.5"), json_schema_extra={"is_updatable": True})
     position_offset_pct: Decimal = Field(
         default=Decimal("0.01"),
@@ -97,11 +97,27 @@ class LPRebalancerConfig(ControllerConfigBase):
     @field_validator("side", mode="before")
     @classmethod
     def validate_side(cls, v):
-        """Validate side is 0, 1, or 2."""
-        v = int(v)
-        if v not in (0, 1, 2):
-            raise ValueError("side must be 0 (BOTH), 1 (BUY), or 2 (SELL)")
-        return v
+        """Validate and convert side to TradeType enum."""
+        if isinstance(v, TradeType):
+            return v
+        if isinstance(v, str):
+            v = v.upper()
+            if v in ("BUY", "1"):
+                return TradeType.BUY
+            elif v in ("SELL", "2"):
+                return TradeType.SELL
+            elif v in ("RANGE", "3"):
+                return TradeType.RANGE
+            raise ValueError(f"Invalid side '{v}'. Must be BUY, SELL, or RANGE")
+        if isinstance(v, int):
+            if v == 1:
+                return TradeType.BUY
+            elif v == 2:
+                return TradeType.SELL
+            elif v == 3:
+                return TradeType.RANGE
+            raise ValueError(f"Invalid side {v}. Must be 1 (BUY), 2 (SELL), or 3 (RANGE)")
+        raise ValueError(f"Invalid side type {type(v)}. Must be TradeType, str, or int")
 
     @model_validator(mode="after")
     def validate_price_limit_ranges(self):
@@ -240,7 +256,7 @@ class LPRebalancer(ControllerBase):
             return True
         return swap_executor.is_done
 
-    def _check_autoswap_needed(self, side: int, current_price: Decimal) -> Optional[OrderExecutorConfig]:
+    def _check_autoswap_needed(self, side: TradeType, current_price: Decimal) -> Optional[OrderExecutorConfig]:
         """
         Check if autoswap is needed and return swap config if so.
 
@@ -358,10 +374,10 @@ class LPRebalancer(ControllerBase):
                 return None
 
         elif base_deficit > 0 and quote_deficit > 0:
-            # Both tokens in deficit - user is underfunded for side=0 (BOTH)
+            # Both tokens in deficit - user is underfunded for side=RANGE
             total_deficit_quote = base_deficit * current_price + quote_deficit
             self.logger().warning(
-                f"Autoswap: cannot swap - both tokens in deficit (side=0). "
+                f"Autoswap: cannot swap - both tokens in deficit (side=RANGE). "
                 f"Need {base_deficit:.6f} more {self._base_token} AND {quote_deficit:.6f} more {self._quote_token} "
                 f"(total deficit: {total_deficit_quote:.2f} {self._quote_token})"
             )
@@ -495,7 +511,7 @@ class LPRebalancer(ControllerBase):
                 self._pending_rebalance = False
                 self._pending_rebalance_side = None
             elif not self._initial_position_created:
-                # Initial position: use configured side (can be 0=BOTH, 1=BUY, 2=SELL)
+                # Initial position: use configured side (can be BUY, SELL, or RANGE)
                 side = self.config.side
             else:
                 # After initial position but no pending rebalance (e.g., position failed/closed)
@@ -590,9 +606,9 @@ class LPRebalancer(ControllerBase):
 
         # Step 1: Determine side from price direction (using [lower, upper) convention)
         if current_price >= upper_price:
-            new_side = 1  # BUY - price at or above range
+            new_side = TradeType.BUY  # price at or above range
         elif current_price < lower_price:
-            new_side = 2  # SELL - price below range
+            new_side = TradeType.SELL  # price below range
         else:
             # Price is in range, shouldn't happen in OUT_OF_RANGE state
             self.logger().warning(f"Price {current_price} appears in range [{lower_price}, {upper_price})")
@@ -641,7 +657,7 @@ class LPRebalancer(ControllerBase):
 
         return False  # Price is in range
 
-    def _create_executor_config(self, side: int) -> Optional[LPExecutorConfig]:
+    def _create_executor_config(self, side: TradeType) -> Optional[LPExecutorConfig]:
         """
         Create executor config for the given side.
 
@@ -671,12 +687,12 @@ class LPRebalancer(ControllerBase):
 
         # Check if bounds were clamped by price limits
         clamped = []
-        if side == 1:  # BUY
+        if side == TradeType.BUY:  # BUY
             if self.config.buy_price_max and upper_price == self.config.buy_price_max:
                 clamped.append(f"upper=buy_price_max({self.config.buy_price_max})")
             if self.config.buy_price_min and lower_price == self.config.buy_price_min:
                 clamped.append(f"lower=buy_price_min({self.config.buy_price_min})")
-        elif side == 2:  # SELL
+        elif side == TradeType.SELL:  # SELL
             if self.config.sell_price_min and lower_price == self.config.sell_price_min:
                 clamped.append(f"lower=sell_price_min({self.config.sell_price_min})")
             if self.config.sell_price_max and upper_price == self.config.sell_price_max:
@@ -704,12 +720,12 @@ class LPRebalancer(ControllerBase):
             extra_params=extra_params if extra_params else None,
         )
 
-    def _calculate_amounts(self, side: int, current_price: Decimal) -> tuple:
+    def _calculate_amounts(self, side: TradeType, current_price: Decimal) -> tuple:
         """
         Calculate base and quote amounts based on side, offset, and total_amount_quote.
 
         Allocation logic:
-        - Side 0 (BOTH): split 50/50
+        - Side RANGE: split 50/50
         - Side 1/2 with offset >= 0 (out-of-range): 100% single-sided
         - Side 1/2 with offset < 0 (in-range): proportional split based on price position
 
@@ -722,12 +738,12 @@ class LPRebalancer(ControllerBase):
         total = self.config.total_amount_quote
         offset = self.config.position_offset_pct
 
-        if side == 0:  # BOTH
+        if side == TradeType.RANGE:  # RANGE
             quote_amt = total / Decimal("2")
             base_amt = quote_amt / current_price
         elif offset >= 0:
             # Out-of-range: single-sided allocation
-            if side == 1:  # BUY - all quote
+            if side == TradeType.BUY:  # BUY - all quote
                 base_amt = Decimal("0")
                 quote_amt = total
             else:  # SELL - all base
@@ -741,7 +757,7 @@ class LPRebalancer(ControllerBase):
 
             if price_range <= 0 or current_price <= lower_price:
                 # At or below lower bound - all quote for BUY, all base for SELL
-                if side == 1:
+                if side == TradeType.BUY:
                     base_amt = Decimal("0")
                     quote_amt = total
                 else:
@@ -749,7 +765,7 @@ class LPRebalancer(ControllerBase):
                     quote_amt = Decimal("0")
             elif current_price >= upper_price:
                 # At or above upper bound - all base for SELL, all quote for BUY
-                if side == 2:
+                if side == TradeType.SELL:
                     base_amt = total / current_price
                     quote_amt = Decimal("0")
                 else:
@@ -768,11 +784,11 @@ class LPRebalancer(ControllerBase):
 
         return base_amt, quote_amt
 
-    def _calculate_price_bounds(self, side: int, current_price: Decimal) -> tuple:
+    def _calculate_price_bounds(self, side: TradeType, current_price: Decimal) -> tuple:
         """
         Calculate position bounds based on side and price limits.
 
-        Side 0 (BOTH): centered on current price, clamped to [buy_min, sell_max]
+        Side RANGE: centered on current price, clamped to [buy_min, sell_max]
         Side 1 (BUY): upper = min(current, buy_price_max) * (1 - offset), lower extends width below
         Side 2 (SELL): lower = max(current, sell_price_min) * (1 + offset), upper extends width above
 
@@ -782,7 +798,7 @@ class LPRebalancer(ControllerBase):
         width = self.config.position_width_pct / Decimal("100")
         offset = self.config.position_offset_pct / Decimal("100")
 
-        if side == 0:  # BOTH
+        if side == TradeType.RANGE:  # RANGE
             half_width = width / Decimal("2")
             lower_price = current_price * (Decimal("1") - half_width)
             upper_price = current_price * (Decimal("1") + half_width)
@@ -792,7 +808,7 @@ class LPRebalancer(ControllerBase):
             if self.config.sell_price_max:
                 upper_price = min(upper_price, self.config.sell_price_max)
 
-        elif side == 1:  # BUY
+        elif side == TradeType.BUY:  # BUY
             # Position BELOW current price so we only need quote token (USDC)
             if self.config.buy_price_max:
                 upper_price = min(current_price, self.config.buy_price_max)
@@ -820,28 +836,28 @@ class LPRebalancer(ControllerBase):
 
         return lower_price, upper_price
 
-    def _is_price_within_limits(self, price: Decimal, side: int) -> bool:
+    def _is_price_within_limits(self, price: Decimal, side: TradeType) -> bool:
         """
         Check if price is within configured limits for the position type.
 
         Price must be within the range to create a position that's IN_RANGE:
         - BUY: price must be within [buy_price_min, buy_price_max]
         - SELL: price must be within [sell_price_min, sell_price_max]
-        - BOTH: price must be within the intersection of both ranges
+        - RANGE: price must be within the intersection of both ranges
 
         If price is outside the range, the position would be immediately OUT_OF_RANGE.
         """
-        if side == 2:  # SELL
+        if side == TradeType.SELL:  # SELL
             if self.config.sell_price_min and price < self.config.sell_price_min:
                 return False
             if self.config.sell_price_max and price > self.config.sell_price_max:
                 return False
-        elif side == 1:  # BUY
+        elif side == TradeType.BUY:  # BUY
             if self.config.buy_price_min and price < self.config.buy_price_min:
                 return False
             if self.config.buy_price_max and price > self.config.buy_price_max:
                 return False
-        else:  # BOTH - must be within intersection of ranges
+        else:  # RANGE - must be within intersection of ranges
             # Check buy range
             if self.config.buy_price_min and price < self.config.buy_price_min:
                 return False
@@ -854,13 +870,13 @@ class LPRebalancer(ControllerBase):
                 return False
         return True
 
-    def _determine_side_from_price(self, current_price: Decimal) -> int:
+    def _determine_side_from_price(self, current_price: Decimal) -> TradeType:
         """
-        Determine side (1=BUY or 2=SELL) based on current price vs price limits.
+        Determine side (BUY or SELL) based on current price vs price limits.
 
-        Used after initial position to ensure we never use side=0 (BOTH) for rebalances.
-        - If price is closer to buy range, use BUY (1)
-        - If price is closer to sell range, use SELL (2)
+        Used after initial position to ensure we never use RANGE for rebalances.
+        - If price is closer to buy range, use BUY
+        - If price is closer to sell range, use SELL
         """
         # Get midpoints of buy and sell ranges
         buy_mid = None
@@ -874,21 +890,21 @@ class LPRebalancer(ControllerBase):
         # If both ranges defined, use the one price is closer to
         if buy_mid and sell_mid:
             if current_price <= buy_mid:
-                return 1  # BUY - price in lower range
+                return TradeType.BUY  # price in lower range
             elif current_price >= sell_mid:
-                return 2  # SELL - price in upper range
+                return TradeType.SELL  # price in upper range
             else:
                 # Price between buy_mid and sell_mid - use BUY if closer to buy_mid
-                return 1 if (current_price - buy_mid) < (sell_mid - current_price) else 2
+                return TradeType.BUY if (current_price - buy_mid) < (sell_mid - current_price) else TradeType.SELL
 
         # If only one range defined, use that side
         if buy_mid:
-            return 1
+            return TradeType.BUY
         if sell_mid:
-            return 2
+            return TradeType.SELL
 
         # No price limits defined - default to BUY
-        return 1
+        return TradeType.BUY
 
     async def update_processed_data(self):
         """Called every tick - fetch pool price."""
@@ -925,8 +941,7 @@ class LPRebalancer(ControllerBase):
         status.append(line + " " * (box_width - len(line) + 1) + "|")
 
         # Config summary
-        side_names = {0: "BOTH", 1: "BUY", 2: "SELL"}
-        side_str = side_names.get(self.config.side, '?')
+        side_str = self.config.side.name
         amt = self.config.total_amount_quote
         width = self.config.position_width_pct
         offset = self.config.position_offset_pct
@@ -1121,9 +1136,9 @@ class LPRebalancer(ControllerBase):
         closed_swaps = [e for e in closed if getattr(e.config, "type", None) == "order_executor"]
 
         # Count LP positions by side
-        both_count = len([e for e in closed_lp if getattr(e.config, "side", None) == 0])
-        buy_count = len([e for e in closed_lp if getattr(e.config, "side", None) == 1])
-        sell_count = len([e for e in closed_lp if getattr(e.config, "side", None) == 2])
+        range_count = len([e for e in closed_lp if getattr(e.config, "side", None) == TradeType.RANGE])
+        buy_count = len([e for e in closed_lp if getattr(e.config, "side", None) == TradeType.BUY])
+        sell_count = len([e for e in closed_lp if getattr(e.config, "side", None) == TradeType.SELL])
 
         # Calculate fees from closed LP positions
         total_fees_base = Decimal("0")
@@ -1136,7 +1151,7 @@ class LPRebalancer(ControllerBase):
         pool_price = self._pool_price or Decimal("0")
         total_fees_value = total_fees_base * pool_price + total_fees_quote
 
-        line = f"| Closed Positions: {len(closed_lp)} (both:{both_count} buy:{buy_count} sell:{sell_count})"
+        line = f"| Closed Positions: {len(closed_lp)} (range:{range_count} buy:{buy_count} sell:{sell_count})"
         status.append(line + " " * (box_width - len(line) + 1) + "|")
 
         # Show swaps count if any
