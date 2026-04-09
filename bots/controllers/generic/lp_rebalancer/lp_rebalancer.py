@@ -669,41 +669,33 @@ class LPRebalancer(ControllerBase):
             self.logger().warning("No pool price available - waiting for update_processed_data")
             return None
 
-        # Calculate amounts based on side
-        base_amt, quote_amt = self._calculate_amounts(side, current_price)
-
-        # Calculate bounds
+        # Calculate bounds for requested side
         lower_price, upper_price = self._calculate_price_bounds(side, current_price)
 
-        # Validate bounds
-        if lower_price >= upper_price:
-            self.logger().warning(f"Invalid bounds [{lower_price}, {upper_price}] - skipping position")
+        # Check bounds against price limits - clamp if one exceeds, try opposite if both exceed
+        lower_price, upper_price, side = self._validate_and_clamp_bounds(
+            lower_price, upper_price, side, current_price
+        )
+        if lower_price is None:
             return None
+
+        # Validate bounds after clamping
+        if lower_price >= upper_price:
+            self.logger().warning(f"Invalid bounds [{lower_price}, {upper_price}] - skipping")
+            return None
+
+        # Calculate amounts based on final side
+        base_amt, quote_amt = self._calculate_amounts(side, current_price)
 
         # Build extra params (connector-specific)
         extra_params = {}
         if self.config.strategy_type is not None:
             extra_params["strategyType"] = self.config.strategy_type
 
-        # Check if bounds were clamped by price limits
-        clamped = []
-        if side == TradeType.BUY:  # BUY
-            if self.config.buy_price_max and upper_price == self.config.buy_price_max:
-                clamped.append(f"upper=buy_price_max({self.config.buy_price_max})")
-            if self.config.buy_price_min and lower_price == self.config.buy_price_min:
-                clamped.append(f"lower=buy_price_min({self.config.buy_price_min})")
-        elif side == TradeType.SELL:  # SELL
-            if self.config.sell_price_min and lower_price == self.config.sell_price_min:
-                clamped.append(f"lower=sell_price_min({self.config.sell_price_min})")
-            if self.config.sell_price_max and upper_price == self.config.sell_price_max:
-                clamped.append(f"upper=sell_price_max({self.config.sell_price_max})")
-
-        clamped_info = f", clamped: {', '.join(clamped)}" if clamped else ""
-        offset_pct = self.config.position_offset_pct
         self.logger().info(
-            f"Creating position: side={side}, pool_price={current_price:.2f}, "
-            f"bounds=[{lower_price:.4f}, {upper_price:.4f}], offset_pct={offset_pct}, "
-            f"base={base_amt:.4f}, quote={quote_amt:.4f}{clamped_info}"
+            f"Creating position: side={side.name}, pool_price={current_price:.2f}, "
+            f"bounds=[{lower_price:.4f}, {upper_price:.4f}], "
+            f"base={base_amt:.4f}, quote={quote_amt:.4f}"
         )
 
         return LPExecutorConfig(
@@ -798,41 +790,29 @@ class LPRebalancer(ControllerBase):
         width = self.config.position_width_pct / Decimal("100")
         offset = self.config.position_offset_pct / Decimal("100")
 
-        if side == TradeType.RANGE:  # RANGE
+        if side == TradeType.RANGE:
+            # Centered on current price
             half_width = width / Decimal("2")
             lower_price = current_price * (Decimal("1") - half_width)
             upper_price = current_price * (Decimal("1") + half_width)
-            # Clamp to limits
-            if self.config.buy_price_min:
-                lower_price = max(lower_price, self.config.buy_price_min)
-            if self.config.sell_price_max:
-                upper_price = min(upper_price, self.config.sell_price_max)
 
-        elif side == TradeType.BUY:  # BUY
-            # Position BELOW current price so we only need quote token (USDC)
+        elif side == TradeType.BUY:
+            # Anchor at buy_price_max if set, otherwise at current price
             if self.config.buy_price_max:
                 upper_price = min(current_price, self.config.buy_price_max)
             else:
                 upper_price = current_price
-            # Apply offset to decrease upper bound (ensures out-of-range)
             upper_price = upper_price * (Decimal("1") - offset)
             lower_price = upper_price * (Decimal("1") - width)
-            # Clamp lower to floor
-            if self.config.buy_price_min:
-                lower_price = max(lower_price, self.config.buy_price_min)
 
         else:  # SELL
-            # Position ABOVE current price so we only need base token (SOL)
+            # Anchor at sell_price_min if set, otherwise at current price
             if self.config.sell_price_min:
                 lower_price = max(current_price, self.config.sell_price_min)
             else:
                 lower_price = current_price
-            # Apply offset to increase lower bound (ensures out-of-range)
             lower_price = lower_price * (Decimal("1") + offset)
             upper_price = lower_price * (Decimal("1") + width)
-            # Clamp upper to ceiling
-            if self.config.sell_price_max:
-                upper_price = min(upper_price, self.config.sell_price_max)
 
         return lower_price, upper_price
 
@@ -869,6 +849,70 @@ class LPRebalancer(ControllerBase):
             if self.config.sell_price_max and price > self.config.sell_price_max:
                 return False
         return True
+
+    def _validate_and_clamp_bounds(
+        self, lower_price: Decimal, upper_price: Decimal, side: TradeType, current_price: Decimal
+    ) -> tuple:
+        """
+        Validate bounds against price limits. Clamp if one bound exceeds, try opposite side if both exceed.
+
+        Returns: (lower_price, upper_price, side) or (None, None, None) if no valid position possible.
+        """
+        # Get limits for this side
+        if side == TradeType.BUY:
+            min_limit = self.config.buy_price_min
+            max_limit = self.config.buy_price_max
+        else:  # SELL
+            min_limit = self.config.sell_price_min
+            max_limit = self.config.sell_price_max
+
+        # Check how many bounds exceed limits
+        lower_exceeds = min_limit and lower_price < min_limit
+        upper_exceeds = max_limit and upper_price > max_limit
+
+        if not lower_exceeds and not upper_exceeds:
+            # Both bounds within limits
+            return lower_price, upper_price, side
+
+        if lower_exceeds and upper_exceeds:
+            # Both bounds exceed - try opposite side
+            opposite_side = TradeType.SELL if side == TradeType.BUY else TradeType.BUY
+            opp_lower, opp_upper = self._calculate_price_bounds(opposite_side, current_price)
+
+            # Check opposite side limits
+            if opposite_side == TradeType.BUY:
+                opp_min = self.config.buy_price_min
+                opp_max = self.config.buy_price_max
+            else:
+                opp_min = self.config.sell_price_min
+                opp_max = self.config.sell_price_max
+
+            opp_lower_exceeds = opp_min and opp_lower < opp_min
+            opp_upper_exceeds = opp_max and opp_upper > opp_max
+
+            if not opp_lower_exceeds and not opp_upper_exceeds:
+                self.logger().info(f"Side {side.name} out of limits, using {opposite_side.name}")
+                return opp_lower, opp_upper, opposite_side
+            elif opp_lower_exceeds and not opp_upper_exceeds:
+                # Clamp lower on opposite side
+                self.logger().info(f"Side {side.name} out of limits, using {opposite_side.name} (clamped lower)")
+                return opp_min, opp_upper, opposite_side
+            elif not opp_lower_exceeds and opp_upper_exceeds:
+                # Clamp upper on opposite side
+                self.logger().info(f"Side {side.name} out of limits, using {opposite_side.name} (clamped upper)")
+                return opp_lower, opp_max, opposite_side
+            else:
+                # Both sides completely out of limits
+                self.logger().info("Both sides out of price limits - waiting")
+                return None, None, None
+
+        # Only one bound exceeds - clamp it
+        if lower_exceeds:
+            self.logger().debug(f"Clamping lower from {lower_price} to {min_limit}")
+            return min_limit, upper_price, side
+        else:  # upper_exceeds
+            self.logger().debug(f"Clamping upper from {upper_price} to {max_limit}")
+            return lower_price, max_limit, side
 
     def _determine_side_from_price(self, current_price: Decimal) -> TradeType:
         """
