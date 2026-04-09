@@ -857,7 +857,13 @@ class LPRebalancer(ControllerBase):
         Validate bounds against price limits. Clamp if one bound exceeds, try opposite side if both exceed.
 
         Returns: (lower_price, upper_price, side) or (None, None, None) if no valid position possible.
+
+        Note: RANGE positions skip price limit checks entirely.
         """
+        # RANGE positions skip price limit checks
+        if side == TradeType.RANGE:
+            return lower_price, upper_price, side
+
         # Get limits for this side
         if side == TradeType.BUY:
             min_limit = self.config.buy_price_min
