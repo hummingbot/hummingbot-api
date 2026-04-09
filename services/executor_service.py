@@ -437,7 +437,8 @@ class ExecutorService:
         trading_pair: Optional[str] = None,
         executor_type: Optional[str] = None,
         status: Optional[str] = None,
-        controller_id: Optional[str] = None
+        controller_id: Optional[str] = None,
+        limit: Optional[int] = None
     ) -> List[Dict[str, Any]]:
         """
         Get list of executors with optional filtering.
@@ -490,7 +491,8 @@ class ExecutorService:
                         trading_pair=trading_pair,
                         executor_type=executor_type,
                         status=status,
-                        controller_id=controller_id
+                        controller_id=controller_id,
+                        limit=limit
                     )
 
                     for record in db_executors:

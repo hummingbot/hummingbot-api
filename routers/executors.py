@@ -115,18 +115,29 @@ async def list_executors(
         if filter_request.controller_ids and len(filter_request.controller_ids) > 1:
             executors = [e for e in executors if e.get("controller_id") in filter_request.controller_ids]
 
+        # Add cursor-friendly identifier to each executor (matches trading.py convention)
+        for ex in executors:
+            ex["_cursor_id"] = f"{ex.get('created_at') or ''}:{ex.get('executor_id', '')}"
+
+        # Sort by created_at (most recent first) and then by cursor_id for consistency
+        executors.sort(key=lambda x: (x.get("created_at") or "", x["_cursor_id"]), reverse=True)
+
         # Apply cursor-based pagination
         start_idx = 0
         if filter_request.cursor:
             for i, ex in enumerate(executors):
-                if ex.get("executor_id") == filter_request.cursor:
+                if ex.get("_cursor_id") == filter_request.cursor:
                     start_idx = i + 1
                     break
 
         end_idx = start_idx + filter_request.limit
         page_data = executors[start_idx:end_idx]
         has_more = end_idx < len(executors)
-        next_cursor = page_data[-1]["executor_id"] if page_data and has_more else None
+        next_cursor = page_data[-1]["_cursor_id"] if page_data and has_more else None
+
+        # Clean up cursor_id from response data
+        for ex in page_data:
+            ex.pop("_cursor_id", None)
 
         return PaginatedResponse(
             data=page_data,

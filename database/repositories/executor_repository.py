@@ -101,7 +101,7 @@ class ExecutorRepository:
             executor_type: Optional[str] = None,
             status: Optional[str] = None,
             controller_id: Optional[str] = None,
-            limit: int = 100,
+            limit: Optional[int] = 100,
             offset: int = 0
     ) -> List[ExecutorRecord]:
         """Get executors with optional filters."""
@@ -124,7 +124,9 @@ class ExecutorRepository:
         if conditions:
             stmt = stmt.where(and_(*conditions))
 
-        stmt = stmt.order_by(desc(ExecutorRecord.created_at)).limit(limit).offset(offset)
+        stmt = stmt.order_by(desc(ExecutorRecord.created_at)).offset(offset)
+        if limit is not None:
+            stmt = stmt.limit(limit)
 
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
