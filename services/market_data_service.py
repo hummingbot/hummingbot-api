@@ -5,16 +5,18 @@ This service provides access to market data (candles, order books, prices, tradi
 using the UnifiedConnectorService to ensure proper connector usage.
 """
 import asyncio
-import time
 import logging
-from typing import Dict, Optional, List, Any, Tuple
+import time
 from decimal import Decimal
 from enum import Enum
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+
+if TYPE_CHECKING:
+    from services.unified_connector_service import UnifiedConnectorService
 
 from hummingbot.core.rate_oracle.rate_oracle import RateOracle
-from hummingbot.data_feed.candles_feed.data_types import CandlesConfig
 from hummingbot.data_feed.candles_feed.candles_factory import CandlesFactory, UnsupportedConnectorException
-
+from hummingbot.data_feed.candles_feed.data_types import CandlesConfig
 
 logger = logging.getLogger(__name__)
 
@@ -39,11 +41,11 @@ class MarketDataService:
     """
 
     def __init__(
-        self,
-        connector_service: "UnifiedConnectorService",
-        rate_oracle: RateOracle,
-        cleanup_interval: int = 300,
-        feed_timeout: int = 600
+            self,
+            connector_service: "UnifiedConnectorService",
+            rate_oracle: RateOracle,
+            cleanup_interval: int = 300,
+            feed_timeout: int = 600
     ):
         """
         Initialize the MarketDataService.
@@ -116,11 +118,11 @@ class MarketDataService:
     # ==================== Order Book Access ====================
 
     async def initialize_order_book(
-        self,
-        connector_name: str,
-        trading_pair: str,
-        account_name: Optional[str] = None,
-        timeout: float = 30.0
+            self,
+            connector_name: str,
+            trading_pair: str,
+            account_name: Optional[str] = None,
+            timeout: float = 30.0
     ) -> bool:
         """
         Initialize an order book for a trading pair.
@@ -145,10 +147,10 @@ class MarketDataService:
         )
 
     async def remove_trading_pair(
-        self,
-        connector_name: str,
-        trading_pair: str,
-        account_name: Optional[str] = None
+            self,
+            connector_name: str,
+            trading_pair: str,
+            account_name: Optional[str] = None
     ) -> bool:
         """
         Remove a trading pair from order book tracking.
@@ -203,10 +205,10 @@ class MarketDataService:
         return None
 
     def get_order_book_snapshot(
-        self,
-        connector_name: str,
-        trading_pair: str,
-        account_name: Optional[str] = None
+            self,
+            connector_name: str,
+            trading_pair: str,
+            account_name: Optional[str] = None
     ) -> Optional[Tuple]:
         """
         Get order book snapshot (bids, asks DataFrames).
@@ -228,11 +230,11 @@ class MarketDataService:
         return None
 
     async def get_order_book_data(
-        self,
-        connector_name: str,
-        trading_pair: str,
-        depth: int = 10,
-        account_name: Optional[str] = None
+            self,
+            connector_name: str,
+            trading_pair: str,
+            depth: int = 10,
+            account_name: Optional[str] = None
     ) -> Dict:
         """
         Get order book data as a dictionary.
@@ -288,12 +290,12 @@ class MarketDataService:
             return {"error": str(e)}
 
     async def get_order_book_query_result(
-        self,
-        connector_name: str,
-        trading_pair: str,
-        is_buy: bool,
-        account_name: Optional[str] = None,
-        **kwargs
+            self,
+            connector_name: str,
+            trading_pair: str,
+            is_buy: bool,
+            account_name: Optional[str] = None,
+            **kwargs
     ) -> Dict:
         """
         Query order book for price/volume calculations.
@@ -378,6 +380,36 @@ class MarketDataService:
         if connector_name not in CandlesFactory._candles_map:
             raise UnsupportedConnectorException(connector_name)
 
+    @staticmethod
+    async def validate_trading_pair(connector_name: str, trading_pair: str, interval: str = "1m") -> None:
+        """
+        Validate that a trading pair exists on the exchange by attempting a small REST candle fetch.
+
+        Raises:
+            ValueError: If the trading pair does not exist or the exchange returns an error.
+        """
+        import time as _time
+        feed = CandlesFactory.get_candle(CandlesConfig(
+            connector=connector_name,
+            trading_pair=trading_pair,
+            interval=interval,
+            max_records=10,
+        ))
+        try:
+            end_time = int(_time.time())
+            candles = await feed.fetch_candles(end_time=end_time, limit=1)
+            if candles is None or len(candles) == 0:
+                raise ValueError(
+                    f"Trading pair '{trading_pair}' not found on '{connector_name}'. "
+                    f"No candle data returned."
+                )
+        except ValueError:
+            raise
+        except Exception as e:
+            raise ValueError(
+                f"Trading pair '{trading_pair}' appears to be invalid on '{connector_name}': {e}"
+            )
+
     def get_candles_feed(self, config: CandlesConfig):
         """
         Get or create a candles feed.
@@ -405,11 +437,11 @@ class MarketDataService:
         return self._candle_feeds[feed_key]
 
     def get_candles_df(
-        self,
-        connector_name: str,
-        trading_pair: str,
-        interval: str,
-        max_records: int = 500
+            self,
+            connector_name: str,
+            trading_pair: str,
+            interval: str,
+            max_records: int = 500
     ):
         """
         Get candles dataframe.
@@ -450,10 +482,10 @@ class MarketDataService:
     # ==================== Prices ====================
 
     async def get_prices(
-        self,
-        connector_name: str,
-        trading_pairs: List[str],
-        account_name: Optional[str] = None
+            self,
+            connector_name: str,
+            trading_pairs: List[str],
+            account_name: Optional[str] = None
     ) -> Dict[str, float]:
         """
         Get current prices for trading pairs.
@@ -501,10 +533,10 @@ class MarketDataService:
     # ==================== Trading Rules ====================
 
     async def get_trading_rules(
-        self,
-        connector_name: str,
-        trading_pairs: Optional[List[str]] = None,
-        account_name: Optional[str] = None
+            self,
+            connector_name: str,
+            trading_pairs: Optional[List[str]] = None,
+            account_name: Optional[str] = None
     ) -> Dict[str, Dict]:
         """
         Get trading rules for trading pairs.
@@ -561,10 +593,10 @@ class MarketDataService:
     # ==================== Funding Info ====================
 
     async def get_funding_info(
-        self,
-        connector_name: str,
-        trading_pair: str,
-        account_name: Optional[str] = None
+            self,
+            connector_name: str,
+            trading_pair: str,
+            account_name: Optional[str] = None
     ) -> Dict:
         """
         Get funding information for perpetual trading pairs.
@@ -593,7 +625,8 @@ class MarketDataService:
                     return {
                         "trading_pair": trading_pair,
                         "funding_rate": float(funding_info.rate) if funding_info.rate else None,
-                        "next_funding_time": float(funding_info.next_funding_utc_timestamp) if funding_info.next_funding_utc_timestamp else None,
+                        "next_funding_time": float(
+                            funding_info.next_funding_utc_timestamp) if funding_info.next_funding_utc_timestamp else None,
                         "mark_price": float(funding_info.mark_price) if funding_info.mark_price else None,
                         "index_price": float(funding_info.index_price) if funding_info.index_price else None,
                     }
@@ -626,11 +659,11 @@ class MarketDataService:
         return result
 
     def manually_cleanup_feed(
-        self,
-        feed_type: FeedType,
-        connector: str,
-        trading_pair: str,
-        interval: str = None
+            self,
+            feed_type: FeedType,
+            connector: str,
+            trading_pair: str,
+            interval: str = None
     ):
         """Manually cleanup a specific feed."""
         feed_key = self._generate_feed_key(feed_type, connector, trading_pair, interval)
@@ -692,11 +725,11 @@ class MarketDataService:
             logger.info(f"Cleaned up {len(feeds_to_remove)} unused market data feeds")
 
     def _generate_feed_key(
-        self,
-        feed_type: FeedType,
-        connector: str,
-        trading_pair: str,
-        interval: str = None
+            self,
+            feed_type: FeedType,
+            connector: str,
+            trading_pair: str,
+            interval: str = None
     ) -> str:
         """Generate a unique key for a market data feed."""
         if interval:
@@ -718,9 +751,9 @@ class MarketDataService:
     # ==================== Order Book Tracker Diagnostics ====================
 
     def get_order_book_tracker_diagnostics(
-        self,
-        connector_name: str,
-        account_name: Optional[str] = None
+            self,
+            connector_name: str,
+            account_name: Optional[str] = None
     ) -> Dict:
         """
         Get diagnostics for a connector's order book tracker.
@@ -738,9 +771,9 @@ class MarketDataService:
         )
 
     async def restart_order_book_tracker(
-        self,
-        connector_name: str,
-        account_name: Optional[str] = None
+            self,
+            connector_name: str,
+            account_name: Optional[str] = None
     ) -> Dict:
         """
         Restart the order book tracker for a connector.

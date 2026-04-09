@@ -31,6 +31,7 @@ class PositionHold(BaseModel):
     trading_pair: str = Field(description="Trading pair (e.g., 'BTC-USDT')")
     connector_name: str = Field(description="Connector name")
     account_name: str = Field(description="Account name")
+    controller_id: str = Field(default="main", description="Controller that owns this position")
 
     # Buy side tracking
     buy_amount_base: Decimal = Field(default=Decimal("0"), description="Total bought amount in base currency")
@@ -172,6 +173,7 @@ class PositionHoldResponse(BaseModel):
     trading_pair: str
     connector_name: str
     account_name: str
+    controller_id: str = Field(default="main", description="Controller that owns this position")
     buy_amount_base: float
     buy_amount_quote: float
     sell_amount_base: float
@@ -273,6 +275,10 @@ class CreateExecutorRequest(BaseModel):
         None,
         description="Account name to use (defaults to master_account)"
     )
+    controller_id: str = Field(
+        default="main",
+        description="Controller ID that owns this executor (for per-agent isolation)"
+    )
     executor_config: Dict[str, Any] = Field(
         ...,
         description="Executor configuration. Must include 'type' field and executor-specific parameters."
@@ -308,6 +314,10 @@ class ExecutorFilterRequest(PaginationParams):
     status: Optional[str] = Field(
         None,
         description="Filter by status (RUNNING, TERMINATED, etc.)"
+    )
+    controller_ids: Optional[List[str]] = Field(
+        None,
+        description="Filter by controller IDs"
     )
 
 
@@ -382,6 +392,7 @@ class CreateExecutorResponse(BaseModel):
     executor_type: str = Field(description="Type of executor created")
     connector_name: str = Field(description="Connector name")
     trading_pair: str = Field(description="Trading pair")
+    controller_id: str = Field(default="main", description="Controller that owns this executor")
     status: str = Field(description="Initial status")
     created_at: str = Field(description="Creation timestamp (ISO format)")
 
@@ -414,6 +425,34 @@ class ExecutorsSummaryResponse(BaseModel):
     by_type: Dict[str, int] = Field(description="Executor count by type")
     by_connector: Dict[str, int] = Field(description="Executor count by connector")
     by_status: Dict[str, int] = Field(description="Executor count by status")
+
+
+class ExecutorTypeBreakdown(BaseModel):
+    """Performance breakdown for a single executor type."""
+    executor_type: str = Field(description="Executor type name")
+    total: int = Field(description="Total executors of this type")
+    completed: int = Field(description="Completed executors")
+    running: int = Field(description="Currently running executors")
+    pnl_quote: float = Field(description="Net PnL in quote currency")
+    volume_quote: float = Field(description="Total filled volume in quote currency")
+    fees_quote: float = Field(description="Cumulative fees in quote currency")
+
+
+class PerformanceReportResponse(BaseModel):
+    """Performance report for executors, optionally filtered by controller_id."""
+    controller_id: Optional[str] = Field(None, description="Controller ID filter (None = all)")
+    total_executors: int = Field(description="Total executor count")
+    by_status: Dict[str, int] = Field(description="Executor count by status")
+    pnl_total_quote: float = Field(description="Realized PnL from completed executors in quote currency")
+    unrealized_pnl_quote: float = Field(description="Unrealized PnL from active executors and position holds")
+    global_pnl_quote: float = Field(description="Global PnL (realized + unrealized)")
+    pnl_pct_avg: float = Field(description="Average PnL percentage across completed executors")
+    fees_total_quote: float = Field(description="Total cumulative fees in quote currency")
+    volume_total_quote: float = Field(description="Total filled volume in quote currency")
+    win_rate: float = Field(description="Win rate: fraction of completed executors with positive PnL")
+    sharpe_ratio: Optional[float] = Field(None, description="Sharpe ratio of PnL returns (null if <2 executors)")
+    by_type: List[ExecutorTypeBreakdown] = Field(description="Performance breakdown by executor type")
+    active_positions: int = Field(description="Number of active position holds")
 
 
 class ExecutorLogEntry(BaseModel):

@@ -358,6 +358,7 @@ class ExecutorRecord(Base):
     account_name = Column(String, nullable=False, index=True)
     connector_name = Column(String, nullable=False, index=True)
     trading_pair = Column(String, nullable=False, index=True)
+    controller_id = Column(String, nullable=False, default="main", index=True)
 
     # Timestamps
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False, index=True)

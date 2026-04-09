@@ -155,10 +155,12 @@ class ExecutorService:
 
                 for executor_record in position_hold_executors:
                     # Build position key
+                    controller_id = getattr(executor_record, "controller_id", "main") or "main"
                     position_key = self._get_position_key(
                         executor_record.account_name,
                         executor_record.connector_name,
-                        executor_record.trading_pair
+                        executor_record.trading_pair,
+                        controller_id
                     )
 
                     # Initialize position if needed
@@ -167,6 +169,7 @@ class ExecutorService:
                             trading_pair=executor_record.trading_pair,
                             connector_name=executor_record.connector_name,
                             account_name=executor_record.account_name,
+                            controller_id=controller_id,
                         )
 
                     position = self._positions_held[position_key]
@@ -313,7 +316,8 @@ class ExecutorService:
     async def create_executor(
         self,
         executor_config: Dict[str, Any],
-        account_name: Optional[str] = None
+        account_name: Optional[str] = None,
+        controller_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Create and start a new executor.
@@ -386,12 +390,14 @@ class ExecutorService:
 
         # Store executor and metadata
         executor_id = typed_config.id
+        controller_id = controller_id or getattr(typed_config, "controller_id", "main") or "main"
         self._active_executors[executor_id] = executor
         self._executor_metadata[executor_id] = {
             "account_name": account,
             "connector_name": connector_name,
             "trading_pair": trading_pair,
             "executor_type": executor_type,
+            "controller_id": controller_id,
             "created_at": datetime.now(timezone.utc),
             "config": executor_config
         }
@@ -419,6 +425,7 @@ class ExecutorService:
             "executor_type": executor_type,
             "connector_name": connector_name,
             "trading_pair": trading_pair,
+            "controller_id": controller_id,
             "status": executor.status.name,
             "created_at": created_at
         }
@@ -429,7 +436,9 @@ class ExecutorService:
         connector_name: Optional[str] = None,
         trading_pair: Optional[str] = None,
         executor_type: Optional[str] = None,
-        status: Optional[str] = None
+        status: Optional[str] = None,
+        controller_id: Optional[str] = None,
+        limit: Optional[int] = None
     ) -> List[Dict[str, Any]]:
         """
         Get list of executors with optional filtering.
@@ -442,6 +451,7 @@ class ExecutorService:
             trading_pair: Filter by trading pair
             executor_type: Filter by executor type
             status: Filter by status
+            controller_id: Filter by controller ID
 
         Returns:
             List of executor information dictionaries
@@ -463,6 +473,8 @@ class ExecutorService:
                 continue
             if status and executor.status.name != status:
                 continue
+            if controller_id and metadata.get("controller_id", "main") != controller_id:
+                continue
 
             result.append(self._format_executor_info(executor_id, executor))
 
@@ -478,7 +490,9 @@ class ExecutorService:
                         connector_name=connector_name,
                         trading_pair=trading_pair,
                         executor_type=executor_type,
-                        status=status
+                        status=status,
+                        controller_id=controller_id,
+                        limit=limit
                     )
 
                     for record in db_executors:
@@ -629,6 +643,7 @@ class ExecutorService:
             result["connector_name"] = metadata.get("connector_name")
         if metadata.get("trading_pair"):
             result["trading_pair"] = metadata.get("trading_pair")
+        result["controller_id"] = metadata.get("controller_id", "main")
 
         # Read status/close_type directly from executor
         result["status"] = executor.status.name
@@ -669,7 +684,7 @@ class ExecutorService:
             "created_at": record.created_at.isoformat() if record.created_at else None,
             "close_timestamp": record.closed_at.timestamp() if record.closed_at else None,
             "closed_at": record.closed_at.isoformat() if record.closed_at else None,
-            "controller_id": None,
+            "controller_id": record.controller_id or "main",
             "net_pnl_quote": float(record.net_pnl_quote) if record.net_pnl_quote else 0.0,
             "net_pnl_pct": float(record.net_pnl_pct) if record.net_pnl_pct else 0.0,
             "cum_fees_quote": float(record.cum_fees_quote) if record.cum_fees_quote else 0.0,
@@ -717,6 +732,100 @@ class ExecutorService:
             "by_status": by_status
         }
 
+    async def get_performance_report(
+        self,
+        controller_id: Optional[str] = None,
+        market_data_service=None
+    ) -> Dict[str, Any]:
+        """
+        Generate a performance report aggregating executor metrics.
+
+        Combines database aggregations (completed executors) with in-memory
+        active executor and position hold unrealized PnL.
+        Excludes POSITION_HOLD close_type from realized PnL to avoid double-counting.
+
+        Args:
+            controller_id: Filter by controller ID (None = all)
+            market_data_service: MarketDataService for position hold unrealized PnL
+
+        Returns:
+            Dictionary with performance metrics ready for PerformanceReportResponse.
+        """
+        import math
+
+        report: Dict[str, Any] = {
+            "controller_id": controller_id,
+            "total_executors": 0,
+            "by_status": {},
+            "pnl_total_quote": 0.0,
+            "unrealized_pnl_quote": 0.0,
+            "global_pnl_quote": 0.0,
+            "pnl_pct_avg": 0.0,
+            "fees_total_quote": 0.0,
+            "volume_total_quote": 0.0,
+            "win_rate": 0.0,
+            "sharpe_ratio": None,
+            "by_type": [],
+            "active_positions": 0,
+        }
+
+        if self.db_manager:
+            try:
+                async with self.db_manager.get_session_context() as session:
+                    from database.repositories.executor_repository import ExecutorRepository
+                    repo = ExecutorRepository(session)
+                    db_data = await repo.get_performance_report(controller_id=controller_id)
+
+                report["total_executors"] = db_data["total_executors"]
+                report["by_status"] = db_data["status_counts"]
+                report["pnl_total_quote"] = db_data["pnl_total_quote"]
+                report["pnl_pct_avg"] = db_data["pnl_pct_avg"]
+                report["fees_total_quote"] = db_data["fees_total_quote"]
+                report["volume_total_quote"] = db_data["volume_total_quote"]
+                report["win_rate"] = db_data["win_rate"]
+                report["by_type"] = db_data["by_type"]
+
+                # Sharpe ratio: mean(pnl) / std(pnl), requires >= 2 values
+                pnl_values = db_data.get("pnl_values", [])
+                if len(pnl_values) >= 2:
+                    mean_pnl = sum(pnl_values) / len(pnl_values)
+                    variance = sum((v - mean_pnl) ** 2 for v in pnl_values) / (len(pnl_values) - 1)
+                    std_pnl = math.sqrt(variance)
+                    if std_pnl > 0:
+                        report["sharpe_ratio"] = round(mean_pnl / std_pnl, 4)
+
+            except Exception as e:
+                logger.error(f"Error generating performance report: {e}", exc_info=True)
+
+        # --- Unrealized PnL from active executors ---
+        unrealized_pnl = 0.0
+        for executor_id, executor in self._active_executors.items():
+            metadata = self._executor_metadata.get(executor_id, {})
+            if controller_id and metadata.get("controller_id", "main") != controller_id:
+                continue
+            try:
+                unrealized_pnl += float(executor.executor_info.net_pnl_quote)
+            except Exception:
+                pass
+
+        # --- Unrealized PnL from position holds ---
+        positions = self.get_positions_held(controller_id=controller_id)
+        report["active_positions"] = len(positions)
+
+        if market_data_service:
+            for p in positions:
+                parts = p.trading_pair.split("-")
+                if len(parts) == 2:
+                    base, quote = parts
+                    rate = market_data_service.get_rate(base, quote)
+                    if rate is not None:
+                        unrealized_pnl += float(p.get_unrealized_pnl(rate))
+
+        report["unrealized_pnl_quote"] = round(unrealized_pnl, 8)
+        report["global_pnl_quote"] = round(report["pnl_total_quote"] + unrealized_pnl, 8)
+
+        return report
+
     async def _persist_executor_created(self, executor_id: str, executor: ExecutorBase):
         """Persist executor creation to database."""
         if not self.db_manager:
@@ -736,7 +845,8 @@ class ExecutorService:
                     connector_name=metadata.get("connector_name"),
                     trading_pair=metadata.get("trading_pair"),
                     config=json.dumps(metadata.get("config", {}), default=_json_default),
-                    status=executor.status.name
+                    status=executor.status.name,
+                    controller_id=metadata.get("controller_id", "main")
                 )
 
             logger.debug(f"Persisted executor {executor_id} creation to database")
@@ -824,10 +934,11 @@ class ExecutorService:
         self,
         account_name: str,
         connector_name: str,
-        trading_pair: str
+        trading_pair: str,
+        controller_id: str = "main"
     ) -> str:
         """Generate a unique key for position tracking."""
-        return f"{account_name}|{connector_name}|{trading_pair}"
+        return f"{account_name}|{connector_name}|{trading_pair}|{controller_id}"
 
     async def _aggregate_position_hold(
         self,
@@ -844,19 +955,21 @@ class ExecutorService:
         account_name = metadata.get("account_name", self.default_account)
         connector_name = metadata.get("connector_name", "")
         trading_pair = metadata.get("trading_pair", "")
+        controller_id = metadata.get("controller_id", "main")
 
         if not connector_name or not trading_pair:
             logger.warning(f"Cannot aggregate position for executor {executor_id}: missing connector/pair info")
             return
 
-        position_key = self._get_position_key(account_name, connector_name, trading_pair)
+        position_key = self._get_position_key(account_name, connector_name, trading_pair, controller_id)
 
         # Get or create position hold
         if position_key not in self._positions_held:
             self._positions_held[position_key] = PositionHold(
                 trading_pair=trading_pair,
                 connector_name=connector_name,
-                account_name=account_name
+                account_name=account_name,
+                controller_id=controller_id
             )
 
         position = self._positions_held[position_key]
@@ -940,7 +1053,8 @@ class ExecutorService:
         self,
         account_name: Optional[str] = None,
         connector_name: Optional[str] = None,
-        trading_pair: Optional[str] = None
+        trading_pair: Optional[str] = None,
+        controller_id: Optional[str] = None
     ) -> List[PositionHold]:
         """
         Get held positions with optional filtering.
@@ -949,6 +1063,7 @@ class ExecutorService:
             account_name: Filter by account name
             connector_name: Filter by connector name
             trading_pair: Filter by trading pair
+            controller_id: Filter by controller ID
 
         Returns:
             List of PositionHold objects matching the filters
@@ -963,6 +1078,8 @@ class ExecutorService:
                 continue
             if trading_pair and position.trading_pair != trading_pair:
                 continue
+            if controller_id and position.controller_id != controller_id:
+                continue
 
             # Only include positions with actual volume
             if position.buy_amount_base > 0 or position.sell_amount_base > 0:
@@ -974,7 +1091,8 @@ class ExecutorService:
         self,
         account_name: str,
         connector_name: str,
-        trading_pair: str
+        trading_pair: str,
+        controller_id: str = "main"
     ) -> Optional[PositionHold]:
         """
         Get a specific held position.
@@ -983,18 +1101,20 @@ class ExecutorService:
             account_name: Account name
             connector_name: Connector name
             trading_pair: Trading pair
+            controller_id: Controller ID
 
         Returns:
             PositionHold or None if not found
         """
-        position_key = self._get_position_key(account_name, connector_name, trading_pair)
+        position_key = self._get_position_key(account_name, connector_name, trading_pair, controller_id)
         return self._positions_held.get(position_key)
 
     def clear_position_held(
         self,
         account_name: str,
         connector_name: str,
-        trading_pair: str
+        trading_pair: str,
+        controller_id: str = "main"
     ) -> bool:
         """
         Clear a specific held position (after manual close or full exit).
@@ -1003,11 +1123,12 @@ class ExecutorService:
             account_name: Account name
             connector_name: Connector name
             trading_pair: Trading pair
+            controller_id: Controller ID
 
         Returns:
             True if cleared, False if not found
         """
-        position_key = self._get_position_key(account_name, connector_name, trading_pair)
+        position_key = self._get_position_key(account_name, connector_name, trading_pair, controller_id)
         if position_key in self._positions_held:
             del self._positions_held[position_key]
             logger.info(f"Cleared position hold for {position_key}")

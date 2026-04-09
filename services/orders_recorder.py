@@ -198,11 +198,9 @@ class OrdersRecorder:
                         trade_fee_paid = float(fee_in_quote)
                         trade_fee_currency = quote_asset
                     except Exception as e:
-                        logger.warning(
-                            f"Primary fee calculation failed: {e}. Attempting fallback...")
+                        logger.warning(f"Primary fee calculation failed: {e}. Attempting fallback...")
                         try:
-                            base_asset, quote_asset = event.trading_pair.split(
-                                "-")
+                            base_asset, quote_asset = event.trading_pair.split("-")
                             fallback_fee = await self._calculate_fee_fallback(
                                 trade_fee=event.trade_fee,
                                 base_asset=base_asset,
@@ -213,16 +211,13 @@ class OrdersRecorder:
                             if fallback_fee is not None:
                                 trade_fee_paid = float(fallback_fee)
                                 trade_fee_currency = quote_asset
-                                logger.info(
-                                    f"Fallback fee calculation succeeded: {trade_fee_paid} {trade_fee_currency}")
+                                logger.info(f"Fallback fee calculation succeeded: {trade_fee_paid} {trade_fee_currency}")
                             else:
-                                logger.error(
-                                    f"Fallback fee calculation returned None for {event.order_id}")
+                                logger.error(f"Fallback fee calculation returned None for {event.order_id}")
                                 trade_fee_paid = 0
                                 trade_fee_currency = None
                         except Exception as fallback_err:
-                            logger.error(
-                                f"Fallback fee calculation also failed: {fallback_err}")
+                            logger.error(f"Fallback fee calculation also failed: {fallback_err}")
                             trade_fee_paid = 0
                             trade_fee_currency = None
                 # Update order with fill information (handle potential NaN values like Hummingbot does)
@@ -331,8 +326,7 @@ class OrdersRecorder:
         try:
             direct_pair = f"{from_token}-{to_token}"
             price = await asyncio.wait_for(
-                self._connector._get_last_traded_price(
-                    trading_pair=direct_pair),
+                self._connector._get_last_traded_price(trading_pair=direct_pair),
                 timeout=5.0,
             )
             if price and price > 0:
@@ -342,8 +336,7 @@ class OrdersRecorder:
         try:
             inverse_pair = f"{to_token}-{from_token}"
             price = await asyncio.wait_for(
-                self._connector._get_last_traded_price(
-                    trading_pair=inverse_pair),
+                self._connector._get_last_traded_price(trading_pair=inverse_pair),
                 timeout=5.0,
             )
             if price and price > 0:

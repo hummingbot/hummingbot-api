@@ -18,6 +18,7 @@ from models.executors import (
     ExecutorFilterRequest,
     ExecutorLogsResponse,
     ExecutorsSummaryResponse,
+    PerformanceReportResponse,
     PositionHoldResponse,
     PositionsSummaryResponse,
     StopExecutorRequest,
@@ -61,7 +62,8 @@ async def create_executor(
     try:
         result = await executor_service.create_executor(
             executor_config=request.executor_config,
-            account_name=request.account_name
+            account_name=request.account_name,
+            controller_id=request.controller_id
         )
         return CreateExecutorResponse(**result)
     except HTTPException:
@@ -97,7 +99,8 @@ async def list_executors(
             connector_name=filter_request.connector_names[0] if filter_request.connector_names else None,
             trading_pair=filter_request.trading_pairs[0] if filter_request.trading_pairs else None,
             executor_type=filter_request.executor_types[0] if filter_request.executor_types else None,
-            status=filter_request.status
+            status=filter_request.status,
+            controller_id=filter_request.controller_ids[0] if filter_request.controller_ids else None
         )
 
         # Apply additional multi-value filters
@@ -109,19 +112,32 @@ async def list_executors(
             executors = [e for e in executors if e.get("trading_pair") in filter_request.trading_pairs]
         if filter_request.executor_types and len(filter_request.executor_types) > 1:
             executors = [e for e in executors if e.get("executor_type") in filter_request.executor_types]
+        if filter_request.controller_ids and len(filter_request.controller_ids) > 1:
+            executors = [e for e in executors if e.get("controller_id") in filter_request.controller_ids]
+
+        # Add cursor-friendly identifier to each executor (matches trading.py convention)
+        for ex in executors:
+            ex["_cursor_id"] = f"{ex.get('created_at') or ''}:{ex.get('executor_id', '')}"
+
+        # Sort by created_at (most recent first) and then by cursor_id for consistency
+        executors.sort(key=lambda x: (x.get("created_at") or "", x["_cursor_id"]), reverse=True)
 
         # Apply cursor-based pagination
         start_idx = 0
         if filter_request.cursor:
             for i, ex in enumerate(executors):
-                if ex.get("executor_id") == filter_request.cursor:
+                if ex.get("_cursor_id") == filter_request.cursor:
                     start_idx = i + 1
                     break
 
         end_idx = start_idx + filter_request.limit
         page_data = executors[start_idx:end_idx]
         has_more = end_idx < len(executors)
-        next_cursor = page_data[-1]["executor_id"] if page_data and has_more else None
+        next_cursor = page_data[-1]["_cursor_id"] if page_data and has_more else None
+
+        # Clean up cursor_id from response data
+        for ex in page_data:
+            ex.pop("_cursor_id", None)
 
         return PaginatedResponse(
             data=page_data,
@@ -159,6 +175,40 @@ async def get_executors_summary(
     except Exception as e:
         logger.error(f"Error getting executor summary: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error getting summary: {str(e)}")
+
+
+@router.get("/performance", response_model=PerformanceReportResponse)
+async def get_performance_report(
+    controller_id: Optional[str] = None,
+    executor_service: ExecutorService = Depends(get_executor_service),
+    market_data_service: MarketDataService = Depends(get_market_data_service)
+):
+    """
+    Get a performance report for executors.
+
+    Aggregates metrics from all completed executors (optionally filtered by controller_id):
+    - Realized PnL (from completed executors, excluding POSITION_HOLD close type)
+    - Unrealized PnL (from active executors + position holds)
+    - Global PnL (realized + unrealized)
+    - Fees and volume totals
+    - Win rate and Sharpe ratio
+    - Breakdown by executor type
+    - Active position count
+
+    Query parameters:
+    - **controller_id**: Filter by controller ID (omit for all controllers)
+    """
+    try:
+        report = await executor_service.get_performance_report(
+            controller_id=controller_id,
+            market_data_service=market_data_service
+        )
+        return PerformanceReportResponse(**report)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating performance report: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error generating performance report: {str(e)}")
 
 
 @router.get("/{executor_id}/logs", response_model=ExecutorLogsResponse)
@@ -309,6 +359,7 @@ async def stop_executor(
 
 @router.get("/positions/summary", response_model=PositionsSummaryResponse)
 async def get_positions_summary(
+    controller_id: Optional[str] = None,
     executor_service: ExecutorService = Depends(get_executor_service),
     market_data_service: MarketDataService = Depends(get_market_data_service)
 ):
@@ -320,9 +371,12 @@ async def get_positions_summary(
     - Total realized PnL across all positions
     - Total unrealized PnL (when market rates are available)
     - List of all positions with breakeven prices and PnL
+
+    Query parameters:
+    - **controller_id**: Filter positions by controller ID
     """
     try:
-        positions = executor_service.get_positions_held()
+        positions = executor_service.get_positions_held(controller_id=controller_id)
         total_realized_pnl = sum(float(p.realized_pnl_quote) for p in positions)
         total_unrealized_pnl = None
         position_responses = []
@@ -343,6 +397,7 @@ async def get_positions_summary(
                 trading_pair=p.trading_pair,
                 connector_name=p.connector_name,
                 account_name=p.account_name,
+                controller_id=p.controller_id,
                 buy_amount_base=float(p.buy_amount_base),
                 buy_amount_quote=float(p.buy_amount_quote),
                 sell_amount_base=float(p.sell_amount_base),
@@ -378,6 +433,7 @@ async def get_position_held(
     connector_name: str,
     trading_pair: str,
     account_name: str = "master_account",
+    controller_id: str = "main",
     executor_service: ExecutorService = Depends(get_executor_service),
     market_data_service: MarketDataService = Depends(get_market_data_service)
 ):
@@ -386,12 +442,16 @@ async def get_position_held(
 
     Returns the aggregated position from executors stopped with keep_position=True,
     including breakeven prices, matched/unmatched volume, realized PnL, and unrealized PnL.
+
+    Query parameters:
+    - **controller_id**: Controller ID (default "main")
     """
     try:
         position = executor_service.get_position_held(
             account_name=account_name,
             connector_name=connector_name,
-            trading_pair=trading_pair
+            trading_pair=trading_pair,
+            controller_id=controller_id
         )
 
         if not position:
@@ -412,6 +472,7 @@ async def get_position_held(
             trading_pair=position.trading_pair,
             connector_name=position.connector_name,
             account_name=position.account_name,
+            controller_id=position.controller_id,
             buy_amount_base=float(position.buy_amount_base),
             buy_amount_quote=float(position.buy_amount_quote),
             sell_amount_base=float(position.sell_amount_base),
@@ -440,6 +501,7 @@ async def clear_position_held(
     connector_name: str,
     trading_pair: str,
     account_name: str = "master_account",
+    controller_id: str = "main",
     executor_service: ExecutorService = Depends(get_executor_service)
 ):
     """
@@ -447,12 +509,16 @@ async def clear_position_held(
 
     This removes the position from tracking but preserves historical data
     in completed executors.
+
+    Query parameters:
+    - **controller_id**: Controller ID (default "main")
     """
     try:
         cleared = executor_service.clear_position_held(
             account_name=account_name,
             connector_name=connector_name,
-            trading_pair=trading_pair
+            trading_pair=trading_pair,
+            controller_id=controller_id
         )
 
         if not cleared:
