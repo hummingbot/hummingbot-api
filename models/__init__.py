@@ -169,7 +169,6 @@ from .rate_oracle import (
     RateOracleConfigUpdateRequest,
     RateOracleConfigUpdateResponse,
     RateOracleSourceConfig,
-    RateOracleSourceEnum,
     RateRequest,
     RateResponse,
     SingleRateResponse,
@@ -352,7 +351,6 @@ __all__ = [
     "OrderHistoryResponse",
     "ExecutorsResponse",
     # Rate Oracle models
-    "RateOracleSourceEnum",
     "GlobalTokenConfig",
     "RateOracleSourceConfig",
     "RateOracleConfig",

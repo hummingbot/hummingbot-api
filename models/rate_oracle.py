@@ -4,26 +4,9 @@ Pydantic models for the rate oracle router.
 These models define the request/response schemas for rate oracle configuration endpoints.
 """
 
-from typing import Optional, List, Dict
-from enum import Enum
+from typing import Dict, List, Optional
+
 from pydantic import BaseModel, Field
-
-
-class RateOracleSourceEnum(str, Enum):
-    """Available rate oracle sources."""
-    BINANCE = "binance"
-    BINANCE_US = "binance_us"
-    COIN_GECKO = "coin_gecko"
-    COIN_CAP = "coin_cap"
-    KUCOIN = "kucoin"
-    ASCEND_EX = "ascend_ex"
-    GATE_IO = "gate_io"
-    COINBASE_ADVANCED_TRADE = "coinbase_advanced_trade"
-    CUBE = "cube"
-    DEXALOT = "dexalot"
-    HYPERLIQUID = "hyperliquid"
-    DERIVE = "derive"
-    TEGRO = "tegro"
 
 
 class GlobalTokenConfig(BaseModel):
@@ -40,8 +23,8 @@ class GlobalTokenConfig(BaseModel):
 
 class RateOracleSourceConfig(BaseModel):
     """Rate oracle source configuration."""
-    name: RateOracleSourceEnum = Field(
-        default=RateOracleSourceEnum.BINANCE,
+    name: str = Field(
+        default="binance",
         description="The rate oracle source to use for price data"
     )
 

@@ -141,12 +141,13 @@ async def lifespan(app: FastAPI):
         quote_token = global_token_data.get("global_token_name", "USDT")
 
         # Create rate source instance
+        from routers.rate_oracle import create_rate_source
         if source_name in RATE_ORACLE_SOURCES:
-            rate_source = RATE_ORACLE_SOURCES[source_name]()
+            rate_source = create_rate_source(source_name)
             logging.info(f"Configured RateOracle with source: {source_name}, quote_token: {quote_token}")
         else:
             logging.warning(f"Unknown rate oracle source '{source_name}', defaulting to binance")
-            rate_source = RATE_ORACLE_SOURCES["binance"]()
+            rate_source = create_rate_source("binance")
             source_name = "binance"
 
         # Initialize RateOracle with configured source and quote token

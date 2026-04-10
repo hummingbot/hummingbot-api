@@ -5,19 +5,20 @@ Provides CRUD endpoints for rate_oracle_source and global_token configuration,
 with persistence to conf_client.yml.
 """
 
-from typing import List
+import inspect
 from decimal import Decimal
+from typing import List
 
-from fastapi import APIRouter, Request, HTTPException
-from hummingbot.core.rate_oracle.rate_oracle import RateOracle, RATE_ORACLE_SOURCES
+from fastapi import APIRouter, HTTPException, Request
+from hummingbot.core.rate_oracle.rate_oracle import RATE_ORACLE_SOURCES, RateOracle
 
 from models.rate_oracle import (
+    GlobalTokenConfig,
     RateOracleConfig,
     RateOracleConfigResponse,
     RateOracleConfigUpdateRequest,
     RateOracleConfigUpdateResponse,
     RateOracleSourceConfig,
-    GlobalTokenConfig,
     RateRequest,
     RateResponse,
     SingleRateResponse,
@@ -28,6 +29,33 @@ router = APIRouter(tags=["Rate Oracle"], prefix="/rate-oracle")
 
 # Path to conf_client.yml relative to the FileSystemUtil base_path ("bots")
 CONF_CLIENT_PATH = "credentials/master_account/conf_client.yml"
+
+
+def create_rate_source(source_name: str):
+    """Create a rate source instance, handling constructors that require arguments."""
+    source_class = RATE_ORACLE_SOURCES[source_name]
+    sig = inspect.signature(source_class.__init__)
+    params = {k: v for k, v in sig.parameters.items() if k != "self"}
+
+    kwargs = {}
+    for name, param in params.items():
+        if param.default is inspect.Parameter.empty:
+            # Provide sensible defaults for required parameters
+            annotation = param.annotation
+            if annotation is inspect.Parameter.empty:
+                kwargs[name] = None
+            elif annotation is str or annotation == "str":
+                kwargs[name] = ""
+            elif (annotation is dict or annotation == "dict" or
+                  (hasattr(annotation, "__origin__") and annotation.__origin__ is dict)):
+                kwargs[name] = {}
+            elif (annotation is list or annotation == "list" or
+                  (hasattr(annotation, "__origin__") and annotation.__origin__ is list)):
+                kwargs[name] = []
+            else:
+                kwargs[name] = None
+
+    return source_class(**kwargs)
 
 
 def get_rate_oracle(request: Request) -> RateOracle:
@@ -128,7 +156,7 @@ async def update_rate_oracle_config(
 
         # Update rate_oracle_source if provided
         if update_request.rate_oracle_source is not None:
-            new_source_name = update_request.rate_oracle_source.name.value
+            new_source_name = update_request.rate_oracle_source.name
 
             # Validate source exists
             if new_source_name not in RATE_ORACLE_SOURCES:
@@ -144,8 +172,7 @@ async def update_rate_oracle_config(
             config_data["rate_oracle_source"]["name"] = new_source_name
 
             # Update running RateOracle instance
-            new_source_class = RATE_ORACLE_SOURCES[new_source_name]
-            rate_oracle.source = new_source_class()
+            rate_oracle.source = create_rate_source(new_source_name)
 
             changes_made.append(f"rate_oracle_source updated to {new_source_name}")
 
