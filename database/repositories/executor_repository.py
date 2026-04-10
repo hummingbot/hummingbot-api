@@ -177,6 +177,34 @@ class ExecutorRepository:
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
+    async def clear_position_hold_executors(
+            self,
+            account_name: str,
+            connector_name: str,
+            trading_pair: str,
+            controller_id: str = "main"
+    ) -> int:
+        """Clear close_type for POSITION_HOLD executors so they won't be recovered on restart."""
+        from sqlalchemy import update
+
+        conditions = [
+            ExecutorRecord.close_type == "POSITION_HOLD",
+            ExecutorRecord.account_name == account_name,
+            ExecutorRecord.connector_name == connector_name,
+            ExecutorRecord.trading_pair == trading_pair,
+            ExecutorRecord.controller_id == controller_id,
+        ]
+
+        stmt = (
+            update(ExecutorRecord)
+            .where(and_(*conditions))
+            .values(close_type="POSITION_HOLD_CLEARED")
+        )
+
+        result = await self.session.execute(stmt)
+        await self.session.commit()
+        return result.rowcount
+
     async def get_executor_stats(self) -> Dict[str, Any]:
         """Get statistics about executors."""
         # Total executors
