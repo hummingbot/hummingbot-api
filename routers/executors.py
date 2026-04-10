@@ -514,7 +514,7 @@ async def clear_position_held(
     - **controller_id**: Controller ID (default "main")
     """
     try:
-        cleared = executor_service.clear_position_held(
+        cleared = await executor_service.clear_position_held(
             account_name=account_name,
             connector_name=connector_name,
             trading_pair=trading_pair,

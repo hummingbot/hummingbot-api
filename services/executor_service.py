@@ -1103,7 +1103,7 @@ class ExecutorService:
         position_key = self._get_position_key(account_name, connector_name, trading_pair, controller_id)
         return self._positions_held.get(position_key)
 
-    def clear_position_held(
+    async def clear_position_held(
         self,
         account_name: str,
         connector_name: str,
@@ -1125,6 +1125,21 @@ class ExecutorService:
         position_key = self._get_position_key(account_name, connector_name, trading_pair, controller_id)
         if position_key in self._positions_held:
             del self._positions_held[position_key]
+            # Also clear from database so they don't get reloaded on restart
+            if self.db_manager:
+                try:
+                    async with self.db_manager.get_session_context() as session:
+                        from database.repositories.executor_repository import ExecutorRepository
+                        repo = ExecutorRepository(session)
+                        count = await repo.clear_position_hold_executors(
+                            account_name=account_name,
+                            connector_name=connector_name,
+                            trading_pair=trading_pair,
+                            controller_id=controller_id
+                        )
+                        logger.info(f"Cleared {count} position hold records from database for {position_key}")
+                except Exception as e:
+                    logger.error(f"Failed to clear position holds from database: {e}", exc_info=True)
             logger.info(f"Cleared position hold for {position_key}")
             return True
         return False
