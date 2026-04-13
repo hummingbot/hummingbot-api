@@ -1,1 +1,62 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+*.md
+docs/
+
+# Tests
+test/
+tests/
+pytest_cache/
+.coverage
+.pytest_cache/
+
+# Development files
 .env
+.env.local
+*.log
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Docker files (don't copy themselves)
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Bot data that should be mounted as volumes
+bots/instances/*
+bots/data/*
+bots/credentials/*
+!bots/credentials/master_account/
+
+# Archives
+bots/archived/
