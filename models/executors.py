@@ -213,7 +213,7 @@ EXECUTOR_TYPES = Literal[
     "twap_executor",
     "xemm_executor",
     "order_executor",
-    "lp_executor"
+    "lp_executor",
 ]
 
 
@@ -248,21 +248,20 @@ class CreateExecutorRequest(BaseModel):
                 },
                 {
                     "summary": "LP Executor",
-                    "description": "Create an LP position on a CLMM DEX (Meteora, Raydium)",
+                    "description": "Create an LP position on a CLMM DEX",
                     "value": {
                         "account_name": "master_account",
                         "executor_config": {
                             "type": "lp_executor",
-                            "connector_name": "meteora/clmm",
+                            "connector_name": "solana-mainnet-beta",
+                            "lp_provider": "meteora/clmm",
                             "trading_pair": "SOL-USDC",
                             "pool_address": "HTvjzsfX3yU6BUodCjZ5vZkUrAxMDTrBs3CJaq43ashR",
                             "lower_price": "80",
                             "upper_price": "100",
                             "base_amount": "0",
                             "quote_amount": "10.0",
-                            "side": 1,
-                            "auto_close_above_range_seconds": None,
-                            "auto_close_below_range_seconds": 300,
+                            "side": "BUY",
                             "extra_params": {"strategyType": 0},
                             "keep_position": False
                         }

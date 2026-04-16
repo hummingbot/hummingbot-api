@@ -438,16 +438,12 @@ class AccountsService:
     update the balances of each account.
     """
     default_quotes = {
-        "hyperliquid": "USD",
-        "hyperliquid_perpetual": "USDC",
+        "hyperliquid": "USDC",
+        "hyperliquid_perpetual": "USD",
         "xrpl": "RLUSD",
         "kraken": "USD",
     }
-    gateway_default_pricing_connector = {
-        "ethereum": "uniswap/router",
-        "solana": "jupiter/router",
-    }
-    potential_wrapped_tokens = ["ETH", "SOL", "BNB", "POL", "AVAX", "FTM", "ONE", "GLMR", "MOVR"]
+    potential_wrapped_tokens = ["ETH", "SOL", "BNB", "POL", "AVAX"]
     
     # Cache for storing last successful prices by trading pair
     _last_known_prices = {}
@@ -2164,10 +2160,6 @@ class AccountsService:
         Fetch prices immediately from Gateway for the given tokens.
         This is used to get prices right away instead of waiting for the background update task.
 
-        Uses the same pricing connector resolution as MarketDataProvider.update_rates_task():
-        - solana -> jupiter/router
-        - ethereum -> uniswap/router
-
         Args:
             chain: Blockchain chain (e.g., 'solana', 'ethereum')
             network: Network name (e.g., 'mainnet-beta', 'mainnet')
@@ -2184,11 +2176,8 @@ class AccountsService:
         rate_oracle = RateOracle.get_instance()
         prices = {}
 
-        # Resolve pricing connector based on chain (same logic as MarketDataProvider)
-        pricing_connector = self.gateway_default_pricing_connector.get(chain)
-        if not pricing_connector:
-            logger.warning(f"No pricing connector configured for chain '{chain}', skipping immediate price fetch")
-            return prices
+        # Construct full network name (e.g., "solana-mainnet-beta")
+        full_network = f"{chain}-{network}"
 
         # Create tasks for all tokens in parallel
         tasks = []
@@ -2222,10 +2211,9 @@ class AccountsService:
                 continue
 
             try:
+                # get_price will auto-fetch dex/trading_type from network's swap provider
                 task = gateway_client.get_price(
-                    chain=chain,
-                    network=network,
-                    connector=pricing_connector,
+                    network=full_network,
                     base_asset=token,
                     quote_asset=quote_asset,
                     amount=Decimal("1"),

@@ -7,14 +7,14 @@ UnifiedConnectorService for connector management.
 import logging
 import time
 from decimal import Decimal
-from typing import Dict, List, Optional, Set, TYPE_CHECKING
+from typing import TYPE_CHECKING, Dict, List, Optional, Set
 
 from hummingbot.connector.connector_base import ConnectorBase
-from hummingbot.core.data_type.common import OrderType, TradeType, PositionAction
+from hummingbot.core.data_type.common import OrderType, PositionAction, TradeType
 
 if TYPE_CHECKING:
-    from services.unified_connector_service import UnifiedConnectorService
     from services.market_data_service import MarketDataService
+    from services.unified_connector_service import UnifiedConnectorService
 
 
 logger = logging.getLogger(__name__)
@@ -172,6 +172,14 @@ class AccountTradingInterface:
 
         # Register trading pair with connector
         self._register_trading_pair_with_connector(connector, trading_pair)
+
+        # Update balances to include tokens from new trading pair
+        if hasattr(connector, '_update_balances'):
+            try:
+                await connector._update_balances()
+                logger.debug(f"Updated balances for {connector_name} after adding {trading_pair}")
+            except Exception as e:
+                logger.warning(f"Failed to update balances for {connector_name}: {e}")
 
         logger.info(f"Market {connector_name}/{trading_pair} added to trading interface")
 

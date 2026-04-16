@@ -16,9 +16,11 @@ async def available_connectors():
     Get a list of all available connectors.
 
     Returns:
-        List of connector names supported by the system
+        List of connector names supported by the system (excludes DEX providers which use Gateway networks)
     """
-    return list(AllConnectorSettings.get_connector_settings().keys())
+    all_connectors = AllConnectorSettings.get_connector_settings().keys()
+    # Filter out DEX providers (contain '/') - these are accessed via Gateway networks
+    return [c for c in all_connectors if '/' not in c]
 
 
 @router.get("/{connector_name}/config-map", response_model=Dict[str, dict])
