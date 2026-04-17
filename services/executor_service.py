@@ -138,10 +138,7 @@ class ExecutorService:
 
     async def recover_positions_from_db(self):
         """
-        Recover position holds from database on startup.
-
-        This loads executors that closed with POSITION_HOLD (keep_position=True)
-        and reconstructs the _positions_held tracking from their final state.
+        Recover position holds from the dedicated position_holds table on startup.
         """
         if not self.db_manager:
             return
@@ -151,68 +148,37 @@ class ExecutorService:
                 from database.repositories.executor_repository import ExecutorRepository
                 repo = ExecutorRepository(session)
 
-                position_hold_executors = await repo.get_position_hold_executors()
+                records = await repo.get_active_position_holds()
 
-                for executor_record in position_hold_executors:
-                    # Build position key
-                    controller_id = getattr(executor_record, "controller_id", "main") or "main"
+                for record in records:
+                    controller_id = record.controller_id or "main"
                     position_key = self._get_position_key(
-                        executor_record.account_name,
-                        executor_record.connector_name,
-                        executor_record.trading_pair,
+                        record.account_name,
+                        record.connector_name,
+                        record.trading_pair,
                         controller_id
                     )
 
-                    # Initialize position if needed
-                    if position_key not in self._positions_held:
-                        self._positions_held[position_key] = PositionHold(
-                            trading_pair=executor_record.trading_pair,
-                            connector_name=executor_record.connector_name,
-                            account_name=executor_record.account_name,
-                            controller_id=controller_id,
-                        )
-
-                    position = self._positions_held[position_key]
-
-                    # Try to extract fill data from final_state
-                    if executor_record.final_state:
+                    executor_ids = []
+                    if record.executor_ids:
                         try:
-                            final_state = json.loads(executor_record.final_state)
+                            executor_ids = json.loads(record.executor_ids)
+                        except (json.JSONDecodeError, TypeError):
+                            pass
 
-                            # Process held_position_orders (most accurate source)
-                            held_orders = final_state.get("held_position_orders", [])
-                            if held_orders:
-                                buy_filled_base = Decimal("0")
-                                buy_filled_quote = Decimal("0")
-                                sell_filled_base = Decimal("0")
-                                sell_filled_quote = Decimal("0")
-
-                                for order in held_orders:
-                                    if isinstance(order, dict):
-                                        trade_type = order.get("trade_type", "BUY")
-                                        exec_base = Decimal(str(order.get("executed_amount_base", 0)))
-                                        exec_quote = Decimal(str(order.get("executed_amount_quote", 0)))
-
-                                        if trade_type == "BUY":
-                                            buy_filled_base += exec_base
-                                            buy_filled_quote += exec_quote
-                                        else:
-                                            sell_filled_base += exec_base
-                                            sell_filled_quote += exec_quote
-
-                                # Add fills using proper method
-                                if buy_filled_base > 0:
-                                    position.add_fill("BUY", buy_filled_base, buy_filled_quote, executor_record.executor_id)
-                                if sell_filled_base > 0:
-                                    position.add_fill("SELL", sell_filled_base, sell_filled_quote, executor_record.executor_id)
-
-                                logger.debug(
-                                    f"Recovered position from {executor_record.executor_id}: "
-                                    f"buy={buy_filled_base} base, sell={sell_filled_base} base"
-                                )
-
-                        except (json.JSONDecodeError, TypeError) as e:
-                            logger.debug(f"Could not parse final_state for {executor_record.executor_id}: {e}")
+                    self._positions_held[position_key] = PositionHold(
+                        trading_pair=record.trading_pair,
+                        connector_name=record.connector_name,
+                        account_name=record.account_name,
+                        controller_id=controller_id,
+                        buy_amount_base=Decimal(str(record.buy_amount_base or 0)),
+                        buy_amount_quote=Decimal(str(record.buy_amount_quote or 0)),
+                        sell_amount_base=Decimal(str(record.sell_amount_base or 0)),
+                        sell_amount_quote=Decimal(str(record.sell_amount_quote or 0)),
+                        realized_pnl_quote=Decimal(str(record.realized_pnl_quote or 0)),
+                        executor_ids=executor_ids,
+                        last_updated=record.last_updated,
+                    )
 
                 if self._positions_held:
                     logger.info(f"Recovered {len(self._positions_held)} position holds from database")
@@ -663,6 +629,18 @@ class ExecutorService:
 
     def _format_db_record(self, record) -> Dict[str, Any]:
         """Format a database ExecutorRecord for API response."""
+        # Parse error_log from DB for completed executors
+        error_count = 0
+        last_error = None
+        if record.error_log:
+            try:
+                errors = json.loads(record.error_log)
+                error_count = len(errors)
+                if errors:
+                    last_error = errors[-1].get("message")
+            except (json.JSONDecodeError, TypeError):
+                pass
+
         return {
             "executor_id": record.executor_id,
             "executor_type": record.executor_type,
@@ -685,6 +663,8 @@ class ExecutorService:
             "filled_amount_quote": float(record.filled_amount_quote) if record.filled_amount_quote else 0.0,
             "config": json.loads(record.config) if record.config else None,
             "custom_info": json.loads(record.final_state) if record.final_state else None,
+            "error_count": error_count,
+            "last_error": last_error,
         }
 
     def get_summary(self) -> Dict[str, Any]:
@@ -900,6 +880,23 @@ class ExecutorService:
                 except Exception:
                     final_state_json = None
 
+            # Capture error logs before persisting
+            error_log_json = None
+            error_count = self._log_capture.get_error_count(executor_id)
+            if error_count > 0:
+                try:
+                    error_entries = self._log_capture.get_logs(executor_id, level="ERROR")
+                    error_log_json = json.dumps([
+                        {
+                            "timestamp": entry.get("timestamp"),
+                            "message": entry.get("message"),
+                            "exc_info": entry.get("exc_info"),
+                        }
+                        for entry in error_entries
+                    ])
+                except Exception as e:
+                    logger.debug(f"Failed to serialize error logs for {executor_id}: {e}")
+
             async with self.db_manager.get_session_context() as session:
                 from database.repositories.executor_repository import ExecutorRepository
                 repo = ExecutorRepository(session)
@@ -912,7 +909,8 @@ class ExecutorService:
                     net_pnl_pct=net_pnl_pct,
                     cum_fees_quote=cum_fees_quote,
                     filled_amount_quote=filled_amount_quote,
-                    final_state=final_state_json
+                    final_state=final_state_json,
+                    error_log=error_log_json
                 )
 
             logger.debug(f"Persisted executor {executor_id} completion to database")
@@ -1040,8 +1038,34 @@ class ExecutorService:
             else:
                 logger.debug(f"Executor {executor_id} has no filled amounts to aggregate")
 
+            # Persist position hold to the dedicated table
+            await self._persist_position_hold(position)
+
         except Exception as e:
             logger.error(f"Error aggregating position for executor {executor_id}: {e}", exc_info=True)
+
+    async def _persist_position_hold(self, position: PositionHold):
+        """Persist a position hold to the dedicated position_holds table."""
+        if not self.db_manager:
+            return
+        try:
+            async with self.db_manager.get_session_context() as session:
+                from database.repositories.executor_repository import ExecutorRepository
+                repo = ExecutorRepository(session)
+                await repo.upsert_position_hold(
+                    account_name=position.account_name,
+                    connector_name=position.connector_name,
+                    trading_pair=position.trading_pair,
+                    controller_id=position.controller_id,
+                    buy_amount_base=position.buy_amount_base,
+                    buy_amount_quote=position.buy_amount_quote,
+                    sell_amount_base=position.sell_amount_base,
+                    sell_amount_quote=position.sell_amount_quote,
+                    realized_pnl_quote=position.realized_pnl_quote,
+                    executor_ids=position.executor_ids,
+                )
+        except Exception as e:
+            logger.error(f"Error persisting position hold: {e}", exc_info=True)
 
     def get_positions_held(
         self,
@@ -1125,21 +1149,21 @@ class ExecutorService:
         position_key = self._get_position_key(account_name, connector_name, trading_pair, controller_id)
         if position_key in self._positions_held:
             del self._positions_held[position_key]
-            # Also clear from database so they don't get reloaded on restart
+            # Mark position hold as CLEARED in the dedicated table
             if self.db_manager:
                 try:
                     async with self.db_manager.get_session_context() as session:
                         from database.repositories.executor_repository import ExecutorRepository
                         repo = ExecutorRepository(session)
-                        count = await repo.clear_position_hold_executors(
+                        cleared = await repo.clear_position_hold(
                             account_name=account_name,
                             connector_name=connector_name,
                             trading_pair=trading_pair,
                             controller_id=controller_id
                         )
-                        logger.info(f"Cleared {count} position hold records from database for {position_key}")
+                        logger.info(f"Cleared position hold record from database for {position_key}: {cleared}")
                 except Exception as e:
-                    logger.error(f"Failed to clear position holds from database: {e}", exc_info=True)
+                    logger.error(f"Failed to clear position hold from database: {e}", exc_info=True)
             logger.info(f"Cleared position hold for {position_key}")
             return True
         return False
