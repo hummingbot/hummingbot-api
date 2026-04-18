@@ -222,7 +222,7 @@ class PMMister(ControllerBase):
     def should_effectivize_executor(self, executor_info, current_time: int) -> bool:
         """Check if a hanging executor should be effectivized"""
         level_id = executor_info.custom_info.get("level_id", "")
-        fill_time = executor_info.custom_info["open_order_last_update"]
+        fill_time = executor_info.custom_info.get("open_order_last_update")
         if not level_id or not fill_time:
             return False
 
