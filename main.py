@@ -51,7 +51,6 @@ from routers import (  # noqa: E402
     executors,
     gateway,
     gateway_clmm,
-    gateway_proxy,
     gateway_swap,
     market_data,
     portfolio,
@@ -384,7 +383,6 @@ app.include_router(backtesting.router, dependencies=[Depends(auth_user)])
 app.include_router(archived_bots.router, dependencies=[Depends(auth_user)])
 
 app.include_router(executors.router, dependencies=[Depends(auth_user)])
-app.include_router(gateway_proxy.router, dependencies=[Depends(auth_user)])
 
 # WebSocket router (handles its own auth)
 app.include_router(websocket.router)
