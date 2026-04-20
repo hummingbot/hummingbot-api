@@ -606,9 +606,7 @@ async def add_network_token(
 
         return {
             "success": True,
-            "message": f"Token {token_request.symbol} added to {network_id}. Restart Gateway for changes to take effect.",
-            "restart_required": True,
-            "restart_endpoint": "POST /gateway/restart",
+            "message": f"Token {token_request.symbol} added to {network_id}.",
             "token": {
                 "symbol": token_request.symbol,
                 "address": token_request.address,
@@ -661,9 +659,7 @@ async def delete_network_token(
 
         return {
             "success": True,
-            "message": f"Token {token_address} deleted from {network_id}. Restart Gateway for changes to take effect.",
-            "restart_required": True,
-            "restart_endpoint": "POST /gateway/restart",
+            "message": f"Token {token_address} deleted from {network_id}.",
             "token_address": token_address,
             "network_id": network_id
         }

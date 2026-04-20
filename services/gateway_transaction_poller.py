@@ -8,16 +8,16 @@ Additionally polls CLMM position state to keep database in sync with on-chain st
 """
 import asyncio
 import logging
-from typing import Optional, Dict, List
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from typing import Dict, List, Optional
 
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from database import AsyncDatabaseManager
-from database.repositories import GatewaySwapRepository, GatewayCLMMRepository
 from database.models import GatewayCLMMEvent, GatewayCLMMPosition
+from database.repositories import GatewayCLMMRepository, GatewaySwapRepository
 from services.gateway_client import GatewayClient
 
 logger = logging.getLogger(__name__)
@@ -312,9 +312,6 @@ class GatewayTransactionPoller:
 
             # Parse the response with defensive checks
             tx_status = result.get("txStatus")
-            tx_data = result.get("txData") or {}
-            meta = tx_data.get("meta") if isinstance(tx_data, dict) else {}
-            error = meta.get("err") if isinstance(meta, dict) else None
 
             # Determine gas token based on chain
             gas_token = {
@@ -326,8 +323,8 @@ class GatewayTransactionPoller:
                 "avalanche": "AVAX"
             }.get(chain, "UNKNOWN")
 
-            # Transaction is confirmed if txStatus == 1 and no error
-            if tx_status == 1 and error is None:
+            # Transaction is confirmed if txStatus == 1
+            if tx_status == 1:
                 return {
                     "status": "CONFIRMED",
                     "gas_fee": result.get("fee", 0),
@@ -335,9 +332,16 @@ class GatewayTransactionPoller:
                     "error_message": None
                 }
 
-            # Transaction failed if there's an error
-            if error is not None:
-                error_msg = str(error) if error else "Transaction failed on-chain"
+            # Transaction failed if txStatus == -1 or there's an error field
+            # Gateway now returns parsed error messages like "SLIPPAGE_EXCEEDED (0x1771): ..."
+            error_msg = result.get("error")
+            if tx_status == -1 or error_msg:
+                if not error_msg:
+                    # Fallback to meta.err if no parsed error
+                    tx_data = result.get("txData") or {}
+                    meta = tx_data.get("meta") if isinstance(tx_data, dict) else {}
+                    raw_error = meta.get("err") if isinstance(meta, dict) else None
+                    error_msg = str(raw_error) if raw_error else "Transaction failed on-chain"
                 return {
                     "status": "FAILED",
                     "gas_fee": result.get("fee", 0),
@@ -352,14 +356,13 @@ class GatewayTransactionPoller:
             logger.error(f"Error checking transaction status for {tx_hash}: {e}")
             return None
 
-    async def poll_transaction_once(self, tx_hash: str, network_id: str, wallet_address: Optional[str] = None) -> Optional[Dict]:
+    async def poll_transaction_once(self, tx_hash: str, network_id: str) -> Optional[Dict]:
         """
         Poll a specific transaction once (useful for immediate status checks).
 
         Args:
             tx_hash: Transaction hash
             network_id: Network ID in format 'chain-network' (e.g., 'solana-mainnet-beta')
-            wallet_address: Optional wallet address for verification
 
         Returns:
             Transaction status dict or None if pending
