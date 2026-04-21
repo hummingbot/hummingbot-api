@@ -1,55 +1,60 @@
-from fastapi import APIRouter
-from hummingbot.data_feed.candles_feed.candles_factory import CandlesFactory
-from hummingbot.strategy_v2.backtesting.backtesting_engine_base import BacktestingEngineBase
+from fastapi import APIRouter, Depends, HTTPException
 
-from config import settings
+from deps import get_backtesting_service
 from models.backtesting import BacktestingConfig
+from services.backtesting_service import BacktestingService
 
 router = APIRouter(tags=["Backtesting"], prefix="/backtesting")
-candles_factory = CandlesFactory()
-backtesting_engine = BacktestingEngineBase()
 
 
-@router.post("/run-backtesting")
-async def run_backtesting(backtesting_config: BacktestingConfig):
-    """
-    Run a backtesting simulation with the provided configuration.
-    
-    Args:
-        backtesting_config: Configuration for the backtesting including start/end time,
-                          resolution, trade cost, and controller config
-                          
-    Returns:
-        Dictionary containing executors, processed data, and results from the backtest
-        
-    Raises:
-        Returns error dictionary if backtesting fails
-    """
+@router.post("/run")
+async def run_backtesting(
+    backtesting_config: BacktestingConfig,
+    service: BacktestingService = Depends(get_backtesting_service),
+):
+    """Run a backtest synchronously. Returns results directly (may timeout for long backtests)."""
     try:
-        if isinstance(backtesting_config.config, str):
-            controller_config = backtesting_engine.get_controller_config_instance_from_yml(
-                config_path=backtesting_config.config,
-                controllers_conf_dir_path=settings.app.controllers_path,
-                controllers_module=settings.app.controllers_module
-            )
-        else:
-            controller_config = backtesting_engine.get_controller_config_instance_from_dict(
-                config_data=backtesting_config.config,
-                controllers_module=settings.app.controllers_module
-            )
-        backtesting_results = await backtesting_engine.run_backtesting(
-            controller_config=controller_config, trade_cost=backtesting_config.trade_cost,
-            start=int(backtesting_config.start_time), end=int(backtesting_config.end_time),
-            backtesting_resolution=backtesting_config.backtesting_resolution)
-        processed_data = backtesting_results["processed_data"]["features"].fillna(0)
-        executors_info = [e.to_dict() for e in backtesting_results["executors"]]
-        backtesting_results["processed_data"] = processed_data.to_dict()
-        results = backtesting_results["results"]
-        results["sharpe_ratio"] = results["sharpe_ratio"] if results["sharpe_ratio"] is not None else 0
-        return {
-            "executors": executors_info,
-            "processed_data": backtesting_results["processed_data"],
-            "results": backtesting_results["results"],
-        }
+        return await service.run_backtest_sync(backtesting_config.model_dump())
     except Exception as e:
         return {"error": str(e)}
+
+
+@router.post("/tasks")
+async def create_backtest_task(
+    backtesting_config: BacktestingConfig,
+    service: BacktestingService = Depends(get_backtesting_service),
+):
+    """Submit a backtest as a background task. Returns task ID for polling."""
+    task = service.submit_task(backtesting_config.model_dump())
+    return {"task_id": task.task_id, "status": task.status.value}
+
+
+@router.get("/tasks")
+async def list_backtest_tasks(
+    service: BacktestingService = Depends(get_backtesting_service),
+):
+    """List all backtest tasks with their status (results excluded for brevity)."""
+    return service.list_tasks()
+
+
+@router.get("/tasks/{task_id}")
+async def get_backtest_task(
+    task_id: str,
+    service: BacktestingService = Depends(get_backtesting_service),
+):
+    """Get a backtest task by ID, including results if completed."""
+    task = service.get_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+    return task.to_dict(include_result=True)
+
+
+@router.delete("/tasks/{task_id}")
+async def delete_backtest_task(
+    task_id: str,
+    service: BacktestingService = Depends(get_backtesting_service),
+):
+    """Cancel a running task or remove a completed one."""
+    if not service.cancel_task(task_id):
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+    return {"status": "deleted", "task_id": task_id}
