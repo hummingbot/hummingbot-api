@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import and_, case, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.models import ExecutorOrder, ExecutorRecord
+from database.models import ExecutorOrder, ExecutorRecord, PositionHoldRecord
 
 
 class ExecutorRepository:
@@ -58,7 +58,8 @@ class ExecutorRepository:
             net_pnl_pct: Optional[Decimal] = None,
             cum_fees_quote: Optional[Decimal] = None,
             filled_amount_quote: Optional[Decimal] = None,
-            final_state: Optional[str] = None
+            final_state: Optional[str] = None,
+            error_log: Optional[str] = None
     ) -> Optional[ExecutorRecord]:
         """Update an executor record."""
         stmt = select(ExecutorRecord).where(ExecutorRecord.executor_id == executor_id)
@@ -81,6 +82,8 @@ class ExecutorRepository:
                 executor.filled_amount_quote = filled_amount_quote
             if final_state is not None:
                 executor.final_state = final_state
+            if error_log is not None:
+                executor.error_log = error_log
 
             await self.session.flush()
             await self.session.refresh(executor)
@@ -177,33 +180,113 @@ class ExecutorRepository:
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
-    async def clear_position_hold_executors(
+    # ========================================
+    # PositionHoldRecord Operations
+    # ========================================
+
+    async def upsert_position_hold(
+            self,
+            account_name: str,
+            connector_name: str,
+            trading_pair: str,
+            controller_id: str,
+            buy_amount_base: Decimal,
+            buy_amount_quote: Decimal,
+            sell_amount_base: Decimal,
+            sell_amount_quote: Decimal,
+            realized_pnl_quote: Decimal,
+            executor_ids: List[str]
+    ) -> PositionHoldRecord:
+        """Create or update a position hold record."""
+        import json as _json
+
+        stmt = select(PositionHoldRecord).where(and_(
+            PositionHoldRecord.account_name == account_name,
+            PositionHoldRecord.connector_name == connector_name,
+            PositionHoldRecord.trading_pair == trading_pair,
+            PositionHoldRecord.controller_id == controller_id,
+            PositionHoldRecord.status == "ACTIVE",
+        ))
+        result = await self.session.execute(stmt)
+        record = result.scalar_one_or_none()
+
+        if record:
+            record.buy_amount_base = buy_amount_base
+            record.buy_amount_quote = buy_amount_quote
+            record.sell_amount_base = sell_amount_base
+            record.sell_amount_quote = sell_amount_quote
+            record.realized_pnl_quote = realized_pnl_quote
+            record.executor_ids = _json.dumps(executor_ids)
+        else:
+            record = PositionHoldRecord(
+                account_name=account_name,
+                connector_name=connector_name,
+                trading_pair=trading_pair,
+                controller_id=controller_id,
+                buy_amount_base=buy_amount_base,
+                buy_amount_quote=buy_amount_quote,
+                sell_amount_base=sell_amount_base,
+                sell_amount_quote=sell_amount_quote,
+                realized_pnl_quote=realized_pnl_quote,
+                executor_ids=_json.dumps(executor_ids),
+                status="ACTIVE",
+            )
+            self.session.add(record)
+
+        await self.session.flush()
+        return record
+
+    async def get_active_position_holds(
+            self,
+            account_name: Optional[str] = None,
+            connector_name: Optional[str] = None,
+            trading_pair: Optional[str] = None,
+            controller_id: Optional[str] = None,
+    ) -> List[PositionHoldRecord]:
+        """Get all ACTIVE position hold records."""
+        stmt = select(PositionHoldRecord).where(PositionHoldRecord.status == "ACTIVE")
+
+        conditions = []
+        if account_name:
+            conditions.append(PositionHoldRecord.account_name == account_name)
+        if connector_name:
+            conditions.append(PositionHoldRecord.connector_name == connector_name)
+        if trading_pair:
+            conditions.append(PositionHoldRecord.trading_pair == trading_pair)
+        if controller_id:
+            conditions.append(PositionHoldRecord.controller_id == controller_id)
+
+        if conditions:
+            stmt = stmt.where(and_(*conditions))
+
+        stmt = stmt.order_by(desc(PositionHoldRecord.last_updated))
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def clear_position_hold(
             self,
             account_name: str,
             connector_name: str,
             trading_pair: str,
             controller_id: str = "main"
-    ) -> int:
-        """Clear close_type for POSITION_HOLD executors so they won't be recovered on restart."""
-        from sqlalchemy import update
-
-        conditions = [
-            ExecutorRecord.close_type == "POSITION_HOLD",
-            ExecutorRecord.account_name == account_name,
-            ExecutorRecord.connector_name == connector_name,
-            ExecutorRecord.trading_pair == trading_pair,
-            ExecutorRecord.controller_id == controller_id,
-        ]
+    ) -> bool:
+        """Mark a position hold as CLEARED."""
+        from sqlalchemy import update as sa_update
 
         stmt = (
-            update(ExecutorRecord)
-            .where(and_(*conditions))
-            .values(close_type="POSITION_HOLD_CLEARED")
+            sa_update(PositionHoldRecord)
+            .where(and_(
+                PositionHoldRecord.account_name == account_name,
+                PositionHoldRecord.connector_name == connector_name,
+                PositionHoldRecord.trading_pair == trading_pair,
+                PositionHoldRecord.controller_id == controller_id,
+                PositionHoldRecord.status == "ACTIVE",
+            ))
+            .values(status="CLEARED", cleared_at=datetime.now(timezone.utc))
         )
-
         result = await self.session.execute(stmt)
         await self.session.commit()
-        return result.rowcount
+        return result.rowcount > 0
 
     async def get_executor_stats(self) -> Dict[str, Any]:
         """Get statistics about executors."""

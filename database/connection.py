@@ -64,6 +64,11 @@ class AsyncDatabaseManager:
                 "executors", "controller_id",
                 "ALTER TABLE executors ADD COLUMN controller_id TEXT NOT NULL DEFAULT 'main'"
             ),
+            # Add error_log to executors table for storing errors on failed executors
+            (
+                "executors", "error_log",
+                "ALTER TABLE executors ADD COLUMN error_log TEXT"
+            ),
         ]
         for table, column, sql in migrations:
             try:
