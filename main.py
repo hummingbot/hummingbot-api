@@ -64,6 +64,7 @@ from services.bots_orchestrator import BotsOrchestrator  # noqa: E402
 from services.docker_service import DockerService  # noqa: E402
 from services.executor_service import ExecutorService  # noqa: E402
 from services.executor_ws_manager import ExecutorWebSocketManager  # noqa: E402
+from services.backtesting_service import BacktestingService  # noqa: E402
 from services.gateway_service import GatewayService  # noqa: E402
 from services.market_data_service import MarketDataService  # noqa: E402
 from services.trading_service import TradingService  # noqa: E402
@@ -226,6 +227,7 @@ async def lifespan(app: FastAPI):
         broker_password=settings.broker.password
     )
 
+    backtesting_service = BacktestingService()
     docker_service = DockerService()
     gateway_service = GatewayService()
     bot_archiver = BotArchiver(
@@ -264,6 +266,7 @@ async def lifespan(app: FastAPI):
     websocket_manager = WebSocketManager(market_data_service)
     app.state.websocket_manager = websocket_manager
 
+    app.state.backtesting_service = backtesting_service
     app.state.bots_orchestrator = bots_orchestrator
     app.state.docker_service = docker_service
     app.state.gateway_service = gateway_service
