@@ -195,10 +195,13 @@ class ExecutorRepository:
             sell_amount_base: Decimal,
             sell_amount_quote: Decimal,
             realized_pnl_quote: Decimal,
-            executor_ids: List[str]
+            cum_fees_quote: Decimal = Decimal("0"),
+            executor_ids: List[str] = None
     ) -> PositionHoldRecord:
         """Create or update a position hold record."""
         import json as _json
+        if executor_ids is None:
+            executor_ids = []
 
         stmt = select(PositionHoldRecord).where(and_(
             PositionHoldRecord.account_name == account_name,
@@ -216,6 +219,7 @@ class ExecutorRepository:
             record.sell_amount_base = sell_amount_base
             record.sell_amount_quote = sell_amount_quote
             record.realized_pnl_quote = realized_pnl_quote
+            record.cum_fees_quote = cum_fees_quote
             record.executor_ids = _json.dumps(executor_ids)
         else:
             record = PositionHoldRecord(
@@ -228,6 +232,7 @@ class ExecutorRepository:
                 sell_amount_base=sell_amount_base,
                 sell_amount_quote=sell_amount_quote,
                 realized_pnl_quote=realized_pnl_quote,
+                cum_fees_quote=cum_fees_quote,
                 executor_ids=_json.dumps(executor_ids),
                 status="ACTIVE",
             )

@@ -69,6 +69,11 @@ class AsyncDatabaseManager:
                 "executors", "error_log",
                 "ALTER TABLE executors ADD COLUMN error_log TEXT"
             ),
+            # Add cum_fees_quote to position_holds table for tracking fees
+            (
+                "position_holds", "cum_fees_quote",
+                "ALTER TABLE position_holds ADD COLUMN cum_fees_quote NUMERIC(30,18) NOT NULL DEFAULT 0"
+            ),
         ]
         for table, column, sql in migrations:
             try:
