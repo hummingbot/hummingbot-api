@@ -22,9 +22,11 @@ class DManMakerV2Config(MarketMakingControllerConfigBase):
     # DCA configuration
     dca_spreads: List[Decimal] = Field(
         default="0.01,0.02,0.04,0.08",
+        validate_default=True,
         json_schema_extra={"prompt": "Enter a comma-separated list of spreads for each DCA level: ", "prompt_on_new": True})
     dca_amounts: List[Decimal] = Field(
         default="0.1,0.2,0.4,0.8",
+        validate_default=True,
         json_schema_extra={"prompt": "Enter a comma-separated list of amounts for each DCA level: ", "prompt_on_new": True})
     top_executor_refresh_time: Optional[float] = Field(default=None, json_schema_extra={"is_updatable": True})
     executor_activation_bounds: Optional[List[Decimal]] = Field(default=None, json_schema_extra={"is_updatable": True})
@@ -55,13 +57,17 @@ class DManMakerV2Config(MarketMakingControllerConfigBase):
     @classmethod
     def parse_and_validate_dca_amounts(cls, v, validation_info):
         if v is None or v == "":
-            return [1 for _ in validation_info.data['dca_spreads']]
+            return [Decimal("1") for _ in validation_info.data['dca_spreads']]
         if isinstance(v, str):
-            return [float(x.strip()) for x in v.split(',')]
-        elif isinstance(v, list) and len(v) != len(validation_info.data['dca_spreads']):
+            parsed = [Decimal(x.strip()) for x in v.split(',')]
+        elif isinstance(v, list):
+            parsed = [Decimal(str(x)) for x in v]
+        else:
+            parsed = [Decimal(str(v))]
+        if len(parsed) != len(validation_info.data['dca_spreads']):
             raise ValueError(
                 f"The number of dca amounts must match the number of {validation_info.data['dca_spreads']}.")
-        return v
+        return parsed
 
 
 class DManMakerV2(MarketMakingControllerBase):

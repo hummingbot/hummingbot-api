@@ -65,6 +65,7 @@ class PMMConfig(ControllerConfigBase):
     )
     buy_spreads: List[float] = Field(
         default="0.01,0.02",
+        validate_default=True,
         json_schema_extra={
             "prompt_on_new": True, "is_updatable": True,
             "prompt": "Enter a comma-separated list of buy spreads (e.g., '0.01, 0.02'):",
@@ -72,6 +73,7 @@ class PMMConfig(ControllerConfigBase):
     )
     sell_spreads: List[float] = Field(
         default="0.01,0.02",
+        validate_default=True,
         json_schema_extra={
             "prompt_on_new": True, "is_updatable": True,
             "prompt": "Enter a comma-separated list of sell spreads (e.g., '0.01, 0.02'):",
@@ -79,6 +81,7 @@ class PMMConfig(ControllerConfigBase):
     )
     buy_amounts_pct: Union[List[Decimal], None] = Field(
         default=None,
+        validate_default=True,
         json_schema_extra={
             "prompt_on_new": True, "is_updatable": True,
             "prompt": "Enter a comma-separated list of buy amounts as percentages (e.g., '50, 50'), or leave blank to distribute equally:",
@@ -86,6 +89,7 @@ class PMMConfig(ControllerConfigBase):
     )
     sell_amounts_pct: Union[List[Decimal], None] = Field(
         default=None,
+        validate_default=True,
         json_schema_extra={
             "prompt_on_new": True, "is_updatable": True,
             "prompt": "Enter a comma-separated list of sell amounts as percentages (e.g., '50, 50'), or leave blank to distribute equally:",
@@ -180,13 +184,17 @@ class PMMConfig(ControllerConfigBase):
         field_name = validation_info.field_name
         if v is None or v == "":
             spread_field = field_name.replace('amounts_pct', 'spreads')
-            return [1 for _ in validation_info.data[spread_field]]
+            return [Decimal("1") for _ in validation_info.data[spread_field]]
         if isinstance(v, str):
-            return [float(x.strip()) for x in v.split(',')]
-        elif isinstance(v, list) and len(v) != len(validation_info.data[field_name.replace('amounts_pct', 'spreads')]):
+            parsed = [Decimal(x.strip()) for x in v.split(',')]
+        elif isinstance(v, list):
+            parsed = [Decimal(str(x)) for x in v]
+        else:
+            parsed = [Decimal(str(v))]
+        if len(parsed) != len(validation_info.data[field_name.replace('amounts_pct', 'spreads')]):
             raise ValueError(
                 f"The number of {field_name} must match the number of {field_name.replace('amounts_pct', 'spreads')}.")
-        return v
+        return parsed
 
     @field_validator('position_mode', mode="before")
     @classmethod

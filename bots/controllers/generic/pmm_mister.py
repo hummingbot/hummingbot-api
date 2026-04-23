@@ -25,10 +25,10 @@ class PMMisterConfig(ControllerConfigBase):
     target_base_pct: Decimal = Field(default=Decimal("0.5"), json_schema_extra={"is_updatable": True})
     min_base_pct: Decimal = Field(default=Decimal("0.3"), json_schema_extra={"is_updatable": True})
     max_base_pct: Decimal = Field(default=Decimal("0.7"), json_schema_extra={"is_updatable": True})
-    buy_spreads: List[float] = Field(default="0.0005", json_schema_extra={"is_updatable": True})
-    sell_spreads: List[float] = Field(default="0.0005", json_schema_extra={"is_updatable": True})
-    buy_amounts_pct: Union[List[Decimal], None] = Field(default="1", json_schema_extra={"is_updatable": True})
-    sell_amounts_pct: Union[List[Decimal], None] = Field(default="1", json_schema_extra={"is_updatable": True})
+    buy_spreads: List[float] = Field(default="0.0005", validate_default=True, json_schema_extra={"is_updatable": True})
+    sell_spreads: List[float] = Field(default="0.0005", validate_default=True, json_schema_extra={"is_updatable": True})
+    buy_amounts_pct: Union[List[Decimal], None] = Field(default="1", validate_default=True, json_schema_extra={"is_updatable": True})
+    sell_amounts_pct: Union[List[Decimal], None] = Field(default="1", validate_default=True, json_schema_extra={"is_updatable": True})
     executor_refresh_time: int = Field(default=30, json_schema_extra={"is_updatable": True})
 
     # Enhanced timing parameters
@@ -89,9 +89,10 @@ class PMMisterConfig(ControllerConfigBase):
         field_name = validation_info.field_name
         if v is None or v == "":
             spread_field = field_name.replace('amounts_pct', 'spreads')
-            return [1 for _ in validation_info.data[spread_field]]
+            return [Decimal("1") for _ in validation_info.data[spread_field]]
         parsed = parse_comma_separated_list(v)
-        if isinstance(parsed, list) and len(parsed) != len(
+        parsed = [Decimal(str(x)) for x in parsed]
+        if len(parsed) != len(
                 validation_info.data[field_name.replace('amounts_pct', 'spreads')]):
             raise ValueError(
                 f"The number of {field_name} must match the number of {field_name.replace('amounts_pct', 'spreads')}.")
