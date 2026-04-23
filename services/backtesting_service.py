@@ -108,7 +108,7 @@ class BacktestingService:
         except Exception as e:
             task.status = BacktestTaskStatus.FAILED
             task.error = str(e)
-            logger.error(f"Backtesting task {task.task_id} failed: {e}")
+            logger.error(f"Backtesting task {task.task_id} failed: {e}", exc_info=True)
         finally:
             task.completed_at = datetime.now(timezone.utc)
 
