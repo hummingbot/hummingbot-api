@@ -1,7 +1,7 @@
 import asyncio
 import logging
-from typing import Optional
 import re
+from typing import Optional
 
 import docker
 
@@ -32,7 +32,7 @@ class BotsOrchestrator:
         # Active bots tracking
         self.active_bots = {}
         self._update_bots_task: Optional[asyncio.Task] = None
-        
+
         # Track bots that are currently being stopped and archived
         self.stopping_bots = set()
 
@@ -303,7 +303,7 @@ class BotsOrchestrator:
                     "general_logs": [],
                     "recently_active": False,
                 }
-            
+
             # Get data from MQTT manager
             controller_reports = self.mqtt_manager.get_bot_controller_reports(bot_name)
             performance = self.determine_controller_performance(controller_reports)
@@ -331,18 +331,55 @@ class BotsOrchestrator:
             }
         except Exception as e:
             return {"status": "error", "error": str(e)}
-    
+
+    def get_bot_logs(self, bot_name: str, log_type: str = "all", limit: int = 100):
+        """Get recent MQTT-backed logs for a specific bot."""
+        general_logs = self.mqtt_manager.get_bot_logs(bot_name)
+        error_logs = self.mqtt_manager.get_bot_error_logs(bot_name)
+
+        if bot_name not in self.active_bots and not general_logs and not error_logs:
+            return None
+
+        if limit and limit > 0:
+            general_logs = general_logs[-limit:]
+            error_logs = error_logs[-limit:]
+
+        if log_type == "general":
+            return {
+                "bot_name": bot_name,
+                "log_type": log_type,
+                "general_logs": general_logs,
+                "error_logs": [],
+                "total_count": len(general_logs),
+            }
+
+        if log_type == "error":
+            return {
+                "bot_name": bot_name,
+                "log_type": log_type,
+                "general_logs": [],
+                "error_logs": error_logs,
+                "total_count": len(error_logs),
+            }
+
+        return {
+            "bot_name": bot_name,
+            "log_type": "all",
+            "general_logs": general_logs,
+            "error_logs": error_logs,
+            "total_count": len(general_logs) + len(error_logs),
+        }
+
     def set_bot_stopping(self, bot_name: str):
         """Mark a bot as currently being stopped and archived."""
         self.stopping_bots.add(bot_name)
         logger.info(f"Marked bot {bot_name} as stopping")
-    
+
     def clear_bot_stopping(self, bot_name: str):
         """Clear the stopping status for a bot."""
         self.stopping_bots.discard(bot_name)
         logger.info(f"Cleared stopping status for bot {bot_name}")
-    
+
     def is_bot_stopping(self, bot_name: str) -> bool:
         """Check if a bot is currently being stopped."""
         return bot_name in self.stopping_bots
-    
