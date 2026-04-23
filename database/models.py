@@ -414,6 +414,7 @@ class PositionHoldRecord(Base):
     sell_amount_base = Column(Numeric(precision=30, scale=18), nullable=False, default=0)
     sell_amount_quote = Column(Numeric(precision=30, scale=18), nullable=False, default=0)
     realized_pnl_quote = Column(Numeric(precision=30, scale=18), nullable=False, default=0)
+    cum_fees_quote = Column(Numeric(precision=30, scale=18), nullable=False, default=0)
 
     # Tracking
     executor_ids = Column(Text, nullable=True)  # JSON array of executor IDs

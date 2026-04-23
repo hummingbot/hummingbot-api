@@ -48,6 +48,7 @@ class DManV3ControllerConfig(DirectionalTradingControllerConfigBase):
     )
     dca_spreads: List[Decimal] = Field(
         default="0.001,0.018,0.15,0.25",
+        validate_default=True,
         json_schema_extra={
             "prompt": "Enter the spreads for each DCA level (comma-separated) if dynamic_spread=True this value "
                       "will multiply the Bollinger Bands width, e.g. if the Bollinger Bands width is 0.1 (10%)"
@@ -56,6 +57,7 @@ class DManV3ControllerConfig(DirectionalTradingControllerConfigBase):
     )
     dca_amounts_pct: List[Decimal] = Field(
         default=None,
+        validate_default=True,
         json_schema_extra={
             "prompt": "Enter the amounts for each DCA level (as a percentage of the total balance, "
                       "comma-separated). Don't worry about the final sum, it will be normalized. ",

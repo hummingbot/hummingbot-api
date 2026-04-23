@@ -166,7 +166,7 @@ class ExecutorService:
                         except (json.JSONDecodeError, TypeError):
                             pass
 
-                    self._positions_held[position_key] = PositionHold(
+                    position = PositionHold(
                         trading_pair=record.trading_pair,
                         connector_name=record.connector_name,
                         account_name=record.account_name,
@@ -176,9 +176,13 @@ class ExecutorService:
                         sell_amount_base=Decimal(str(record.sell_amount_base or 0)),
                         sell_amount_quote=Decimal(str(record.sell_amount_quote or 0)),
                         realized_pnl_quote=Decimal(str(record.realized_pnl_quote or 0)),
+                        cum_fees_quote=Decimal(str(record.cum_fees_quote or 0)),
                         executor_ids=executor_ids,
                         last_updated=record.last_updated,
                     )
+                    # Settle any matched volume from legacy unsettled data
+                    position._calculate_realized_pnl()
+                    self._positions_held[position_key] = position
 
                 if self._positions_held:
                     logger.info(f"Recovered {len(self._positions_held)} position holds from database")
@@ -792,16 +796,48 @@ class ExecutorService:
         positions = self.get_positions_held(controller_id=controller_id)
         report["active_positions"] = len(positions)
 
+        # Accumulate fees from position holds (already paid, reduce PnL)
+        position_hold_fees = sum(float(p.cum_fees_quote) for p in positions)
+
         if market_data_service:
+            # First pass: try oracle for each position, collect misses grouped by connector
+            missing_by_connector: Dict[str, List[tuple]] = {}  # connector_key -> [(position, trading_pair)]
             for p in positions:
                 parts = p.trading_pair.split("-")
-                if len(parts) == 2:
-                    base, quote = parts
-                    rate = market_data_service.get_rate(base, quote)
-                    if rate is not None:
-                        unrealized_pnl += float(p.get_unrealized_pnl(rate))
+                if len(parts) != 2:
+                    continue
+                base, quote = parts
+                rate = market_data_service.get_rate(base, quote)
+                if rate is not None:
+                    unrealized_pnl += float(p.get_unrealized_pnl(rate))
+                else:
+                    # Group by connector+account for batch fallback
+                    connector_key = f"{p.connector_name}|{p.account_name}"
+                    missing_by_connector.setdefault(connector_key, []).append((p, p.trading_pair))
+
+            # Second pass: batch-fetch missing prices from the actual connectors
+            for connector_key, items in missing_by_connector.items():
+                connector_name, account_name = connector_key.split("|", 1)
+                trading_pairs = [tp for _, tp in items]
+                try:
+                    prices = await market_data_service.get_prices(
+                        connector_name=connector_name,
+                        trading_pairs=trading_pairs,
+                        account_name=account_name,
+                    )
+                    if isinstance(prices, dict) and "error" not in prices:
+                        for pos, tp in items:
+                            price = prices.get(tp)
+                            if price is not None and price > 0:
+                                unrealized_pnl += float(pos.get_unrealized_pnl(Decimal(str(price))))
+                except Exception as e:
+                    logger.warning(f"Fallback price fetch failed for {connector_name}: {e}")
+
+        # Subtract position hold fees from unrealized PnL
+        unrealized_pnl -= position_hold_fees
 
         report["unrealized_pnl_quote"] = round(unrealized_pnl, 8)
+        report["position_hold_fees_quote"] = round(position_hold_fees, 8)
         report["global_pnl_quote"] = round(report["pnl_total_quote"] + unrealized_pnl, 8)
 
         return report
@@ -1004,17 +1040,26 @@ class ExecutorService:
             # Check for held_position_orders (used by grid_executor, position_executor, etc.)
             held_orders = custom_info.get("held_position_orders", []) if custom_info else []
 
+            # Extract cumulative fees from the executor
+            executor_fees = Decimal("0")
+            try:
+                executor_fees = Decimal(str(executor.cum_fees_quote or 0))
+            except Exception:
+                pass
+
             if held_orders:
                 buy_filled_base = Decimal("0")
                 buy_filled_quote = Decimal("0")
                 sell_filled_base = Decimal("0")
                 sell_filled_quote = Decimal("0")
+                orders_fees = Decimal("0")
 
                 for order in held_orders:
                     if isinstance(order, dict):
                         trade_type = order.get("trade_type", "BUY")
                         exec_base = Decimal(str(order.get("executed_amount_base", 0)))
                         exec_quote = Decimal(str(order.get("executed_amount_quote", 0)))
+                        orders_fees += Decimal(str(order.get("cumulative_fee_paid_quote", 0)))
 
                         if trade_type == "BUY":
                             buy_filled_base += exec_base
@@ -1023,20 +1068,28 @@ class ExecutorService:
                             sell_filled_base += exec_base
                             sell_filled_quote += exec_quote
 
+                # Use order-level fees if available, otherwise fall back to executor-level
+                fees = orders_fees if orders_fees > 0 else executor_fees
+
                 # Add buy and sell fills separately
                 if buy_filled_base > 0:
-                    position.add_fill("BUY", buy_filled_base, buy_filled_quote, executor_id)
+                    # Split fees proportionally between buy and sell by quote volume
+                    total_quote = buy_filled_quote + sell_filled_quote
+                    buy_fee_share = fees * (buy_filled_quote / total_quote) if total_quote > 0 else fees
+                    position.add_fill("BUY", buy_filled_base, buy_filled_quote, executor_id, fees_quote=buy_fee_share)
                 if sell_filled_base > 0:
-                    position.add_fill("SELL", sell_filled_base, sell_filled_quote, executor_id)
+                    total_quote = buy_filled_quote + sell_filled_quote
+                    sell_fee_share = fees * (sell_filled_quote / total_quote) if total_quote > 0 else fees
+                    position.add_fill("SELL", sell_filled_base, sell_filled_quote, executor_id, fees_quote=sell_fee_share)
 
                 logger.info(
                     f"Aggregated executor {executor_id} to position {position_key}: "
-                    f"buy={buy_filled_base} base, sell={sell_filled_base} base"
+                    f"buy={buy_filled_base} base, sell={sell_filled_base} base, fees={fees} quote"
                 )
 
             elif filled_amount_base > 0:
                 # For non-grid executors with a single side
-                position.add_fill(side, filled_amount_base, filled_amount_quote, executor_id)
+                position.add_fill(side, filled_amount_base, filled_amount_quote, executor_id, fees_quote=executor_fees)
                 logger.info(
                     f"Aggregated executor {executor_id} to position {position_key}: "
                     f"{side} {filled_amount_base} base @ {filled_amount_quote} quote"
@@ -1068,6 +1121,7 @@ class ExecutorService:
                     sell_amount_base=position.sell_amount_base,
                     sell_amount_quote=position.sell_amount_quote,
                     realized_pnl_quote=position.realized_pnl_quote,
+                    cum_fees_quote=position.cum_fees_quote,
                     executor_ids=position.executor_ids,
                 )
         except Exception as e:
@@ -1203,6 +1257,7 @@ class ExecutorService:
                     "unmatched_amount_base": float(p.unmatched_amount_base),
                     "position_side": p.position_side,
                     "realized_pnl_quote": float(p.realized_pnl_quote),
+                    "cum_fees_quote": float(p.cum_fees_quote),
                     "executor_count": len(p.executor_ids),
                     "executor_ids": p.executor_ids,
                     "last_updated": p.last_updated.isoformat() if p.last_updated else None
