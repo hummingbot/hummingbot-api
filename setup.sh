@@ -69,6 +69,7 @@ generate_ssl_bundle() {
   local server_key="$certs_dir/server.key"
   local server_csr="$certs_dir/server.csr"
   local server_pem="$certs_dir/server.pem"
+  local server_ext="$certs_dir/server-ext.cnf"
   local client_key="$certs_dir/client.key"
   local client_csr="$certs_dir/client.csr"
   local client_pem="$certs_dir/client.pem"
@@ -82,10 +83,29 @@ generate_ssl_bundle() {
   openssl req -x509 -new -nodes -key "$ca_key" -sha256 -days 3650 \
     -out "$ca_pem" -subj "/CN=Hummingbot Local CA" >/dev/null 2>&1
 
+  # Build a SAN extension file for the server cert. Modern TLS clients
+  # (and Python 3.12+ ssl) require a Subject Alternative Name; CN-only
+  # certs produce CertificateError at hostname verification time.
+  {
+    echo "subjectAltName = @alt_names"
+    echo "[alt_names]"
+    if [[ "$host" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      echo "IP.1 = $host"
+      echo "DNS.1 = localhost"
+      echo "IP.2 = 127.0.0.1"
+    else
+      echo "DNS.1 = $host"
+      if [[ "$host" != "localhost" ]]; then
+        echo "DNS.2 = localhost"
+      fi
+      echo "IP.1 = 127.0.0.1"
+    fi
+  } > "$server_ext"
+
   openssl genrsa -out "$server_key" 2048 >/dev/null 2>&1
   openssl req -new -key "$server_key" -out "$server_csr" -subj "/CN=$host" >/dev/null 2>&1
   openssl x509 -req -in "$server_csr" -CA "$ca_pem" -CAkey "$ca_key" -CAcreateserial \
-    -out "$server_pem" -days 825 -sha256 >/dev/null 2>&1
+    -out "$server_pem" -days 825 -sha256 -extfile "$server_ext" >/dev/null 2>&1
 
   if [[ "$generate_mtls" == "true" ]]; then
     openssl genrsa -out "$client_key" 2048 >/dev/null 2>&1
@@ -94,7 +114,7 @@ generate_ssl_bundle() {
       -out "$client_pem" -days 825 -sha256 >/dev/null 2>&1
   fi
 
-  rm -f "$server_csr" "$client_csr"
+  rm -f "$server_csr" "$client_csr" "$server_ext"
 }
 
 resolve_script_dir() {
@@ -382,30 +402,32 @@ pull_hummingbot_image() {
 # --------------------------
 echo "[INFO] OS=${OS} ARCH=${ARCH}"
 
-if is_linux; then
-  install_linux_build_deps
+if [ "$CERTS_ONLY" = false ]; then
+  if is_linux; then
+    install_linux_build_deps
+  fi
+
+  ensure_docker_and_compose
+
+  # Show summary of what was done
+  echo ""
+  if [ "$DOCKER_ALREADY_PRESENT" = true ] && [ "$COMPOSE_ALREADY_PRESENT" = true ]; then
+    echo "[OK] All dependencies were already installed. No changes made."
+  elif [ "$DOCKER_ALREADY_PRESENT" = true ]; then
+    echo "[OK] Docker was already installed. Docker Compose has been set up."
+  elif [ "$COMPOSE_ALREADY_PRESENT" = true ]; then
+    echo "[OK] Docker has been installed. Docker Compose was already available."
+  else
+    echo "[OK] Docker and Docker Compose have been installed."
+  fi
+
+  echo ""
+
+  # Always pull latest Hummingbot image (first install and upgrade)
+  pull_hummingbot_image
+
+  echo ""
 fi
-
-ensure_docker_and_compose
-
-# Show summary of what was done
-echo ""
-if [ "$DOCKER_ALREADY_PRESENT" = true ] && [ "$COMPOSE_ALREADY_PRESENT" = true ]; then
-  echo "[OK] All dependencies were already installed. No changes made."
-elif [ "$DOCKER_ALREADY_PRESENT" = true ]; then
-  echo "[OK] Docker was already installed. Docker Compose has been set up."
-elif [ "$COMPOSE_ALREADY_PRESENT" = true ]; then
-  echo "[OK] Docker has been installed. Docker Compose was already available."
-else
-  echo "[OK] Docker and Docker Compose have been installed."
-fi
-
-echo ""
-
-# Always pull latest Hummingbot image (first install and upgrade)
-pull_hummingbot_image
-
-echo ""
 
 # --------------------------
 # Existing .env creation flow
@@ -469,8 +491,37 @@ if prompt_yes_no "Enable HTTPS cert generation for Hummingbot API? [y/N]: " "n";
   fi
 fi
 
+_upsert_env_var() {
+  # Replace or append "KEY=VALUE" in $1 (env file).
+  local file="$1"
+  local key="$2"
+  local value="$3"
+  if grep -q "^${key}=" "$file" 2>/dev/null; then
+    # Use a delimiter unlikely to appear in paths; '|' is safer than '/'.
+    local tmp
+    tmp="$(mktemp)"
+    awk -v k="$key" -v v="$value" '
+      BEGIN { FS=OFS="=" }
+      $1 == k { print k "=" v; next }
+      { print }
+    ' "$file" > "$tmp" && mv "$tmp" "$file"
+  else
+    echo "${key}=${value}" >> "$file"
+  fi
+}
+
 if [ "$CERTS_ONLY" = true ]; then
   if [ "$SSL_ENABLED" = true ]; then
+    if [ -f ".env" ]; then
+      _upsert_env_var ".env" "SSL_ENABLED" "$SSL_ENABLED"
+      _upsert_env_var ".env" "SSL_PORT" "$SSL_PORT"
+      _upsert_env_var ".env" "SSL_CERT_PATH" "$SSL_CERT_PATH"
+      _upsert_env_var ".env" "SSL_KEY_PATH" "$SSL_KEY_PATH"
+      _upsert_env_var ".env" "SSL_CA_PATH" "$SSL_CA_PATH"
+      _upsert_env_var ".env" "SSL_CLIENT_CERT_PATH" "$SSL_CLIENT_CERT_PATH"
+      _upsert_env_var ".env" "SSL_CLIENT_KEY_PATH" "$SSL_CLIENT_KEY_PATH"
+      echo "[OK] Updated .env with new SSL settings."
+    fi
     echo ""
     echo "Certificate paths (copy into Condor config):"
     echo "  CA bundle:      $SSL_CA_PATH"

@@ -101,7 +101,7 @@ Edit `.env` and restart with `make deploy` to apply changes.
 
 ## HTTPS / SSL Setup
 
-By default, `hummingbot-api` runs on HTTP (`http://localhost:8000`). To expose HTTPS directly, run Uvicorn with SSL cert/key files.
+By default, `hummingbot-api` runs on HTTP (`http://localhost:8000`). To expose HTTPS, generate certs and either run locally with `make run-https` or deploy via Docker with `SSL_ENABLED=true` in `.env`.
 
 ### Automated setup (recommended)
 
@@ -113,17 +113,26 @@ make generate-certs
 
 This will:
 - prompt whether to enable HTTPS
-- generate CA + server cert/key under `./certs`
+- generate CA + server cert/key under `./certs` (with proper SAN entries)
 - optionally generate client cert/key for mTLS
+- update `.env` with `SSL_ENABLED=true` and the cert paths
 - print the exact paths to copy into Condor config
 
-Then run:
+Then run either:
 
 ```bash
-make run-https
+make run-https     # local conda dev mode
+make deploy        # Docker (reads SSL_ENABLED from .env)
 ```
 
-### Run on custom HTTPS port
+### Docker HTTPS
+
+When `SSL_ENABLED=true` is set in `.env`, `make deploy` will:
+- mount `./certs` into the container (read-only)
+- listen on `${SSL_PORT}` (default 8443) with TLS instead of port 8000
+- read certs from `/hummingbot-api/certs/server.pem` / `server.key` (paths inside the container)
+
+### Run on custom HTTPS port (local)
 
 ```bash
 uvicorn main:app --host 0.0.0.0 --port 8443 \
@@ -135,7 +144,7 @@ Then your API is available at `https://<host>:8443`.
 
 ### Generate local certificates (OpenSSL quickstart)
 
-Use this for local/dev self-signed CA workflows:
+Use this for local/dev self-signed CA workflows. **Note:** modern TLS clients (and Python 3.12+) require a `subjectAltName` extension — CN-only certs will fail hostname verification. The example below adds SAN.
 
 ```bash
 # Local CA
@@ -143,11 +152,20 @@ openssl genrsa -out ca.key 4096
 openssl req -x509 -new -nodes -key ca.key -sha256 -days 3650 \
   -out ca.pem -subj "/CN=Hummingbot Local CA"
 
+# SAN extension config for the server cert
+cat > server-ext.cnf <<'EOF'
+subjectAltName = @alt_names
+[alt_names]
+DNS.1 = localhost
+IP.1  = 127.0.0.1
+EOF
+
 # Server cert for API host (example: localhost)
 openssl genrsa -out server.key 2048
 openssl req -new -key server.key -out server.csr -subj "/CN=localhost"
 openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial \
-  -out server.pem -days 825 -sha256
+  -out server.pem -days 825 -sha256 -extfile server-ext.cnf
+rm server-ext.cnf server.csr
 ```
 
 ### Optional mTLS (client certificate auth)

@@ -42,15 +42,15 @@ COPY database ./database
 COPY bots/controllers ./bots/controllers
 COPY bots/scripts ./bots/scripts
 
-# Create necessary directories
-RUN mkdir -p bots/instances bots/conf bots/credentials bots/data bots/archived
+# Create necessary directories (certs dir exists so the bind mount has a target)
+RUN mkdir -p bots/instances bots/conf bots/credentials bots/data bots/archived certs
 
-# Expose port
-EXPOSE 8000
+# Expose ports (HTTP default and HTTPS optional)
+EXPOSE 8000 8443
 
 # Set environment variables to ensure conda env is used
 ENV PATH="/opt/conda/envs/hummingbot-api/bin:$PATH"
 ENV CONDA_DEFAULT_ENV=hummingbot-api
 
-# Run the application
-ENTRYPOINT ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# main.py's __main__ block reads SSL_ENABLED and switches between HTTP and HTTPS
+ENTRYPOINT ["python", "main.py"]

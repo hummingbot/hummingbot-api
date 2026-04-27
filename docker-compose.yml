@@ -4,8 +4,11 @@ services:
     image: hummingbot/hummingbot-api:latest
     ports:
       - "8000:8000"
+      # HTTPS port — only listened on when SSL_ENABLED=true in .env
+      - "${SSL_PORT:-8443}:${SSL_PORT:-8443}"
     volumes:
       - ./bots:/hummingbot-api/bots
+      - ./certs:/hummingbot-api/certs:ro
       - /var/run/docker.sock:/var/run/docker.sock
     env_file:
       - .env
@@ -14,6 +17,9 @@ services:
       - BROKER_HOST=emqx
       - DATABASE_URL=postgresql+asyncpg://hbot:hummingbot-api@postgres:5432/hummingbot_api
       - GATEWAY_URL=http://host.docker.internal:15888
+      # Force container-internal cert paths regardless of host paths in .env
+      - SSL_CERT_PATH=/hummingbot-api/certs/server.pem
+      - SSL_KEY_PATH=/hummingbot-api/certs/server.key
     extra_hosts:
       # Map host.docker.internal to host gateway for Linux compatibility
       # On macOS/Windows, Docker Desktop provides this automatically
