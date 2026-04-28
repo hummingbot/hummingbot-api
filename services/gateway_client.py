@@ -267,18 +267,33 @@ class GatewayClient:
             "value": value
         })
 
-    async def get_pools(self, connector: str, network: str) -> List[Dict]:
-        """Get pools for a connector and network"""
-        return await self._request("GET", "pools", params={
-            "connector": connector,
+    async def get_pools(
+        self,
+        chain: str,
+        network: str,
+        connector: Optional[str] = None,
+        pool_type: Optional[str] = None,
+        search: Optional[str] = None
+    ) -> List[Dict]:
+        """Get pools for a chain and network with optional filtering"""
+        params = {
+            "chain": chain,
             "network": network
-        })
+        }
+        if connector:
+            params["connector"] = connector
+        if pool_type:
+            params["type"] = pool_type.lower()
+        if search:
+            params["search"] = search
+        return await self._request("GET", "pools", params=params)
 
     async def add_pool(
         self,
+        chain: str,
+        network: str,
         connector: str,
         pool_type: str,
-        network: str,
         address: str,
         base_symbol: str,
         quote_symbol: str,
@@ -288,6 +303,7 @@ class GatewayClient:
     ) -> Dict:
         """Add a new pool"""
         payload = {
+            "chain": chain,
             "connector": connector,
             "type": pool_type.lower(),  # Gateway expects lowercase (amm, clmm)
             "network": network,
@@ -301,12 +317,17 @@ class GatewayClient:
             payload["feePct"] = fee_pct
         return await self._request("POST", "pools", json=payload)
 
-    async def delete_pool(self, connector: str, network: str, pool_type: str, address: str) -> Dict:
+    async def save_pool(self, chain_network: str, address: str) -> Dict:
+        """Save a pool by address using GeckoTerminal lookup"""
+        return await self._request("POST", f"pools/save/{address}", params={
+            "chainNetwork": chain_network
+        })
+
+    async def delete_pool(self, chain: str, network: str, address: str) -> Dict:
         """Delete a pool from Gateway's pool list"""
         return await self._request("DELETE", f"pools/{address}", params={
-            "connector": connector,
-            "network": network,
-            "type": pool_type.lower()  # Gateway expects lowercase (amm, clmm)
+            "chain": chain,
+            "network": network
         })
 
     async def pool_info(self, connector: str, network: str, pool_address: str) -> Dict:
