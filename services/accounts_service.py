@@ -478,6 +478,7 @@ class AccountsService:
         self._trading_service = None  # TradingService
 
         # Initialize Gateway client
+        self.gateway_base_url = gateway_url
         self.gateway_client = GatewayClient(gateway_url)
 
         # Initialize Gateway transaction poller
