@@ -71,10 +71,12 @@ async def list_controller_configs():
             config_name = config_file.replace('.yml', '')
             try:
                 config = fs_util.read_yaml_file(f"conf/controllers/{config_file}")
+                config["id"] = config_name
                 configs.append(config)
             except Exception as e:
                 # If config is malformed, still include it with basic info
                 configs.append({
+                    "id": config_name,
                     "id": config_name,
                     "controller_name": "error",
                     "controller_type": "error",
@@ -102,9 +104,12 @@ async def get_controller_config(config_name: str):
     """
     try:
         config = fs_util.read_yaml_file(f"conf/controllers/{config_name}.yml")
+        config["id"] = config_name
         return config
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"Configuration '{config_name}' not found")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Configuration '{config_name}' is malformed: {e}")
 
 
 @router.post("/configs/{config_name}", status_code=status.HTTP_201_CREATED)
