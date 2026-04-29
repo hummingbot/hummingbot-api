@@ -8,7 +8,8 @@ from typing import Dict, List, Optional
 from hummingbot.core.event.event_forwarder import SourceInfoEventForwarder
 from hummingbot.core.event.events import OrderBookEvent, OrderBookTradeEvent
 from hummingbot.data_feed.candles_feed.data_types import CandlesConfig
-from starlette.websockets import WebSocket
+from fastapi import WebSocket
+from fastapi.websockets import WebSocketDisconnect
 
 from config import settings
 from services.market_data_service import MarketDataService
@@ -215,6 +216,9 @@ class WebSocketManager:
                             "data": last_record,
                             "timestamp": time.time(),
                         })
+                except (WebSocketDisconnect, RuntimeError):
+                    logger.info(f"WebSocket disconnected, stopping candles push [{sub.subscription_id}]")
+                    break
                 except Exception as e:
                     logger.error(f"Candles push error [{sub.subscription_id}]: {e}")
         except asyncio.CancelledError:
@@ -245,6 +249,9 @@ class WebSocketManager:
                         "data": {"bids": bids, "asks": asks},
                         "timestamp": time.time(),
                     })
+                except (WebSocketDisconnect, RuntimeError):
+                    logger.info(f"WebSocket disconnected, stopping order book push [{sub.subscription_id}]")
+                    break
                 except Exception as e:
                     logger.error(f"Order book push error [{sub.subscription_id}]: {e}")
         except asyncio.CancelledError:
@@ -298,6 +305,9 @@ class WebSocketManager:
                         "data": trades,
                         "timestamp": time.time(),
                     })
+                except (WebSocketDisconnect, RuntimeError):
+                    logger.info(f"WebSocket disconnected, stopping trades push [{sub.subscription_id}]")
+                    break
                 except Exception as e:
                     logger.error(f"Trades push error [{sub.subscription_id}]: {e}")
         except asyncio.CancelledError:

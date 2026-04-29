@@ -22,7 +22,7 @@ from hummingbot.client.settings import AllConnectorSettings
 from hummingbot.connector.connector_base import ConnectorBase
 from hummingbot.connector.connector_metrics_collector import TradeVolumeMetricCollector
 from hummingbot.connector.exchange_py_base import ExchangePyBase
-from hummingbot.connector.gateway.gateway import Gateway
+from hummingbot.connector.gateway.gateway_base import GatewayBase as Gateway
 from hummingbot.connector.perpetual_derivative_py_base import PerpetualDerivativePyBase
 from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, TradeType
 from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderState

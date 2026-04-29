@@ -16,6 +16,7 @@ from fastapi import WebSocket
 
 from services.executor_service import ExecutorService
 from services.market_data_service import MarketDataService
+from services.bots_orchestrator import BotsOrchestrator
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,8 @@ SUBSCRIPTION_TYPES = {
     "performance",
     "positions",
     "executor_logs",
+    "bot_status",
+    "all_bots_status",
 }
 
 
@@ -47,6 +50,9 @@ class ExecutorSubscription:
 
     # For executor_detail / executor_logs
     executor_id: Optional[str] = None
+
+    # For bot_status
+    bot_name: Optional[str] = None
 
     # For performance / positions
     controller_id: Optional[str] = None
@@ -87,9 +93,11 @@ class ExecutorWebSocketManager:
         self,
         executor_service: ExecutorService,
         market_data_service: MarketDataService,
+        bots_orchestrator: Optional[BotsOrchestrator] = None,
     ):
         self._executor_service = executor_service
         self._market_data_service = market_data_service
+        self._bots_orchestrator = bots_orchestrator
         # conn_id -> {sub_id -> ExecutorSubscription}
         self._subscriptions: Dict[str, Dict[str, ExecutorSubscription]] = {}
 
@@ -152,6 +160,23 @@ class ExecutorWebSocketManager:
             sub.log_level = msg.get("level")
             sub.log_limit = msg.get("limit", 100)
             sub.sub_id = f"executor_logs_{executor_id}"
+
+        elif sub_type == "bot_status":
+            bot_name = msg.get("bot_name")
+            if not bot_name:
+                await self._send_error(websocket, "bot_status requires 'bot_name'")
+                return
+            if not self._bots_orchestrator:
+                await self._send_error(websocket, "Bot orchestrator not available")
+                return
+            sub.bot_name = bot_name
+            sub.sub_id = f"bot_status_{bot_name}"
+
+        elif sub_type == "all_bots_status":
+            if not self._bots_orchestrator:
+                await self._send_error(websocket, "Bot orchestrator not available")
+                return
+            sub.sub_id = "all_bots_status"
 
         # Cancel existing subscription with same ID for this connection
         conn_subs = self._subscriptions.setdefault(conn_id, {})
@@ -222,6 +247,8 @@ class ExecutorWebSocketManager:
             "performance": self._performance_push_loop,
             "positions": self._positions_push_loop,
             "executor_logs": self._logs_push_loop,
+            "bot_status": self._bot_status_push_loop,
+            "all_bots_status": self._all_bots_status_push_loop,
         }[sub_type]
 
     # ------------------------------------------------------------------
@@ -429,6 +456,69 @@ class ExecutorWebSocketManager:
                         })
                 except Exception as e:
                     logger.error(f"[WS-Exec] logs push error: {e}", exc_info=True)
+                await asyncio.sleep(sub.update_interval)
+        except asyncio.CancelledError:
+            pass
+
+    async def _bot_status_push_loop(
+        self, conn_id: str, websocket: WebSocket, sub: ExecutorSubscription
+    ) -> None:
+        """Poll get_bot_status() for a single bot and push on change (no logs)."""
+        try:
+            while True:
+                try:
+                    raw_status = self._bots_orchestrator.get_bot_status(sub.bot_name)
+                    # Strip logs — only send status, performance, custom_info
+                    payload = {
+                        "bot_name": sub.bot_name,
+                        "status": raw_status.get("status"),
+                        "performance": raw_status.get("performance", {}),
+                        "recently_active": raw_status.get("recently_active", False),
+                    }
+                    h = _compute_hash(payload)
+                    if h != sub.last_sent_hash:
+                        sub.last_sent_hash = h
+                        await websocket.send_json({
+                            "type": "bot_status",
+                            "subscription_id": sub.sub_id,
+                            "data": payload,
+                            "timestamp": time.time(),
+                        })
+                except Exception as e:
+                    logger.error(f"[WS-Exec] bot_status push error: {e}", exc_info=True)
+                await asyncio.sleep(sub.update_interval)
+        except asyncio.CancelledError:
+            pass
+
+    async def _all_bots_status_push_loop(
+        self, conn_id: str, websocket: WebSocket, sub: ExecutorSubscription
+    ) -> None:
+        """Poll get_all_bots_status() and push on change (no logs)."""
+        try:
+            while True:
+                try:
+                    raw = self._bots_orchestrator.get_all_bots_status()
+                    # Strip logs from each bot
+                    payload = {}
+                    for bot_name, bot_data in raw.items():
+                        payload[bot_name] = {
+                            "status": bot_data.get("status"),
+                            "source": bot_data.get("source"),
+                            "performance": bot_data.get("performance", {}),
+                            "recently_active": bot_data.get("recently_active", False),
+                        }
+                    h = _compute_hash(payload)
+                    if h != sub.last_sent_hash:
+                        sub.last_sent_hash = h
+                        await websocket.send_json({
+                            "type": "all_bots_status",
+                            "subscription_id": sub.sub_id,
+                            "data": payload,
+                            "bot_count": len(payload),
+                            "timestamp": time.time(),
+                        })
+                except Exception as e:
+                    logger.error(f"[WS-Exec] all_bots_status push error: {e}", exc_info=True)
                 await asyncio.sleep(sub.update_interval)
         except asyncio.CancelledError:
             pass

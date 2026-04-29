@@ -178,6 +178,8 @@ async def executors_websocket(websocket: WebSocket) -> None:
         - performance: performance report (optionally per controller)
         - positions: held positions with unrealized PnL
         - executor_logs: streaming log entries for an executor
+        - bot_status: single bot status with performance & custom_info (requires bot_name)
+        - all_bots_status: all active bots status with performance & custom_info
     """
     await websocket.accept()
 
