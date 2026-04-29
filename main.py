@@ -273,7 +273,7 @@ async def lifespan(app: FastAPI):
     app.state.bot_archiver = bot_archiver
 
     # WebSocket manager for executor streaming
-    executor_ws_manager = ExecutorWebSocketManager(executor_service, market_data_service)
+    executor_ws_manager = ExecutorWebSocketManager(executor_service, market_data_service, bots_orchestrator)
     app.state.executor_ws_manager = executor_ws_manager
 
     logging.info("All services started successfully")
