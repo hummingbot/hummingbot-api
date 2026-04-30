@@ -6,6 +6,7 @@ from pydantic import Field, field_validator
 from pydantic_core.core_schema import ValidationInfo
 
 from hummingbot.core.data_type.common import MarketDict, OrderType, PositionMode, PriceType, TradeType
+from hummingbot.data_feed.candles_feed.data_types import CandlesConfig
 from hummingbot.strategy_v2.controllers.controller_base import ControllerBase, ControllerConfigBase
 from hummingbot.strategy_v2.executors.data_types import ConnectorPair
 from hummingbot.strategy_v2.executors.position_executor.data_types import PositionExecutorConfig, TripleBarrierConfig
@@ -20,6 +21,7 @@ class PMMisterConfig(ControllerConfigBase):
     """
     controller_type: str = "generic"
     controller_name: str = "pmm_mister"
+    candles_config: List[CandlesConfig] = []
     connector_name: str = Field(default="binance")
     trading_pair: str = Field(default="BTC-USDT")
     portfolio_allocation: Decimal = Field(default=Decimal("0.1"), json_schema_extra={"is_updatable": True})
