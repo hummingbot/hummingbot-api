@@ -8,6 +8,11 @@
 
 set -euo pipefail
 
+CERTS_ONLY=false
+if [[ "${1:-}" == "--certs-only" ]]; then
+  CERTS_ONLY=true
+fi
+
 echo "Hummingbot API Setup"
 echo ""
 
@@ -19,6 +24,98 @@ DOCKER_ALREADY_PRESENT=false
 COMPOSE_ALREADY_PRESENT=false
 
 has_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+prompt_tty() {
+  local message="$1"
+  local default_value="${2:-}"
+  local value=""
+  if [[ -c /dev/tty ]] && [[ -r /dev/tty ]]; then
+    read -p "$message" value < /dev/tty
+  else
+    read -p "$message" value
+  fi
+  echo "${value:-$default_value}"
+}
+
+prompt_yes_no() {
+  local message="$1"
+  local default_value="${2:-n}"
+  local value
+  value="$(prompt_tty "$message" "$default_value")"
+  [[ "$value" =~ ^[Yy]$ ]]
+}
+
+ensure_openssl() {
+  if has_cmd openssl; then
+    return 0
+  fi
+
+  if is_linux && has_cmd apt-get; then
+    need_sudo_or_die
+    echo "[INFO] Installing openssl..."
+    safe_apt_update
+    sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y openssl
+    return 0
+  fi
+
+  echo "[WARN] openssl is not available. HTTPS cert generation will be skipped."
+  return 1
+}
+
+generate_ssl_bundle() {
+  local certs_dir="$SCRIPT_DIR/certs"
+  local ca_key="$certs_dir/ca.key"
+  local ca_pem="$certs_dir/ca.pem"
+  local server_key="$certs_dir/server.key"
+  local server_csr="$certs_dir/server.csr"
+  local server_pem="$certs_dir/server.pem"
+  local server_ext="$certs_dir/server-ext.cnf"
+  local client_key="$certs_dir/client.key"
+  local client_csr="$certs_dir/client.csr"
+  local client_pem="$certs_dir/client.pem"
+  local serial_file="$certs_dir/ca.srl"
+  local host="$1"
+  local generate_mtls="$2"
+
+  mkdir -p "$certs_dir"
+
+  openssl genrsa -out "$ca_key" 4096 >/dev/null 2>&1
+  openssl req -x509 -new -nodes -key "$ca_key" -sha256 -days 3650 \
+    -out "$ca_pem" -subj "/CN=Hummingbot Local CA" >/dev/null 2>&1
+
+  # Build a SAN extension file for the server cert. Modern TLS clients
+  # (and Python 3.12+ ssl) require a Subject Alternative Name; CN-only
+  # certs produce CertificateError at hostname verification time.
+  {
+    echo "subjectAltName = @alt_names"
+    echo "[alt_names]"
+    if [[ "$host" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      echo "IP.1 = $host"
+      echo "DNS.1 = localhost"
+      echo "IP.2 = 127.0.0.1"
+    else
+      echo "DNS.1 = $host"
+      if [[ "$host" != "localhost" ]]; then
+        echo "DNS.2 = localhost"
+      fi
+      echo "IP.1 = 127.0.0.1"
+    fi
+  } > "$server_ext"
+
+  openssl genrsa -out "$server_key" 2048 >/dev/null 2>&1
+  openssl req -new -key "$server_key" -out "$server_csr" -subj "/CN=$host" >/dev/null 2>&1
+  openssl x509 -req -in "$server_csr" -CA "$ca_pem" -CAkey "$ca_key" -CAcreateserial \
+    -out "$server_pem" -days 825 -sha256 -extfile "$server_ext" >/dev/null 2>&1
+
+  if [[ "$generate_mtls" == "true" ]]; then
+    openssl genrsa -out "$client_key" 2048 >/dev/null 2>&1
+    openssl req -new -key "$client_key" -out "$client_csr" -subj "/CN=condor-client" >/dev/null 2>&1
+    openssl x509 -req -in "$client_csr" -CA "$ca_pem" -CAkey "$ca_key" -CAserial "$serial_file" \
+      -out "$client_pem" -days 825 -sha256 >/dev/null 2>&1
+  fi
+
+  rm -f "$server_csr" "$client_csr" "$server_ext"
+}
 
 resolve_script_dir() {
   local src="${BASH_SOURCE[0]}"
@@ -305,35 +402,37 @@ pull_hummingbot_image() {
 # --------------------------
 echo "[INFO] OS=${OS} ARCH=${ARCH}"
 
-if is_linux; then
-  install_linux_build_deps
+if [ "$CERTS_ONLY" = false ]; then
+  if is_linux; then
+    install_linux_build_deps
+  fi
+
+  ensure_docker_and_compose
+
+  # Show summary of what was done
+  echo ""
+  if [ "$DOCKER_ALREADY_PRESENT" = true ] && [ "$COMPOSE_ALREADY_PRESENT" = true ]; then
+    echo "[OK] All dependencies were already installed. No changes made."
+  elif [ "$DOCKER_ALREADY_PRESENT" = true ]; then
+    echo "[OK] Docker was already installed. Docker Compose has been set up."
+  elif [ "$COMPOSE_ALREADY_PRESENT" = true ]; then
+    echo "[OK] Docker has been installed. Docker Compose was already available."
+  else
+    echo "[OK] Docker and Docker Compose have been installed."
+  fi
+
+  echo ""
+
+  # Always pull latest Hummingbot image (first install and upgrade)
+  pull_hummingbot_image
+
+  echo ""
 fi
-
-ensure_docker_and_compose
-
-# Show summary of what was done
-echo ""
-if [ "$DOCKER_ALREADY_PRESENT" = true ] && [ "$COMPOSE_ALREADY_PRESENT" = true ]; then
-  echo "[OK] All dependencies were already installed. No changes made."
-elif [ "$DOCKER_ALREADY_PRESENT" = true ]; then
-  echo "[OK] Docker was already installed. Docker Compose has been set up."
-elif [ "$COMPOSE_ALREADY_PRESENT" = true ]; then
-  echo "[OK] Docker has been installed. Docker Compose was already available."
-else
-  echo "[OK] Docker and Docker Compose have been installed."
-fi
-
-echo ""
-
-# Always pull latest Hummingbot image (first install and upgrade)
-pull_hummingbot_image
-
-echo ""
 
 # --------------------------
 # Existing .env creation flow
 # --------------------------
-if [ -f ".env" ]; then
+if [ "$CERTS_ONLY" = false ] && [ -f ".env" ]; then
   echo ".env file already exists. Skipping setup."
   echo ""
   
@@ -358,26 +457,83 @@ echo "Hummingbot API Setup"
 echo ""
 
 # Use /dev/tty for prompts to work correctly when called from parent scripts
-if [[ -c /dev/tty ]] && [[ -r /dev/tty ]]; then
-  read -p "API username [default: admin]: " USERNAME < /dev/tty
+if [ "$CERTS_ONLY" = false ]; then
+  USERNAME="$(prompt_tty "API username [default: admin]: " "admin")"
+  PASSWORD="$(prompt_tty "API password [default: admin]: " "admin")"
+  CONFIG_PASSWORD="$(prompt_tty "Config password [default: admin]: " "admin")"
 else
-  read -p "API username [default: admin]: " USERNAME
+  USERNAME="${USERNAME:-admin}"
+  PASSWORD="${PASSWORD:-admin}"
+  CONFIG_PASSWORD="${CONFIG_PASSWORD:-admin}"
 fi
-USERNAME=${USERNAME:-admin}
 
-if [[ -c /dev/tty ]] && [[ -r /dev/tty ]]; then
-  read -p "API password [default: admin]: " PASSWORD < /dev/tty
-else
-  read -p "API password [default: admin]: " PASSWORD
-fi
-PASSWORD=${PASSWORD:-admin}
+SSL_ENABLED=false
+SSL_PORT=8443
+SSL_HOST=localhost
+SSL_CERT_PATH="$SCRIPT_DIR/certs/server.pem"
+SSL_KEY_PATH="$SCRIPT_DIR/certs/server.key"
+SSL_CA_PATH="$SCRIPT_DIR/certs/ca.pem"
+SSL_CLIENT_CERT_PATH="$SCRIPT_DIR/certs/client.pem"
+SSL_CLIENT_KEY_PATH="$SCRIPT_DIR/certs/client.key"
+SSL_GENERATE_MTLS=false
 
-if [[ -c /dev/tty ]] && [[ -r /dev/tty ]]; then
-  read -p "Config password [default: admin]: " CONFIG_PASSWORD < /dev/tty
-else
-  read -p "Config password [default: admin]: " CONFIG_PASSWORD
+if prompt_yes_no "Enable HTTPS cert generation for Hummingbot API? [y/N]: " "n"; then
+  if ensure_openssl; then
+    SSL_ENABLED=true
+    SSL_PORT="$(prompt_tty "HTTPS port [default: 8443]: " "8443")"
+    SSL_HOST="$(prompt_tty "Certificate hostname/CN [default: localhost]: " "localhost")"
+    if prompt_yes_no "Generate client certificate pair for mTLS as well? [y/N]: " "n"; then
+      SSL_GENERATE_MTLS=true
+    fi
+    echo "[INFO] Generating SSL certificates under $SCRIPT_DIR/certs ..."
+    generate_ssl_bundle "$SSL_HOST" "$SSL_GENERATE_MTLS"
+    echo "[OK] Certificates generated."
+  fi
 fi
-CONFIG_PASSWORD=${CONFIG_PASSWORD:-admin}
+
+_upsert_env_var() {
+  # Replace or append "KEY=VALUE" in $1 (env file).
+  local file="$1"
+  local key="$2"
+  local value="$3"
+  if grep -q "^${key}=" "$file" 2>/dev/null; then
+    # Use a delimiter unlikely to appear in paths; '|' is safer than '/'.
+    local tmp
+    tmp="$(mktemp)"
+    awk -v k="$key" -v v="$value" '
+      BEGIN { FS=OFS="=" }
+      $1 == k { print k "=" v; next }
+      { print }
+    ' "$file" > "$tmp" && mv "$tmp" "$file"
+  else
+    echo "${key}=${value}" >> "$file"
+  fi
+}
+
+if [ "$CERTS_ONLY" = true ]; then
+  if [ "$SSL_ENABLED" = true ]; then
+    if [ -f ".env" ]; then
+      _upsert_env_var ".env" "SSL_ENABLED" "$SSL_ENABLED"
+      _upsert_env_var ".env" "SSL_PORT" "$SSL_PORT"
+      _upsert_env_var ".env" "SSL_CERT_PATH" "$SSL_CERT_PATH"
+      _upsert_env_var ".env" "SSL_KEY_PATH" "$SSL_KEY_PATH"
+      _upsert_env_var ".env" "SSL_CA_PATH" "$SSL_CA_PATH"
+      _upsert_env_var ".env" "SSL_CLIENT_CERT_PATH" "$SSL_CLIENT_CERT_PATH"
+      _upsert_env_var ".env" "SSL_CLIENT_KEY_PATH" "$SSL_CLIENT_KEY_PATH"
+      echo "[OK] Updated .env with new SSL settings."
+    fi
+    echo ""
+    echo "Certificate paths (copy into Condor config):"
+    echo "  CA bundle:      $SSL_CA_PATH"
+    echo "  Server cert:    $SSL_CERT_PATH"
+    echo "  Server key:     $SSL_KEY_PATH"
+    if [ "$SSL_GENERATE_MTLS" = true ]; then
+      echo "  Client cert:    $SSL_CLIENT_CERT_PATH"
+      echo "  Client key:     $SSL_CLIENT_KEY_PATH"
+    fi
+  fi
+  exit 0
+fi
 
 cat > .env << EOF
 # Hummingbot API Configuration
@@ -399,6 +555,15 @@ DATABASE_URL=postgresql+asyncpg://hbot:hummingbot-api@localhost:5432/hummingbot_
 GATEWAY_URL=http://localhost:15888
 GATEWAY_PASSPHRASE=admin
 
+# HTTPS (optional)
+SSL_ENABLED=$SSL_ENABLED
+SSL_PORT=$SSL_PORT
+SSL_CERT_PATH=$SSL_CERT_PATH
+SSL_KEY_PATH=$SSL_KEY_PATH
+SSL_CA_PATH=$SSL_CA_PATH
+SSL_CLIENT_CERT_PATH=$SSL_CLIENT_CERT_PATH
+SSL_CLIENT_KEY_PATH=$SSL_CLIENT_KEY_PATH
+
 # Paths
 BOTS_PATH=$(pwd)
 EOF
@@ -416,4 +581,16 @@ echo ""
 echo "Option 2: Run API locally (dev mode)"
 echo "  make install   # Creates the conda environment - Note: Please install the latest Anaconda version manually"
 echo "  make run       # Run API"
+echo "  make run-https # Run API with generated HTTPS certs (if enabled)"
+if [ "$SSL_ENABLED" = true ]; then
+  echo ""
+  echo "HTTPS cert paths for Condor:"
+  echo "  CA bundle:   $SSL_CA_PATH"
+  echo "  Server cert: $SSL_CERT_PATH"
+  echo "  Server key:  $SSL_KEY_PATH"
+  if [ "$SSL_GENERATE_MTLS" = true ]; then
+    echo "  Client cert: $SSL_CLIENT_CERT_PATH"
+    echo "  Client key:  $SSL_CLIENT_KEY_PATH"
+  fi
+fi
 echo ""

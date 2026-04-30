@@ -399,3 +399,33 @@ async def root():
         "version": VERSION,
         "status": "running",
     }
+
+
+if __name__ == "__main__":
+    # Container entry point: switch between HTTP and HTTPS based on SSL_ENABLED.
+    # Local dev uses uvicorn CLI directly via `make run` / `make run-https`.
+    import os
+    import sys
+
+    import uvicorn
+
+    if os.getenv("SSL_ENABLED", "false").lower() == "true":
+        cert = os.getenv("SSL_CERT_PATH", "/hummingbot-api/certs/server.pem")
+        key = os.getenv("SSL_KEY_PATH", "/hummingbot-api/certs/server.key")
+        port = int(os.getenv("SSL_PORT", "8443"))
+        if not os.path.isfile(cert) or not os.path.isfile(key):
+            sys.stderr.write(
+                "ERROR: SSL_ENABLED=true but cert/key not found:\n"
+                f"  cert: {cert}\n  key:  {key}\n"
+                "Run 'make generate-certs' and ensure the certs dir is mounted.\n"
+            )
+            sys.exit(1)
+        uvicorn.run(
+            "main:app",
+            host="0.0.0.0",
+            port=port,
+            ssl_certfile=cert,
+            ssl_keyfile=key,
+        )
+    else:
+        uvicorn.run("main:app", host="0.0.0.0", port=8000)

@@ -21,8 +21,11 @@ That's it! The API is now running at http://localhost:8000
 | `make deploy` | Start all services (API, PostgreSQL, EMQX) |
 | `make stop` | Stop all services |
 | `make run` | Run API locally in dev mode |
+| `make run-https` | Run API locally with HTTPS cert/key |
 | `make install` | Install conda environment for development |
 | `make build` | Build Docker image |
+| `make generate-certs` | Interactive SSL cert generation helper |
+| `make show-certs` | Show SSL cert paths and whether files exist |
 
 ## Services
 
@@ -95,6 +98,109 @@ GATEWAY_URL=...             # Gateway URL (for DEX)
 ```
 
 Edit `.env` and restart with `make deploy` to apply changes.
+
+## HTTPS / SSL Setup
+
+By default, `hummingbot-api` runs on HTTP (`http://localhost:8000`). To expose HTTPS, generate certs and either run locally with `make run-https` or deploy via Docker with `SSL_ENABLED=true` in `.env`.
+
+### Automated setup (recommended)
+
+Use the built-in interactive flow:
+
+```bash
+make generate-certs
+```
+
+This will:
+- prompt whether to enable HTTPS
+- generate CA + server cert/key under `./certs` (with proper SAN entries)
+- optionally generate client cert/key for mTLS
+- update `.env` with `SSL_ENABLED=true` and the cert paths
+- print the exact paths to copy into Condor config
+
+Then run either:
+
+```bash
+make run-https     # local conda dev mode
+make deploy        # Docker (reads SSL_ENABLED from .env)
+```
+
+### Docker HTTPS
+
+When `SSL_ENABLED=true` is set in `.env`, `make deploy` will:
+- mount `./certs` into the container (read-only)
+- listen on `${SSL_PORT}` (default 8443) with TLS instead of port 8000
+- read certs from `/hummingbot-api/certs/server.pem` / `server.key` (paths inside the container)
+
+### Run on custom HTTPS port (local)
+
+```bash
+uvicorn main:app --host 0.0.0.0 --port 8443 \
+  --ssl-certfile /path/to/server.pem \
+  --ssl-keyfile /path/to/server.key
+```
+
+Then your API is available at `https://<host>:8443`.
+
+### Generate local certificates (OpenSSL quickstart)
+
+Use this for local/dev self-signed CA workflows. **Note:** modern TLS clients (and Python 3.12+) require a `subjectAltName` extension — CN-only certs will fail hostname verification. The example below adds SAN.
+
+```bash
+# Local CA
+openssl genrsa -out ca.key 4096
+openssl req -x509 -new -nodes -key ca.key -sha256 -days 3650 \
+  -out ca.pem -subj "/CN=Hummingbot Local CA"
+
+# SAN extension config for the server cert
+cat > server-ext.cnf <<'EOF'
+subjectAltName = @alt_names
+[alt_names]
+DNS.1 = localhost
+IP.1  = 127.0.0.1
+EOF
+
+# Server cert for API host (example: localhost)
+openssl genrsa -out server.key 2048
+openssl req -new -key server.key -out server.csr -subj "/CN=localhost"
+openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial \
+  -out server.pem -days 825 -sha256 -extfile server-ext.cnf
+rm server-ext.cnf server.csr
+```
+
+### Optional mTLS (client certificate auth)
+
+If your deployment requires mTLS, generate a client cert/key signed by the same CA:
+
+```bash
+openssl genrsa -out client.key 2048
+openssl req -new -key client.key -out client.csr -subj "/CN=condor-client"
+openssl x509 -req -in client.csr -CA ca.pem -CAkey ca.key -CAcreateserial \
+  -out client.pem -days 825 -sha256
+```
+
+You can then configure Condor with:
+- `ca_bundle_path` -> `ca.pem`
+- `client_cert_path` -> `client.pem`
+- `client_key_path` -> `client.key`
+
+### Connect Condor to HTTPS API
+
+In Condor `config.yml`:
+
+```yaml
+servers:
+  production:
+    host: api.example.com
+    port: 8443
+    protocol: https
+    tls_verify: true
+    ca_bundle_path: /path/to/ca.pem
+    client_cert_path: /path/to/client.pem     # optional (mTLS)
+    client_key_path: /path/to/client.key      # optional (mTLS)
+    username: admin
+    password: strong_password
+```
 
 ## API Features
 
