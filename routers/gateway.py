@@ -234,7 +234,7 @@ async def update_connector_config(
 
         return {
             "success": True,
-            "message": f"Updated {len(results)} config parameter(s) for {connector_name}. Restart Gateway for changes to take effect.",
+            "message": f"Updated {len(results)} config param(s) for {connector_name}. Restart Gateway.",
             "restart_required": True,
             "restart_endpoint": "POST /gateway/restart",
             "results": results
@@ -271,28 +271,32 @@ async def list_chains(accounts_service: AccountsService = Depends(get_accounts_s
 
 
 # ============================================
-# Pools
+# Pools (Legacy - use /networks/{network_id}/pools instead)
 # ============================================
 
-@router.get("/pools")
-async def list_pools(
+@router.get("/pools", deprecated=True)
+async def list_pools_legacy(
     connector_name: str = Query(description="DEX connector (e.g., 'meteora', 'raydium')"),
     network: str = Query(description="Network (e.g., 'mainnet-beta')"),
     accounts_service: AccountsService = Depends(get_accounts_service)
 ) -> List[Dict]:
     """
-    List all liquidity pools for a connector and network.
+    [DEPRECATED] Use GET /gateway/networks/{network_id}/pools instead.
 
-    Returns normalized data with snake_case fields and trading_pair.
+    List all liquidity pools for a connector and network.
     """
     try:
         if not await accounts_service.gateway_client.ping():
             raise HTTPException(status_code=503, detail="Gateway service is not available")
 
-        pools = await accounts_service.gateway_client.get_pools(connector_name, network)
+        # Determine chain from connector (legacy behavior)
+        # This is a simple mapping - in production, you'd want to look this up
+        chain = "solana" if connector_name in ["raydium", "meteora", "orca", "pancakeswap-sol"] else "ethereum"
+
+        pools = await accounts_service.gateway_client.get_pools(chain, network, connector=connector_name)
 
         if not pools:
-            raise HTTPException(status_code=400, detail=f"No pools found for {connector_name}/{network}")
+            return []
 
         # Normalize each pool
         normalized_pools = [normalize_gateway_response(pool) for pool in pools]
@@ -302,102 +306,6 @@ async def list_pools(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting pools: {str(e)}")
-
-
-@router.post("/pools")
-async def add_pool(
-    pool_request: AddPoolRequest,
-    accounts_service: AccountsService = Depends(get_accounts_service)
-) -> Dict:
-    """
-    Add a custom liquidity pool.
-
-    Args:
-        pool_request: Pool details (connector, type, network, base, quote, address)
-    """
-    try:
-        if not await accounts_service.gateway_client.ping():
-            raise HTTPException(status_code=503, detail="Gateway service is not available")
-
-        result = await accounts_service.gateway_client.add_pool(
-            connector=pool_request.connector_name,
-            pool_type=pool_request.type,
-            network=pool_request.network,
-            address=pool_request.address,
-            base_symbol=pool_request.base,
-            quote_symbol=pool_request.quote,
-            base_token_address=pool_request.base_address,
-            quote_token_address=pool_request.quote_address,
-            fee_pct=pool_request.fee_pct
-        )
-
-        if result is None:
-            raise HTTPException(status_code=502, detail="Failed to add pool: Gateway returned no response")
-
-        if "error" in result:
-            status = result.get("status", 400)
-            raise HTTPException(status_code=status, detail=f"Failed to add pool: {result.get('error')}")
-
-        trading_pair = f"{pool_request.base}-{pool_request.quote}"
-        return {
-            "message": f"Pool {trading_pair} added to {pool_request.connector_name}/{pool_request.network}",
-            "trading_pair": trading_pair
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error adding pool: {str(e)}")
-
-
-@router.delete("/pools/{address}")
-async def delete_pool(
-    address: str,
-    connector_name: str = Query(description="DEX connector (e.g., 'meteora', 'raydium', 'uniswap')"),
-    network: str = Query(description="Network name (e.g., 'mainnet-beta', 'mainnet')"),
-    pool_type: str = Query(description="Pool type (e.g., 'clmm', 'amm')"),
-    accounts_service: AccountsService = Depends(get_accounts_service)
-) -> Dict:
-    """
-    Delete a liquidity pool from Gateway's pool list.
-
-    Args:
-        address: Pool contract address to remove
-        connector_name: DEX connector (e.g., 'meteora', 'raydium', 'uniswap')
-        network: Network name (e.g., 'mainnet-beta', 'mainnet')
-        pool_type: Pool type (e.g., 'clmm', 'amm')
-
-    Example: DELETE /gateway/pools/2sf5NYcY...?connector_name=meteora&network=mainnet-beta&pool_type=clmm
-    """
-    try:
-        if not await accounts_service.gateway_client.ping():
-            raise HTTPException(status_code=503, detail="Gateway service is not available")
-
-        result = await accounts_service.gateway_client.delete_pool(
-            connector=connector_name,
-            network=network,
-            pool_type=pool_type,
-            address=address
-        )
-
-        if result is None:
-            raise HTTPException(status_code=400, detail="Failed to delete pool - no response from Gateway")
-
-        if "error" in result:
-            raise HTTPException(status_code=400, detail=f"Failed to delete pool: {result.get('error')}")
-
-        return {
-            "success": True,
-            "message": f"Pool {address} deleted from {connector_name}/{network}",
-            "pool_address": address,
-            "connector": connector_name,
-            "network": network
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error deleting pool: {str(e)}")
 
 
 # ============================================
@@ -499,7 +407,7 @@ async def update_network_config(
 
         return {
             "success": True,
-            "message": f"Updated {len(results)} config parameter(s) for {network_id}. Restart Gateway for changes to take effect.",
+            "message": f"Updated {len(results)} config parameter(s) for {network_id}. Restart Gateway.",
             "restart_required": True,
             "restart_endpoint": "POST /gateway/restart",
             "results": results
@@ -533,7 +441,7 @@ async def get_network_tokens(
         # Parse network_id into chain and network
         parts = network_id.split('-', 1)
         if len(parts) != 2:
-            raise HTTPException(status_code=400, detail=f"Invalid network_id format. Expected 'chain-network', got '{network_id}'")
+            raise HTTPException(status_code=400, detail=f"Invalid network_id format: '{network_id}'. Use 'chain-network'")
 
         chain, network = parts
         result = await accounts_service.gateway_client.get_tokens(chain, network)
@@ -543,8 +451,8 @@ async def get_network_tokens(
             search_lower = search.lower()
             result["tokens"] = [
                 token for token in result["tokens"]
-                if search_lower in token.get("symbol", "").lower() or
-                   search_lower in token.get("name", "").lower()
+                if (search_lower in token.get("symbol", "").lower() or
+                    search_lower in token.get("name", "").lower())
             ]
 
         return result
@@ -585,7 +493,7 @@ async def add_network_token(
         # Parse network_id into chain and network
         parts = network_id.split('-', 1)
         if len(parts) != 2:
-            raise HTTPException(status_code=400, detail=f"Invalid network_id format. Expected 'chain-network', got '{network_id}'")
+            raise HTTPException(status_code=400, detail=f"Invalid network_id format: '{network_id}'. Use 'chain-network'")
 
         chain, network = parts
 
@@ -644,7 +552,7 @@ async def delete_network_token(
         # Parse network_id into chain and network
         parts = network_id.split('-', 1)
         if len(parts) != 2:
-            raise HTTPException(status_code=400, detail=f"Invalid network_id format. Expected 'chain-network', got '{network_id}'")
+            raise HTTPException(status_code=400, detail=f"Invalid network_id format: '{network_id}'. Use 'chain-network'")
 
         chain, network = parts
 
@@ -668,6 +576,242 @@ async def delete_network_token(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error deleting token: {str(e)}")
+
+
+# ============================================
+# Network Pools
+# ============================================
+
+@router.get("/networks/{network_id}/pools")
+async def get_network_pools(
+    network_id: str,
+    connector: Optional[str] = Query(default=None, description="Filter by connector (e.g., 'raydium', 'meteora')"),
+    pool_type: Optional[str] = Query(default=None, description="Filter by type ('amm' or 'clmm')"),
+    search: Optional[str] = Query(default=None, description="Search by trading pair or address"),
+    accounts_service: AccountsService = Depends(get_accounts_service)
+) -> Dict:
+    """
+    Get available pools for a network.
+
+    Args:
+        network_id: Network ID in format 'chain-network' (e.g., 'solana-mainnet-beta')
+        connector: Optional filter by connector (e.g., 'raydium', 'meteora', 'uniswap')
+        pool_type: Optional filter by type ('amm' or 'clmm')
+        search: Optional search by trading pair (e.g., 'SOL-USDC') or pool address
+
+    Example: GET /gateway/networks/solana-mainnet-beta/pools?connector=raydium&type=clmm
+    """
+    try:
+        if not await accounts_service.gateway_client.ping():
+            raise HTTPException(status_code=503, detail="Gateway service is not available")
+
+        # Parse network_id into chain and network
+        parts = network_id.split('-', 1)
+        if len(parts) != 2:
+            raise HTTPException(status_code=400, detail=f"Invalid network_id format: '{network_id}'. Use 'chain-network'")
+
+        chain, network = parts
+        pools = await accounts_service.gateway_client.get_pools(
+            chain=chain,
+            network=network,
+            connector=connector,
+            pool_type=pool_type,
+            search=search
+        )
+
+        # Normalize each pool
+        normalized_pools = [normalize_gateway_response(pool) for pool in pools] if pools else []
+
+        return {
+            "pools": normalized_pools,
+            "count": len(normalized_pools),
+            "network_id": network_id
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting network pools: {str(e)}")
+
+
+@router.post("/networks/{network_id}/pools")
+async def add_network_pool(
+    network_id: str,
+    pool_request: AddPoolRequest,
+    accounts_service: AccountsService = Depends(get_accounts_service)
+) -> Dict:
+    """
+    Add a custom pool to Gateway's pool list for a specific network.
+
+    Args:
+        network_id: Network ID in format 'chain-network' (e.g., 'solana-mainnet-beta', 'ethereum-mainnet')
+        pool_request: Pool details (connector, type, base, quote, address, etc.)
+
+    Example: POST /gateway/networks/solana-mainnet-beta/pools
+    {
+        "connector_name": "raydium",
+        "type": "clmm",
+        "base": "SOL",
+        "quote": "USDC",
+        "address": "58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2",
+        "base_address": "So11111111111111111111111111111111111111112",
+        "quote_address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "fee_pct": 0.25
+    }
+
+    Note: After adding a pool, restart Gateway for changes to take effect.
+    """
+    try:
+        if not await accounts_service.gateway_client.ping():
+            raise HTTPException(status_code=503, detail="Gateway service is not available")
+
+        # Parse network_id into chain and network
+        parts = network_id.split('-', 1)
+        if len(parts) != 2:
+            raise HTTPException(status_code=400, detail=f"Invalid network_id format: '{network_id}'. Use 'chain-network'")
+
+        chain, network = parts
+
+        result = await accounts_service.gateway_client.add_pool(
+            chain=chain,
+            network=network,
+            connector=pool_request.connector_name,
+            pool_type=pool_request.type,
+            address=pool_request.address,
+            base_symbol=pool_request.base,
+            quote_symbol=pool_request.quote,
+            base_token_address=pool_request.base_address,
+            quote_token_address=pool_request.quote_address,
+            fee_pct=pool_request.fee_pct
+        )
+
+        if result is None:
+            raise HTTPException(status_code=502, detail="Failed to add pool: Gateway returned no response")
+
+        if "error" in result:
+            status = result.get("status", 400)
+            raise HTTPException(status_code=status, detail=f"Failed to add pool: {result.get('error')}")
+
+        trading_pair = f"{pool_request.base}-{pool_request.quote}"
+        return {
+            "success": True,
+            "message": f"Pool {trading_pair} added to {network_id}.",
+            "pool": {
+                "trading_pair": trading_pair,
+                "connector": pool_request.connector_name,
+                "type": pool_request.type,
+                "address": pool_request.address,
+                "network_id": network_id
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error adding pool: {str(e)}")
+
+
+@router.post("/networks/{network_id}/pools/save/{pool_address}")
+async def save_network_pool(
+    network_id: str,
+    pool_address: str,
+    accounts_service: AccountsService = Depends(get_accounts_service)
+) -> Dict:
+    """
+    Save a pool by address using GeckoTerminal lookup.
+    This automatically fetches pool info and token info from GeckoTerminal.
+
+    Args:
+        network_id: Network ID in format 'chain-network' (e.g., 'solana-mainnet-beta')
+        pool_address: Pool contract address
+
+    Example: POST /gateway/networks/solana-mainnet-beta/pools/save/58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2
+
+    Note: This will auto-add any missing tokens to the network's token list.
+    """
+    try:
+        if not await accounts_service.gateway_client.ping():
+            raise HTTPException(status_code=503, detail="Gateway service is not available")
+
+        result = await accounts_service.gateway_client.save_pool(
+            chain_network=network_id,
+            address=pool_address
+        )
+
+        if result is None:
+            raise HTTPException(status_code=502, detail="Failed to save pool: Gateway returned no response")
+
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=f"Failed to save pool: {result.get('error')}")
+
+        pool = result.get("pool", {})
+        tokens_added = result.get("tokensAdded", [])
+
+        return {
+            "success": True,
+            "message": result.get("message", f"Pool saved to {network_id}"),
+            "pool": normalize_gateway_response(pool),
+            "tokens_added": tokens_added,
+            "network_id": network_id
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error saving pool: {str(e)}")
+
+
+@router.delete("/networks/{network_id}/pools/{pool_address}")
+async def delete_network_pool(
+    network_id: str,
+    pool_address: str,
+    accounts_service: AccountsService = Depends(get_accounts_service)
+) -> Dict:
+    """
+    Delete a pool from Gateway's pool list for a specific network.
+
+    Args:
+        network_id: Network ID in format 'chain-network' (e.g., 'solana-mainnet-beta', 'ethereum-mainnet')
+        pool_address: Pool contract address to delete
+
+    Example: DELETE /gateway/networks/solana-mainnet-beta/pools/58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2
+
+    Note: After deleting a pool, restart Gateway for changes to take effect.
+    """
+    try:
+        if not await accounts_service.gateway_client.ping():
+            raise HTTPException(status_code=503, detail="Gateway service is not available")
+
+        # Parse network_id into chain and network
+        parts = network_id.split('-', 1)
+        if len(parts) != 2:
+            raise HTTPException(status_code=400, detail=f"Invalid network_id format: '{network_id}'. Use 'chain-network'")
+
+        chain, network = parts
+
+        result = await accounts_service.gateway_client.delete_pool(
+            chain=chain,
+            network=network,
+            address=pool_address
+        )
+
+        if result is None:
+            raise HTTPException(status_code=400, detail="Failed to delete pool - no response from Gateway")
+
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=f"Failed to delete pool: {result.get('error')}")
+
+        return {
+            "success": True,
+            "message": f"Pool {pool_address} deleted from {network_id}.",
+            "pool_address": pool_address,
+            "network_id": network_id
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error deleting pool: {str(e)}")
 
 
 # ============================================

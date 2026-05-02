@@ -478,6 +478,7 @@ class AccountsService:
         self._trading_service = None  # TradingService
 
         # Initialize Gateway client
+        self.gateway_base_url = gateway_url
         self.gateway_client = GatewayClient(gateway_url)
 
         # Initialize Gateway transaction poller
@@ -607,7 +608,8 @@ class AccountsService:
                 await self._connector_service._update_connector_state(connector, connector_name, account_name)
             except Exception as e:
                 logger.error(f"Error refreshing {connector_name}, using stale data: {e}")
-        return await self._get_connector_tokens_info(connector, connector_name)
+        # skip_balance_refresh=True since _update_connector_state already called _update_balances
+        return await self._get_connector_tokens_info(connector, connector_name, skip_balance_refresh=True)
 
     async def update_account_state_loop(self):
         """
@@ -814,12 +816,24 @@ class AccountsService:
             else:
                 self.accounts_state[account_name][connector_name] = result
 
-    async def _get_connector_tokens_info(self, connector, connector_name: str) -> List[Dict]:
+    async def _get_connector_tokens_info(self, connector, connector_name: str, skip_balance_refresh: bool = False) -> List[Dict]:
         """Get token info from a connector instance using RateOracle cached prices.
 
-        Tries the RateOracle (instant, in-memory) first for each token.
-        Only falls back to a batch exchange call for tokens the oracle can't price.
+        Fetches fresh balances from the exchange, then tries the RateOracle (instant, in-memory)
+        first for each token price. Only falls back to a batch exchange call for tokens the oracle can't price.
+
+        Args:
+            connector: The connector instance
+            connector_name: Name of the connector
+            skip_balance_refresh: If True, skip fetching fresh balances (use when caller already refreshed)
         """
+        # Fetch fresh balances from the exchange unless caller already did
+        if not skip_balance_refresh and hasattr(connector, '_update_balances'):
+            try:
+                await connector._update_balances()
+            except Exception as e:
+                logger.warning(f"Failed to refresh balances for {connector_name}, using cached data: {e}")
+
         balances = [{"token": key, "units": value} for key, value in connector.get_all_balances().items() if
                     value != Decimal("0") and key not in settings.banned_tokens]
 

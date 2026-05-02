@@ -1,10 +1,11 @@
-from pydantic import BaseModel, Field
-from typing import Optional, List
+from typing import List, Optional
 
+from pydantic import BaseModel, Field
 
 # ============================================
 # Container Management Models
 # ============================================
+
 
 class GatewayConfig(BaseModel):
     """Configuration for Gateway container deployment"""
@@ -77,7 +78,10 @@ class AddPoolRequest(BaseModel):
     """Request to add a liquidity pool"""
     connector_name: str = Field(description="DEX connector name (e.g., 'raydium', 'meteora')")
     type: str = Field(description="Pool type ('clmm' or 'amm')")
-    network: str = Field(description="Network name (e.g., 'mainnet-beta')")
+    network: Optional[str] = Field(
+        default=None,
+        description="Network name (e.g., 'mainnet-beta') - optional for /networks/{network_id}/pools"
+    )
     address: str = Field(description="Pool contract address")
     base: str = Field(description="Base token symbol")
     quote: str = Field(description="Quote token symbol")
