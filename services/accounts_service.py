@@ -2015,13 +2015,21 @@ class AccountsService:
         Get all wallets from Gateway. Gateway manages its own encrypted wallets.
 
         Returns:
-            List of wallet information from Gateway
+            List of wallet information from Gateway, with default_address included for each chain
         """
         if not await self.gateway_client.ping():
             raise HTTPException(status_code=503, detail="Gateway service is not available")
 
         try:
             wallets = await self.gateway_client.get_wallets()
+
+            # Enrich with default wallet info for each chain
+            for wallet_group in wallets:
+                chain = wallet_group.get("chain")
+                if chain:
+                    default_wallet = await self.gateway_client.get_default_wallet_address(chain)
+                    wallet_group["default_address"] = default_wallet or ""
+
             return wallets
         except Exception as e:
             logger.error(f"Error getting Gateway wallets: {e}")

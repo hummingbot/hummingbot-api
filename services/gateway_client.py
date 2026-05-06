@@ -68,7 +68,7 @@ class GatewayClient:
                         return {"error": error_body, "status": response.status}
                     return await response.json()
             elif method == "POST":
-                async with session.post(url, json=json) as response:
+                async with session.post(url, params=params, json=json) as response:
                     if not response.ok:
                         error_body = await self._get_error_body(response)
                         logger.warning(f"Gateway request failed: {method} {url} - {response.status} - {error_body}")
@@ -254,6 +254,13 @@ class GatewayClient:
             "chain": chain,
             "network": network
         })
+
+    async def save_token(self, chain: str, network: str, token_address: str) -> Dict:
+        """Save a token by address - auto-fetches info from GeckoTerminal"""
+        chain_network = f"{chain}-{network}"
+        return await self._request("POST", f"tokens/save/{token_address}", params={
+            "chainNetwork": chain_network
+        }, json={})
 
     async def get_config(self, namespace: str) -> Dict:
         """Get configuration for a specific namespace (connector or chain-network)"""

@@ -528,6 +528,63 @@ async def add_network_token(
         raise HTTPException(status_code=500, detail=f"Error adding token: {str(e)}")
 
 
+@router.post("/networks/{network_id}/tokens/save/{token_address}")
+async def save_network_token(
+    network_id: str,
+    token_address: str,
+    accounts_service: AccountsService = Depends(get_accounts_service)
+) -> Dict:
+    """
+    Save a token by address - auto-fetches token info from GeckoTerminal.
+
+    This is the simplest way to add a token. Just provide the address and
+    the API will fetch symbol, name, and decimals automatically.
+
+    Args:
+        network_id: Network ID in format 'chain-network' (e.g., 'solana-mainnet-beta', 'ethereum-mainnet')
+        token_address: Token contract address
+
+    Example: POST /gateway/networks/solana-mainnet-beta/tokens/save/9QFfgxdSqH5zT7j6rZb1y6SZhw2aFtcQu2r6BuYpump
+    """
+    try:
+        if not await accounts_service.gateway_client.ping():
+            raise HTTPException(status_code=503, detail="Gateway service is not available")
+
+        # Parse network_id into chain and network
+        parts = network_id.split('-', 1)
+        if len(parts) != 2:
+            raise HTTPException(status_code=400, detail=f"Invalid network_id format: '{network_id}'. Use 'chain-network'")
+
+        chain, network = parts
+
+        result = await accounts_service.gateway_client.save_token(
+            chain=chain,
+            network=network,
+            token_address=token_address
+        )
+
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=f"Failed to save token: {result.get('error')}")
+
+        token_info = result.get("token", {})
+        return {
+            "success": True,
+            "message": result.get("message", f"Token saved to {network_id}"),
+            "token": {
+                "symbol": token_info.get("symbol"),
+                "address": token_info.get("address", token_address),
+                "decimals": token_info.get("decimals"),
+                "name": token_info.get("name"),
+                "network_id": network_id
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error saving token: {str(e)}")
+
+
 @router.delete("/networks/{network_id}/tokens/{token_address}")
 async def delete_network_token(
     network_id: str,
