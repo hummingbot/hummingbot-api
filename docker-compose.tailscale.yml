@@ -1,0 +1,30 @@
+# Tailscale sidecar overlay — use with:
+#   docker compose -f docker-compose.yml -f docker-compose.tailscale.yml up -d
+#
+# network_mode: host lets the Tailscale daemon create a real tailscale0 interface
+# on the host, making hummingbot-api's port 8000 reachable at the Tailscale IP
+# without exposing it on any public interface.
+#
+# The base docker-compose.yml emqx-bridge network is unaffected — emqx and
+# postgres still communicate with hummingbot-api normally via that bridge.
+
+services:
+  tailscale:
+    image: tailscale/tailscale:latest
+    container_name: hummingbot-tailscale
+    network_mode: host
+    environment:
+      - TS_AUTHKEY=${TAILSCALE_AUTH_KEY}
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_USERSPACE=false
+      - TS_HOSTNAME=${TAILSCALE_HOSTNAME:-hummingbot-api}
+    volumes:
+      - tailscale_state:/var/lib/tailscale
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    restart: unless-stopped
+
+volumes:
+  tailscale_state:

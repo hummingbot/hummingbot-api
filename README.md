@@ -23,6 +23,7 @@ That's it! The API is now running at http://localhost:8000
 | `make run` | Run API locally in dev mode |
 | `make install` | Install conda environment for development |
 | `make build` | Build Docker image |
+| `make tailscale-status` | Show Tailscale connection status |
 
 ## Services
 
@@ -96,6 +97,69 @@ GATEWAY_URL=...             # Gateway URL (for DEX)
 
 Edit `.env` and restart with `make deploy` to apply changes.
 
+## Secure Connection via Tailscale
+
+[Tailscale](https://tailscale.com) creates a private WireGuard network (tailnet) that makes the API accessible only to devices on your tailnet — no open ports, no firewall rules needed.
+
+Use this when running on a VPS or cloud server and want to access the API privately from another machine (e.g. Condor or MCP tools).
+
+### Prerequisites: Get a Tailscale auth key
+
+1. Create a free account at [tailscale.com](https://tailscale.com)
+2. Go to **Settings → Keys**: [tailscale.com/admin/settings/keys](https://tailscale.com/admin/settings/keys)
+3. Click **Generate auth key** — check **Reusable** for multiple deployments
+4. Copy the key (starts with `tskey-auth-`)
+
+### Setup
+
+Run `make setup` and answer `y` when prompted:
+
+> Use Tailscale for secure private networking? [y/N]
+
+This adds the following to `.env`:
+
+```bash
+TAILSCALE_ENABLED=true
+TAILSCALE_AUTH_KEY=tskey-auth-...
+TAILSCALE_HOSTNAME=hummingbot-api   # MagicDNS hostname on your tailnet
+```
+
+### Deploy
+
+```bash
+make deploy
+```
+
+When `TAILSCALE_ENABLED=true`, this automatically runs:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.tailscale.yml up -d
+```
+
+A Tailscale sidecar container joins your tailnet using `network_mode: host`. The API is then reachable at `http://hummingbot-api:8000` from any device on the same tailnet — port 8000 is not exposed publicly.
+
+### Connecting MCP tools via Tailscale
+
+Once on the same tailnet, use the MagicDNS hostname instead of `localhost`:
+
+```bash
+claude mcp add --transport stdio hummingbot -- \
+  docker run --rm -i \
+  -e HUMMINGBOT_API_URL=http://hummingbot-api:8000 \
+  -v hummingbot_mcp:/root/.hummingbot_mcp \
+  hummingbot/hummingbot-mcp:latest
+```
+
+### Dev mode
+
+When `TAILSCALE_ENABLED=true`, `make run` will automatically install Tailscale if needed, connect to your tailnet, and bind uvicorn to `127.0.0.1` only (Tailscale handles external access).
+
+### Check status
+
+```bash
+make tailscale-status
+```
+
 ## API Features
 
 - **Portfolio**: Balances, positions, P&L across all exchanges
@@ -131,6 +195,12 @@ make deploy               # Fresh start
 ```bash
 docker ps | grep hummingbot
 ```
+
+**Tailscale not connecting?**
+```bash
+make tailscale-status     # Check tailnet peers
+```
+Confirm the node appears in `tailscale status` and that MagicDNS is enabled in your Tailscale admin console.
 
 ## Support
 

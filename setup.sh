@@ -20,6 +20,26 @@ COMPOSE_ALREADY_PRESENT=false
 
 has_cmd() { command -v "$1" >/dev/null 2>&1; }
 
+prompt_tty() {
+  local message="$1"
+  local default_value="${2:-}"
+  local value=""
+  if [[ -c /dev/tty ]] && [[ -r /dev/tty ]]; then
+    read -p "$message" value < /dev/tty
+  else
+    read -p "$message" value
+  fi
+  echo "${value:-$default_value}"
+}
+
+prompt_yes_no() {
+  local message="$1"
+  local default_value="${2:-n}"
+  local value
+  value="$(prompt_tty "$message" "$default_value")"
+  [[ "$value" =~ ^[Yy]$ ]]
+}
+
 resolve_script_dir() {
   local src="${BASH_SOURCE[0]}"
   while [ -h "$src" ]; do
@@ -379,6 +399,39 @@ else
 fi
 CONFIG_PASSWORD=${CONFIG_PASSWORD:-admin}
 
+# --------------------------
+# Tailscale Configuration
+# --------------------------
+TAILSCALE_ENABLED=false
+TAILSCALE_AUTH_KEY=""
+TAILSCALE_HOSTNAME="hummingbot-api"
+
+if prompt_yes_no "Use Tailscale for secure private networking? [y/N]: " "n"; then
+  echo ""
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "  How to get a Tailscale auth key:"
+  echo "    1. Create a free account at https://tailscale.com"
+  echo "    2. Go to: https://tailscale.com/admin/settings/keys"
+  echo "    3. Click 'Generate auth key'"
+  echo "    4. Check 'Reusable' for multiple server deployments"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo ""
+  while true; do
+    TAILSCALE_AUTH_KEY="$(prompt_tty "Tailscale auth key (tskey-auth-...): " "")"
+    if [[ -z "$TAILSCALE_AUTH_KEY" ]]; then
+      echo "[WARN] Auth key cannot be empty"
+      continue
+    fi
+    if [[ ! "$TAILSCALE_AUTH_KEY" =~ ^tskey-auth- ]]; then
+      echo "[WARN] Auth key must start with 'tskey-auth-'"
+      continue
+    fi
+    break
+  done
+  # Hostname defaults to "hummingbot-api" — override via TAILSCALE_HOSTNAME in .env if needed
+  TAILSCALE_ENABLED=true
+fi
+
 cat > .env << EOF
 # Hummingbot API Configuration
 USERNAME=$USERNAME
@@ -401,6 +454,11 @@ GATEWAY_PASSPHRASE=admin
 
 # Paths
 BOTS_PATH=$(pwd)
+
+# Tailscale
+TAILSCALE_ENABLED=$TAILSCALE_ENABLED
+TAILSCALE_AUTH_KEY=$TAILSCALE_AUTH_KEY
+TAILSCALE_HOSTNAME=$TAILSCALE_HOSTNAME
 EOF
 
 touch .setup-complete
@@ -415,5 +473,13 @@ echo "  make deploy"
 echo ""
 echo "Option 2: Run API locally (dev mode)"
 echo "  make install   # Creates the conda environment - Note: Please install the latest Anaconda version manually"
-echo "  make run       # Run API"
+echo "  make run       # Run API (installs and connects Tailscale automatically if TAILSCALE_ENABLED=true)"
+if [ "$TAILSCALE_ENABLED" = true ]; then
+  echo ""
+  echo "Tailscale:"
+  echo "  Docker deploy:  Tailscale sidecar starts automatically with 'make deploy'"
+  echo "  Source run:     Tailscale installs and connects automatically with 'make run'"
+  echo "  Condor URL:     http://$TAILSCALE_HOSTNAME:8000"
+  echo "  Status:         make tailscale-status"
+fi
 echo ""
