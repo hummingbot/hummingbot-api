@@ -107,3 +107,14 @@ class GatewayBalanceRequest(BaseModel):
     account_name: str = Field(description="Account name")
     chain: str = Field(description="Blockchain chain")
     tokens: Optional[List[str]] = Field(default=None, description="List of token symbols to query (optional)")
+
+
+# ============================================
+# API Keys Management Models
+# ============================================
+
+class UpdateApiKeysRequest(BaseModel):
+    """Request to update Gateway API keys"""
+    api_keys: dict = Field(
+        description="Dict mapping provider name to API key value (e.g., {'helius': 'abc123', 'infura': 'xyz789'})"
+    )

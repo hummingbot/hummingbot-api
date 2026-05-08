@@ -274,6 +274,31 @@ class GatewayClient:
             "value": value
         })
 
+    async def get_api_keys(self) -> Dict:
+        """Get all configured API keys from Gateway"""
+        return await self._request("GET", "config", params={"namespace": "apiKeys"})
+
+    async def update_api_keys(self, api_keys: Dict[str, str]) -> List[Dict]:
+        """
+        Update API keys in Gateway configuration.
+
+        Args:
+            api_keys: Dict mapping provider name to API key value
+                     (e.g., {"helius": "abc123", "infura": "xyz789"})
+
+        Returns:
+            List of results for each API key update
+        """
+        results = []
+        for provider, api_key in api_keys.items():
+            result = await self._request("POST", "config/update", json={
+                "namespace": "apiKeys",
+                "path": provider,
+                "value": api_key
+            })
+            results.append(result)
+        return results
+
     async def get_pools(
         self,
         chain: str,

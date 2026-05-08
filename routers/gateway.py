@@ -12,6 +12,7 @@ from models import (
     GatewayStatus,
     SendTransactionRequest,
     ShowPrivateKeyRequest,
+    UpdateApiKeysRequest,
 )
 from services.accounts_service import AccountsService
 from services.gateway_service import GatewayService
@@ -244,6 +245,83 @@ async def update_connector_config(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error updating connector config: {str(e)}")
+
+
+# ============================================
+# API Keys
+# ============================================
+
+@router.get("/apiKeys")
+async def get_api_keys(accounts_service: AccountsService = Depends(get_accounts_service)) -> Dict:
+    """
+    Get all configured API keys from Gateway.
+
+    Returns a dict mapping provider name to API key value.
+    Example response:
+    {
+        "helius": "46951ec2-16af-4fc0-a5df-970b0eb925b7",
+        "infura": "920646320ec3463fa1b5235be9fa48d3",
+        "coingecko": "CG-Rw786jTpNmV1MvRrqpDAHR6r",
+        "etherscan": ""
+    }
+    """
+    try:
+        if not await accounts_service.gateway_client.ping():
+            raise HTTPException(status_code=503, detail="Gateway service is not available")
+
+        result = await accounts_service.gateway_client.get_api_keys()
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting API keys: {str(e)}")
+
+
+@router.post("/apiKeys")
+async def update_api_keys(
+    request: UpdateApiKeysRequest,
+    accounts_service: AccountsService = Depends(get_accounts_service)
+) -> Dict:
+    """
+    Update API keys in Gateway configuration.
+
+    Args:
+        request: Contains api_keys dict mapping provider name to API key value
+
+    Example request:
+    {
+        "api_keys": {
+            "helius": "new-api-key-value",
+            "infura": "another-api-key"
+        }
+    }
+
+    Note: After updating API keys, restart Gateway for changes to take effect.
+    """
+    try:
+        if not await accounts_service.gateway_client.ping():
+            raise HTTPException(status_code=503, detail="Gateway service is not available")
+
+        results = await accounts_service.gateway_client.update_api_keys(request.api_keys)
+
+        # Check for any errors in the results
+        errors = [r for r in results if r and "error" in r]
+        if errors:
+            raise HTTPException(status_code=400, detail=f"Failed to update some API keys: {errors}")
+
+        return {
+            "success": True,
+            "message": f"Updated {len(request.api_keys)} API key(s). Restart Gateway for changes to take effect.",
+            "restart_required": True,
+            "restart_endpoint": "POST /gateway/restart",
+            "updated_keys": list(request.api_keys.keys())
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error updating API keys: {str(e)}")
 
 
 # ============================================

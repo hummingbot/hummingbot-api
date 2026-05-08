@@ -87,6 +87,7 @@ from .gateway import (
     SendTransactionRequest,
     SetDefaultWalletRequest,
     ShowPrivateKeyRequest,
+    UpdateApiKeysRequest,
 )
 
 # Gateway Trading models (Swap + CLMM only, AMM removed)
@@ -290,6 +291,7 @@ __all__ = [
     "GatewayBalanceRequest",
     "AddPoolRequest",
     "AddTokenRequest",
+    "UpdateApiKeysRequest",
     # Backtesting models
     "BacktestingConfig",
     # Pagination models
