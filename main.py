@@ -56,15 +56,16 @@ from routers import (  # noqa: E402
     portfolio,
     rate_oracle,
     scripts,
+    storage,
     trading,
     websocket,
 )
 from services.accounts_service import AccountsService  # noqa: E402
+from services.backtesting_service import BacktestingService  # noqa: E402
 from services.bots_orchestrator import BotsOrchestrator  # noqa: E402
 from services.docker_service import DockerService  # noqa: E402
 from services.executor_service import ExecutorService  # noqa: E402
 from services.executor_ws_manager import ExecutorWebSocketManager  # noqa: E402
-from services.backtesting_service import BacktestingService  # noqa: E402
 from services.gateway_service import GatewayService  # noqa: E402
 from services.market_data_service import MarketDataService  # noqa: E402
 from services.trading_service import TradingService  # noqa: E402
@@ -384,6 +385,7 @@ app.include_router(market_data.router, dependencies=[Depends(auth_user)])
 app.include_router(rate_oracle.router, dependencies=[Depends(auth_user)])
 app.include_router(backtesting.router, dependencies=[Depends(auth_user)])
 app.include_router(archived_bots.router, dependencies=[Depends(auth_user)])
+app.include_router(storage.router, dependencies=[Depends(auth_user)])
 
 app.include_router(executors.router, dependencies=[Depends(auth_user)])
 
