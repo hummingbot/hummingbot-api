@@ -22,6 +22,16 @@ run:
 		fi; \
 		if ! tailscale status >/dev/null 2>&1; then \
 			echo "[INFO] Connecting to Tailscale network..."; \
+			if grep -qi microsoft /proc/version 2>/dev/null; then \
+				if ! pgrep -x tailscaled >/dev/null 2>&1; then \
+					echo "[INFO] Starting Tailscale daemon (WSL2)..."; \
+					sudo mkdir -p /var/run/tailscale /var/lib/tailscale; \
+					sudo tailscaled --state=/var/lib/tailscale/tailscaled.state \
+						--socket=/var/run/tailscale/tailscaled.sock \
+						>/dev/null 2>&1 & \
+					sleep 2; \
+				fi; \
+			fi; \
 			sudo tailscale up --authkey="$${TAILSCALE_AUTH_KEY}" --hostname="$${TAILSCALE_HOSTNAME:-hummingbot-api}" --accept-dns=true; \
 		fi; \
 		tailscale serve status 2>/dev/null | grep -q ":8000" || \
