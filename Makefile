@@ -8,42 +8,35 @@ $(SETUP_SENTINEL):
 	chmod +x setup.sh
 	./setup.sh
 
-# Run locally (dev mode)
-# When TAILSCALE_ENABLED=true: installs Tailscale if needed, connects, configures tailscale serve,
-# then binds uvicorn to 127.0.0.1 only (tailscale serve exposes port 8000 on the tailnet)
+# Run locally (dev mode) — Tailscale-aware: reads TAILSCALE_ENABLED from .env
 run:
-	docker compose up emqx postgres -d
 	@set -a; [ -f .env ] && . ./.env; set +a; \
 	if [ "$${TAILSCALE_ENABLED:-false}" = "true" ]; then \
-		echo "[INFO] Tailscale mode: setting up Tailscale for source install..."; \
+		echo "[INFO] Tailscale enabled — checking connection..."; \
 		if ! command -v tailscale >/dev/null 2>&1; then \
-			echo "[INFO] Installing Tailscale..."; \
-			curl -fsSL https://tailscale.com/install.sh | sh; \
+			echo "[ERROR] Tailscale is not installed. Install it or set TAILSCALE_ENABLED=false in .env."; \
+			exit 1; \
+		fi; \
+		if grep -qi microsoft /proc/version 2>/dev/null && ! pgrep -x tailscaled >/dev/null 2>&1; then \
+			echo "[INFO] Starting Tailscale daemon (WSL2)..."; \
+			sudo mkdir -p /var/run/tailscale /var/lib/tailscale; \
+			sudo tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/var/run/tailscale/tailscaled.sock >/dev/null 2>&1 & sleep 2; \
 		fi; \
 		if ! tailscale status >/dev/null 2>&1; then \
-			echo "[INFO] Connecting to Tailscale network..."; \
-			if grep -qi microsoft /proc/version 2>/dev/null; then \
-				if ! pgrep -x tailscaled >/dev/null 2>&1; then \
-					echo "[INFO] Starting Tailscale daemon (WSL2)..."; \
-					sudo mkdir -p /var/run/tailscale /var/lib/tailscale; \
-					sudo tailscaled --state=/var/lib/tailscale/tailscaled.state \
-						--socket=/var/run/tailscale/tailscaled.sock \
-						>/dev/null 2>&1 & \
-					sleep 2; \
-				fi; \
+			echo "[INFO] Connecting to Tailscale..."; \
+			if [ -n "$${TAILSCALE_AUTH_KEY:-}" ]; then \
+				sudo tailscale up --authkey="$${TAILSCALE_AUTH_KEY}" --hostname=$${TAILSCALE_HOSTNAME:-hummingbot-api} --accept-dns=true; \
+			else \
+				sudo tailscale up --hostname=$${TAILSCALE_HOSTNAME:-hummingbot-api} --accept-dns=true; \
 			fi; \
-			sudo tailscale up --authkey="$${TAILSCALE_AUTH_KEY}" --hostname="$${TAILSCALE_HOSTNAME:-hummingbot-api}" --accept-dns=true; \
+		else \
+			echo "[INFO] Tailscale already connected."; \
 		fi; \
-		tailscale serve status 2>/dev/null | grep -q ":8000" || \
-			sudo tailscale serve --bg http:8000 http://localhost:8000; \
-		echo "[INFO] Binding uvicorn to 127.0.0.1 (tailscale serve exposes port 8000 on tailnet)"; \
-		conda run --no-capture-output -n hummingbot-api uvicorn main:app --reload --host 127.0.0.1 --port 8000; \
-	else \
-		conda run --no-capture-output -n hummingbot-api uvicorn main:app --reload; \
 	fi
+	docker compose up emqx postgres -d
+	conda run --no-capture-output -n hummingbot-api uvicorn main:app --reload
 
-# Deploy with Docker
-# When TAILSCALE_ENABLED=true: adds the Tailscale sidecar compose override
+# Deploy with Docker (Tailscale-aware: reads TAILSCALE_ENABLED from .env)
 deploy: $(SETUP_SENTINEL)
 	@set -a; [ -f .env ] && . ./.env; set +a; \
 	if [ "$${TAILSCALE_ENABLED:-false}" = "true" ]; then \
@@ -51,14 +44,6 @@ deploy: $(SETUP_SENTINEL)
 		docker compose -f docker-compose.yml -f docker-compose.tailscale.yml up -d; \
 	else \
 		docker compose up -d; \
-	fi
-
-# Show Tailscale connection status
-tailscale-status:
-	@if command -v tailscale >/dev/null 2>&1; then \
-		tailscale status; \
-	else \
-		echo "Tailscale is not installed or not on PATH."; \
 	fi
 
 # Stop all services
@@ -90,3 +75,10 @@ install-pre-commit:
 # Build Docker image
 build:
 	docker build -t hummingbot/hummingbot-api:latest .
+# Show Tailscale connection status
+tailscale-status:
+	@if command -v tailscale >/dev/null 2>&1; then \
+		tailscale status; \
+	else \
+		echo "Tailscale is not installed or not on PATH."; \
+	fi
