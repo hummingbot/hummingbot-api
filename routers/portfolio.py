@@ -1,16 +1,12 @@
-from typing import Dict, List, Optional
 from datetime import datetime
+from typing import Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
-from models.trading import (
-    PortfolioStateFilterRequest,
-    PortfolioHistoryFilterRequest,
-    PortfolioDistributionFilterRequest,
-)
-from services.accounts_service import AccountsService
 from deps import get_accounts_service
 from models import PaginatedResponse
+from models.trading import PortfolioDistributionFilterRequest, PortfolioHistoryFilterRequest, PortfolioStateFilterRequest
+from services.accounts_service import AccountsService
 
 router = APIRouter(tags=["Portfolio"], prefix="/portfolio")
 
@@ -28,7 +24,7 @@ async def get_portfolio_state(
             - account_names: Optional list of account names to filter by
             - connector_names: Optional list of connector names to filter by
             - skip_gateway: If True, skip Gateway wallet balance updates for faster CEX-only queries
-            - refresh: If True, refresh balances before returning. If False (default), return cached state
+            - refresh: If True, refresh balances from exchanges. If False, return cached state.
 
     Returns:
         Dict containing account states with connector balances and token information

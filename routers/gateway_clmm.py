@@ -4,73 +4,78 @@ Supports CLMM connectors (Meteora, Raydium, Uniswap V3) for concentrated liquidi
 """
 import asyncio
 import logging
-from typing import List, Optional
 from decimal import Decimal
-import aiohttp
+from typing import List, Optional
 
+import aiohttp
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from deps import get_accounts_service, get_database_manager
-from services.accounts_service import AccountsService
 from database import AsyncDatabaseManager
 from database.repositories import GatewayCLMMRepository
+from deps import get_accounts_service, get_database_manager
 from models import (
-    CLMMOpenPositionRequest,
-    CLMMOpenPositionResponse,
     CLMMAddLiquidityRequest,
-    CLMMRemoveLiquidityRequest,
     CLMMClosePositionRequest,
     CLMMCollectFeesRequest,
     CLMMCollectFeesResponse,
-    CLMMPositionsOwnedRequest,
-    CLMMPositionInfo,
+    CLMMOpenPositionRequest,
+    CLMMOpenPositionResponse,
     CLMMPoolInfoResponse,
     CLMMPoolListItem,
     CLMMPoolListResponse,
+    CLMMPositionInfo,
+    CLMMPositionsOwnedRequest,
+    CLMMRemoveLiquidityRequest,
     TimeBasedMetrics,
 )
+from services.accounts_service import AccountsService
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Gateway CLMM"], prefix="/gateway")
 
 
-async def fetch_meteora_pools(
+async def fetch_pools_from_gateway(
+    gateway_url: str,
+    connector: str,
+    network: str = "mainnet-beta",
     page: int = 0,
     limit: int = 50,
-    search_term: Optional[str] = None,
-    sort_key: Optional[str] = "volume",
-    order_by: Optional[str] = "desc",
-    include_unknown: bool = True
+    query: Optional[str] = None,
+    sort_by: Optional[str] = None,
+    include_unverified: bool = True
 ) -> Optional[dict]:
     """
-    Fetch available pools from Meteora API.
+    Fetch pools from Gateway's fetch-pools endpoint.
 
     Args:
-        page: Page number (default: 0)
-        limit: Results per page (default: 50)
-        search_term: Search term to filter pools
-        sort_key: Sort key (tvl, volume, feetvlratio, etc.)
-        order_by: Sort order (asc, desc)
-        include_unknown: Include pools with unverified tokens
+        gateway_url: Gateway base URL (e.g., http://localhost:15888)
+        connector: Connector name (meteora, orca)
+        network: Network ID (default: mainnet-beta)
+        page: Page number (0-based)
+        limit: Results per page
+        query: Search query to match pools by name, tokens, or address
+        sort_by: Sort by field
+        include_unverified: Include pools with unverified tokens
 
     Returns:
-        Dictionary with pools from Meteora API, or None if failed
+        Dictionary with pools from Gateway, or None if failed
     """
     try:
-        url = "https://dlmm-api.meteora.ag/pair/all_by_groups"
+        url = f"{gateway_url}/connectors/{connector}/clmm/fetch-pools"
         params = {
-            "page": page,
+            "network": network,
             "limit": limit,
-            "include_unknown": str(include_unknown).lower()  # Convert boolean to lowercase string
         }
 
-        if search_term:
-            params["search_term"] = search_term
-        if sort_key:
-            params["sort_key"] = sort_key
-        if order_by:
-            params["order_by"] = order_by
+        if page > 0:
+            params["page"] = page
+        if query:
+            params["query"] = query
+        if sort_by:
+            params["sortBy"] = sort_by
+        if not include_unverified:
+            params["includeUnverified"] = "false"
 
         async with aiohttp.ClientSession() as session:
             async with session.get(url, params=params, headers={"accept": "application/json"}) as response:
@@ -78,10 +83,10 @@ async def fetch_meteora_pools(
                 data = await response.json()
                 return data
     except aiohttp.ClientError as e:
-        logger.error(f"Failed to fetch pools from Meteora API: {e}")
+        logger.error(f"Failed to fetch pools from Gateway: {e}")
         return None
     except Exception as e:
-        logger.error(f"Error fetching Meteora pools: {e}", exc_info=True)
+        logger.error(f"Error fetching pools from Gateway: {e}", exc_info=True)
         return None
 
 
@@ -397,133 +402,98 @@ async def get_clmm_pools(
     connector: str,
     page: int = Query(0, ge=0, description="Page number"),
     limit: int = Query(50, ge=1, le=100, description="Results per page (max 100)"),
-    search_term: Optional[str] = Query(None, description="Search term to filter pools"),
+    search_term: Optional[str] = Query(None, description="Search query to filter pools"),
     sort_key: Optional[str] = Query("volume", description="Sort key (volume, tvl, etc.)"),
     order_by: Optional[str] = Query("desc", description="Sort order (asc, desc)"),
-    include_unknown: bool = Query(True, description="Include pools with unverified tokens")
+    include_unknown: bool = Query(True, description="Include pools with unverified tokens"),
+    accounts_service: AccountsService = Depends(get_accounts_service)
 ):
     """
-    Get list of available CLMM pools for a connector.
+    Get list of available CLMM pools for a connector via Gateway.
 
-    Currently supports: meteora
+    Supports: meteora, orca
 
     Args:
-        connector: CLMM connector (e.g., 'meteora')
+        connector: CLMM connector (meteora, orca)
         page: Page number (default: 0)
         limit: Results per page (default: 50, max: 100)
-        search_term: Search term to filter pools (optional)
-        sort_key: Sort by field (volume, tvl, feetvlratio, etc.)
+        search_term: Search query to filter pools (optional)
+        sort_key: Sort by field (volume, tvl, etc.)
         order_by: Sort order (asc, desc)
         include_unknown: Include pools with unverified tokens
 
     Example:
-        GET /gateway/clmm/pools?connector=meteora&search_term=SOL&limit=20
+        GET /gateway/clmm/pools?connector=meteora&query=SOL&limit=20
 
     Returns:
         List of available pools with trading pairs, addresses, liquidity, volume, APR, etc.
     """
     try:
-        # Only support Meteora for now
-        if connector.lower() != "meteora":
+        supported_connectors = ["meteora", "orca"]
+        if connector.lower() not in supported_connectors:
             raise HTTPException(
                 status_code=400,
-                detail=f"Pool listing not supported for connector '{connector}'. Currently only 'meteora' is supported."
+                detail=f"Pool listing not supported for connector '{connector}'. Supported: {', '.join(supported_connectors)}"
             )
 
-        # Fetch pools from Meteora API
-        logger.info(f"Fetching pools from Meteora API (page={page}, limit={limit}, search={search_term})")
-        meteora_data = await fetch_meteora_pools(
+        # Get Gateway URL from accounts service
+        gateway_url = accounts_service.gateway_base_url
+
+        logger.info(f"Fetching pools from Gateway ({connector}, page={page}, limit={limit}, query={search_term})")
+
+        # Build sort_by for Gateway (connector-specific format)
+        sort_by = None
+        if sort_key:
+            if connector.lower() == "meteora":
+                time_suffix = "_24h" if sort_key in ["volume", "fees"] else ""
+                direction = order_by if order_by else "desc"
+                sort_by = f"{sort_key}{time_suffix}:{direction}"
+            else:  # orca
+                sort_by = sort_key
+
+        gateway_data = await fetch_pools_from_gateway(
+            gateway_url=gateway_url,
+            connector=connector.lower(),
             page=page,
             limit=limit,
-            search_term=search_term,
-            sort_key=sort_key,
-            order_by=order_by,
-            include_unknown=include_unknown
+            query=search_term,
+            sort_by=sort_by,
+            include_unverified=include_unknown
         )
 
-        if meteora_data is None:
-            raise HTTPException(status_code=503, detail="Failed to fetch pools from Meteora API")
+        if gateway_data is None:
+            raise HTTPException(status_code=503, detail=f"Failed to fetch pools from Gateway for {connector}")
 
-        # Transform Meteora response to our format
+        # Transform Gateway response to our format
+        # Both Meteora and Orca now return same format: {pools: [...], total, page, pageSize}
         pools = []
-        groups = meteora_data.get("groups", [])
+        pool_list = gateway_data.get("pools", [])
 
-        for group in groups:
-            pairs = group.get("pairs", [])
-            for pair in pairs:
-                # Extract trading pair from name or construct from mints
-                name = pair.get("name", "")
-                trading_pair = name if name else f"{pair.get('mint_x', '')[:8]}-{pair.get('mint_y', '')[:8]}"
+        for pool in pool_list:
+            trading_pair = pool.get("name", f"{pool.get('baseTokenSymbol', '?')}-{pool.get('quoteTokenSymbol', '?')}")
+            pools.append(CLMMPoolListItem(
+                address=pool.get("address", ""),
+                name=pool.get("name", ""),
+                trading_pair=trading_pair,
+                mint_x=pool.get("baseTokenAddress", ""),
+                mint_y=pool.get("quoteTokenAddress", ""),
+                bin_step=pool.get("binStep", 0),
+                current_price=Decimal(str(pool.get("price", 0))),
+                liquidity=str(pool.get("tvl", "0")),
+                apr=Decimal(str(pool.get("apr", 0))) if pool.get("apr") is not None else None,
+                apy=Decimal(str(pool.get("apy", 0))) if pool.get("apy") is not None else None,
+                volume_24h=Decimal(str(pool.get("volume24h", 0))) if pool.get("volume24h") is not None else None,
+                fees_24h=Decimal(str(pool.get("fees24h", 0))) if pool.get("fees24h") is not None else None,
+                base_fee_percentage=str(pool.get("baseFee")) if pool.get("baseFee") is not None else None,
+            ))
 
-                # Helper function to safely convert dict metrics to TimeBasedMetrics
-                def to_time_metrics(data):
-                    if not data:
-                        return None
-                    return TimeBasedMetrics(
-                        min_30=Decimal(str(data.get("min_30"))) if data.get("min_30") is not None else None,
-                        hour_1=Decimal(str(data.get("hour_1"))) if data.get("hour_1") is not None else None,
-                        hour_2=Decimal(str(data.get("hour_2"))) if data.get("hour_2") is not None else None,
-                        hour_4=Decimal(str(data.get("hour_4"))) if data.get("hour_4") is not None else None,
-                        hour_12=Decimal(str(data.get("hour_12"))) if data.get("hour_12") is not None else None,
-                        hour_24=Decimal(str(data.get("hour_24"))) if data.get("hour_24") is not None else None
-                    )
-
-                pools.append(CLMMPoolListItem(
-                    address=pair.get("address", ""),
-                    name=name,
-                    trading_pair=trading_pair,
-                    mint_x=pair.get("mint_x", ""),
-                    mint_y=pair.get("mint_y", ""),
-                    bin_step=pair.get("bin_step", 0),
-                    current_price=Decimal(str(pair.get("current_price", 0))),
-                    liquidity=pair.get("liquidity", "0"),
-                    reserve_x=pair.get("reserve_x", "0"),
-                    reserve_y=pair.get("reserve_y", "0"),
-                    reserve_x_amount=Decimal(str(pair.get("reserve_x_amount"))) if pair.get("reserve_x_amount") is not None else None,
-                    reserve_y_amount=Decimal(str(pair.get("reserve_y_amount"))) if pair.get("reserve_y_amount") is not None else None,
-
-                    # Fee structure
-                    base_fee_percentage=pair.get("base_fee_percentage"),
-                    max_fee_percentage=pair.get("max_fee_percentage"),
-                    protocol_fee_percentage=pair.get("protocol_fee_percentage"),
-
-                    # APR/APY
-                    apr=Decimal(str(pair.get("apr", 0))) if pair.get("apr") is not None else None,
-                    apy=Decimal(str(pair.get("apy", 0))) if pair.get("apy") is not None else None,
-                    farm_apr=Decimal(str(pair.get("farm_apr"))) if pair.get("farm_apr") is not None else None,
-                    farm_apy=Decimal(str(pair.get("farm_apy"))) if pair.get("farm_apy") is not None else None,
-
-                    # Volume and fees
-                    volume_24h=Decimal(str(pair.get("trade_volume_24h", 0))) if pair.get("trade_volume_24h") is not None else None,
-                    fees_24h=Decimal(str(pair.get("fees_24h", 0))) if pair.get("fees_24h") is not None else None,
-                    today_fees=Decimal(str(pair.get("today_fees"))) if pair.get("today_fees") is not None else None,
-                    cumulative_trade_volume=pair.get("cumulative_trade_volume"),
-                    cumulative_fee_volume=pair.get("cumulative_fee_volume"),
-
-                    # Time-based metrics
-                    volume=to_time_metrics(pair.get("volume")),
-                    fees=to_time_metrics(pair.get("fees")),
-                    fee_tvl_ratio=to_time_metrics(pair.get("fee_tvl_ratio")),
-
-                    # Rewards
-                    reward_mint_x=pair.get("reward_mint_x"),
-                    reward_mint_y=pair.get("reward_mint_y"),
-
-                    # Metadata
-                    tags=pair.get("tags"),
-                    is_verified=pair.get("is_verified", False),
-                    is_blacklisted=pair.get("is_blacklisted"),
-                    hide=pair.get("hide"),
-                    launchpad=pair.get("launchpad")
-                ))
-
-        total = meteora_data.get("total", len(pools))
+        total = gateway_data.get("total", len(pools))
 
         return CLMMPoolListResponse(
             pools=pools,
             total=total,
             page=page,
-            limit=limit
+            pageSize=limit
         )
 
     except HTTPException:
