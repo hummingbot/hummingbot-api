@@ -4,29 +4,22 @@ A REST API for managing Hummingbot trading bots across multiple exchanges, with 
 
 ## Quick Start
 
+**Recommended (Docker):** install from an empty directory with the [Hummingbot Deploy](https://github.com/hummingbot/deploy) helper script. **Docker** must be installed and running first.
+
 ```bash
-git clone https://github.com/hummingbot/hummingbot-api.git
-cd hummingbot-api
-make setup    # Creates .env (prompts for passwords)
-make deploy   # Starts all services
+curl -fsSL https://raw.githubusercontent.com/hummingbot/deploy/main/setup.sh | bash -s -- --hummingbot-api
 ```
+
+The script clones **`hummingbot-api`**, runs **`make setup`** (creates **`.env`**), pulls Compose images, and runs **`make deploy`**, which starts the **API**, **PostgreSQL**, and **EMQX** containers.
 
 That's it! The API is now running at http://localhost:8000
 
-## Available Commands
-
-| Command | Description |
-|---------|-------------|
-| `make setup` | Create `.env` file with configuration |
-| `make deploy` | Start all services (API, PostgreSQL, EMQX) |
-| `make stop` | Stop all services |
-| `make run` | Run API locally in dev mode |
-| `make install` | Install conda environment for development |
-| `make build` | Build Docker image |
+- **API:** http://localhost:8000  
+- **Swagger:** http://localhost:8000/docs  
 
 ## Services
 
-After `make deploy`, these services are available:
+After hummingot-api is running, these services are available:
 
 | Service | URL | Description |
 |---------|-----|-------------|
