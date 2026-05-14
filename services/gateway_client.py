@@ -353,7 +353,7 @@ class GatewayClient:
         """Save a pool by address using GeckoTerminal lookup"""
         return await self._request("POST", f"pools/save/{address}", params={
             "chainNetwork": chain_network
-        })
+        }, json={})
 
     async def delete_pool(self, chain: str, network: str, address: str) -> Dict:
         """Delete a pool from Gateway's pool list"""
