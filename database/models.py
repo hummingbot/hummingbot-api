@@ -347,6 +347,19 @@ class GatewayCLMMEvent(Base):
     position = relationship("GatewayCLMMPosition", back_populates="events")
 
 
+class ControllerPerformanceSnapshot(Base):
+    """Periodic snapshot of controller performance and custom_info from bots."""
+    __tablename__ = "controller_performance_snapshots"
+
+    id = Column(Integer, primary_key=True, index=True)
+    timestamp = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False, index=True)
+    bot_name = Column(String, nullable=False, index=True)
+    controller_id = Column(String, nullable=False, index=True)
+    status = Column(String, nullable=False)  # running, error, stopped
+    performance = Column(Text, nullable=True)  # JSON dict of performance metrics
+    custom_info = Column(Text, nullable=True)  # JSON dict of custom info
+
+
 class ExecutorRecord(Base):
     """Database model for executor state persistence."""
     __tablename__ = "executors"
