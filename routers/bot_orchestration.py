@@ -122,6 +122,46 @@ async def get_bot_history(
     return {"status": "success", "response": response}
 
 
+@router.get("/{bot_name}/logs")
+def get_bot_logs(
+    bot_name: str,
+    log_type: str = "all",
+    limit: int = 100,
+    bots_manager: BotsOrchestrator = Depends(get_bots_orchestrator)
+):
+    """
+    Get recent logs for a specific bot.
+
+    Query parameters:
+    - **log_type**: Filter logs by type (`all`, `general`, `error`)
+    - **limit**: Maximum number of entries to return per log bucket
+    """
+    if log_type not in {"all", "general", "error"}:
+        raise HTTPException(
+            status_code=400,
+            detail="log_type must be one of: all, general, error",
+        )
+
+    if limit < 1:
+        raise HTTPException(
+            status_code=400,
+            detail="limit must be greater than 0",
+        )
+
+    response = bots_manager.get_bot_logs(
+        bot_name,
+        log_type=log_type,
+        limit=limit,
+    )
+    if response is None:
+        raise HTTPException(status_code=404, detail="Bot not found")
+
+    return {
+        "status": "success",
+        "data": response,
+    }
+
+
 @router.post("/start-bot")
 async def start_bot(
     action: StartBotAction,
