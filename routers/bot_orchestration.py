@@ -1,9 +1,9 @@
 import asyncio
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 
 from database import AsyncDatabaseManager, BotRunRepository
 from deps import get_bot_archiver, get_bots_orchestrator, get_database_manager, get_docker_service
@@ -682,6 +682,68 @@ async def deploy_v2_controllers(
 
     except Exception as e:
         logging.error(f"Error deploying V2 controllers: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/controller-performance/latest")
+async def get_latest_controller_performance(
+    bot_name: str = None,
+    bots_manager: BotsOrchestrator = Depends(get_bots_orchestrator)
+):
+    """
+    Get the most recent performance snapshot for each bot/controller.
+    Optionally filter by bot_name.
+    """
+    try:
+        snapshots = await bots_manager.get_latest_controller_performance(bot_name=bot_name)
+        return {"status": "success", "data": snapshots}
+    except Exception as e:
+        logger.error(f"Failed to get latest controller performance: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/controller-performance/history")
+async def get_controller_performance_history(
+    bot_name: str = None,
+    controller_id: str = None,
+    limit: int = Query(default=100, le=1000),
+    cursor: str = None,
+    start_time: str = None,
+    end_time: str = None,
+    interval: str = Query(default="5m", regex="^(5m|15m|30m|1h|4h|12h|1d)$"),
+    bots_manager: BotsOrchestrator = Depends(get_bots_orchestrator)
+):
+    """
+    Get historical controller performance snapshots with pagination and interval sampling.
+    """
+    try:
+        parsed_start = datetime.fromisoformat(start_time) if start_time else None
+        parsed_end = datetime.fromisoformat(end_time) if end_time else None
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid datetime format: {e}")
+
+    try:
+        history, next_cursor, has_more = await bots_manager.get_controller_performance_history(
+            bot_name=bot_name,
+            controller_id=controller_id,
+            limit=limit,
+            cursor=cursor,
+            start_time=parsed_start,
+            end_time=parsed_end,
+            interval=interval
+        )
+        return {
+            "status": "success",
+            "data": history,
+            "pagination": {
+                "next_cursor": next_cursor,
+                "has_more": has_more,
+                "limit": limit,
+                "interval": interval,
+            }
+        }
+    except Exception as e:
+        logger.error(f"Failed to get controller performance history: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
