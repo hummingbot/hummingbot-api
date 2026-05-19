@@ -2,8 +2,6 @@ from decimal import Decimal
 from typing import Dict, List, Set, Union
 
 import pandas_ta as ta  # noqa: F401
-from pydantic import Field, field_validator
-
 from hummingbot.core.data_type.common import OrderType, PositionMode, PriceType, TradeType
 from hummingbot.data_feed.candles_feed.data_types import CandlesConfig
 from hummingbot.strategy_v2.controllers import ControllerBase, ControllerConfigBase
@@ -12,6 +10,7 @@ from hummingbot.strategy_v2.executors.grid_executor.data_types import GridExecut
 from hummingbot.strategy_v2.executors.position_executor.data_types import TripleBarrierConfig
 from hummingbot.strategy_v2.models.executor_actions import CreateExecutorAction, StopExecutorAction
 from hummingbot.strategy_v2.models.executors_info import ExecutorInfo
+from pydantic import Field, field_validator
 
 
 class QGAConfig(ControllerConfigBase):
@@ -49,7 +48,7 @@ class QGAConfig(ControllerConfigBase):
     connector_name: str = "binance"
     leverage: int = 1
     position_mode: PositionMode = PositionMode.HEDGE
-    quote_asset: str = "FDUSD"
+    quote_asset: str = "USDT"
     fee_asset: str = "BNB"
     # Grid price multipliers
     min_spread_between_orders: Decimal = Field(
@@ -73,7 +72,7 @@ class QGAConfig(ControllerConfigBase):
 
     @property
     def quote_asset_allocation(self) -> Decimal:
-        """Calculate the implicit quote asset (FDUSD) allocation"""
+        """Calculate the implicit quote asset (USDT) allocation"""
         return Decimal("1") - sum(self.portfolio_allocation.values())
 
     @field_validator("portfolio_allocation")
@@ -81,9 +80,9 @@ class QGAConfig(ControllerConfigBase):
     def validate_allocation(cls, v):
         total = sum(v.values())
         if total >= Decimal("1"):
-            raise ValueError(f"Total allocation {total} exceeds or equals 100%. Must leave room for FDUSD allocation.")
-        if "FDUSD" in v:
-            raise ValueError("FDUSD should not be explicitly allocated as it is the quote asset")
+            raise ValueError(f"Total allocation {total} exceeds or equals 100%. Must leave room for USDT allocation.")
+        if "USDT" in v:
+            raise ValueError("USDT should not be explicitly allocated as it is the quote asset")
         return v
 
     def update_markets(self, markets: Dict[str, Set[str]]) -> Dict[str, Set[str]]:
