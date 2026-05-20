@@ -2,8 +2,6 @@ import logging
 from decimal import Decimal
 from typing import List, Optional
 
-from pydantic import Field, field_validator, model_validator
-
 from hummingbot.core.data_type.common import MarketDict, TradeType
 from hummingbot.core.utils.async_utils import safe_ensure_future
 from hummingbot.data_feed.candles_feed.data_types import CandlesConfig
@@ -16,6 +14,7 @@ from hummingbot.strategy_v2.executors.order_executor.data_types import Execution
 from hummingbot.strategy_v2.models.executor_actions import CreateExecutorAction, ExecutorAction
 from hummingbot.strategy_v2.models.executors import CloseType
 from hummingbot.strategy_v2.models.executors_info import ExecutorInfo
+from pydantic import Field, field_validator, model_validator
 
 
 class LPRebalancerConfig(ControllerConfigBase):
@@ -209,7 +208,7 @@ class LPRebalancer(ControllerBase):
 
         # Order executor tracking (for autoswap feature)
         self._swap_executor_id: Optional[str] = None
-        self._pending_swap_side: Optional[int] = None  # LP side to create after swap completes
+        self._pending_swap_side: Optional[TradeType] = None  # LP side to create after swap completes
 
         # Track if initial position has been created (after that, always use side 1 or 2)
         self._initial_position_created: bool = False
@@ -265,7 +264,7 @@ class LPRebalancer(ControllerBase):
             return True
         return swap_executor.is_done
 
-    def _check_autoswap_needed(self, side: int, current_price: Decimal) -> Optional[OrderExecutorConfig]:
+    def _check_autoswap_needed(self, side: TradeType, current_price: Decimal) -> Optional[OrderExecutorConfig]:
         """
         Check if autoswap is needed and return order config if so.
 
@@ -310,12 +309,15 @@ class LPRebalancer(ControllerBase):
         base_deficit = base_amt - base_balance
         quote_deficit = quote_amt - quote_balance
 
-        # Add 0.1 SOL buffer for rent and transaction fees when SOL is involved
-        sol_buffer = Decimal("0.1")
-        if self._base_token.upper() == "SOL":
-            base_deficit += sol_buffer
-        if self._quote_token.upper() == "SOL":
-            quote_deficit += sol_buffer
+        # Add native currency buffer for rent and transaction fees when native currency is involved
+        # Get native currency and buffer from connector (chain-specific values)
+        connector = self.market_data_provider.get_connector(self.config.connector_name)
+        native_currency = (getattr(connector, 'native_currency', None) or "").upper()
+        native_buffer = getattr(connector, 'get_native_currency_buffer', lambda: Decimal("0.005"))()
+        if native_currency and self._base_token.upper() == native_currency:
+            base_deficit += native_buffer
+        if native_currency and self._quote_token.upper() == native_currency:
+            quote_deficit += native_buffer
 
         self.logger().info(
             f"Autoswap check: need base={base_amt:.6f}, have={base_balance:.6f}, deficit={base_deficit:.6f} | "

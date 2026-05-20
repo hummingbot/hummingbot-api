@@ -2,15 +2,14 @@ from collections import defaultdict
 from decimal import Decimal
 from typing import Dict, List, Optional, Tuple, Union
 
-from pydantic import Field, field_validator
-from pydantic_core.core_schema import ValidationInfo
-
 from hummingbot.core.data_type.common import MarketDict, OrderType, PositionMode, PriceType, TradeType
 from hummingbot.strategy_v2.controllers.controller_base import ControllerBase, ControllerConfigBase
 from hummingbot.strategy_v2.executors.data_types import ConnectorPair
 from hummingbot.strategy_v2.executors.position_executor.data_types import PositionExecutorConfig, TripleBarrierConfig
 from hummingbot.strategy_v2.models.executor_actions import CreateExecutorAction, ExecutorAction, StopExecutorAction
 from hummingbot.strategy_v2.utils.common import parse_comma_separated_list, parse_enum_value
+from pydantic import Field, field_validator
+from pydantic_core.core_schema import ValidationInfo
 
 
 class PMMisterConfig(ControllerConfigBase):
@@ -698,61 +697,6 @@ class PMMister(ControllerBase):
 
     def get_level_from_level_id(self, level_id: str) -> int:
         return int(level_id.split('_')[1])
-
-    # ── Custom info for MQTT ─────────────────────────────────────────────
-
-    def get_custom_info(self) -> dict:
-        if not self.processed_data:
-            return {}
-
-        level_conditions = self.processed_data.get("level_conditions", {})
-        cooldown_status = self.processed_data.get("cooldown_status", {})
-        executor_stats = self.processed_data.get("executor_stats", {})
-        effectivization = self.processed_data.get("effectivization_tracking", {})
-        refresh_tracking = self.processed_data.get("refresh_tracking", {})
-
-        return {
-            "reference_price": float(self.processed_data.get("reference_price", 0)),
-            "spread_multiplier": float(self.processed_data.get("spread_multiplier", 1)),
-            "position": {
-                "current_base_pct": float(self.processed_data.get("current_base_pct", 0)),
-                "target_base_pct": float(self.config.target_base_pct),
-                "min_base_pct": float(self.config.min_base_pct),
-                "max_base_pct": float(self.config.max_base_pct),
-                "deviation": float(self.processed_data.get("deviation", 0)),
-                "buy_skew": float(self.processed_data.get("buy_skew", 1)),
-                "sell_skew": float(self.processed_data.get("sell_skew", 1)),
-                "breakeven_price": float(self.processed_data.get("breakeven_price", 0)) if self.processed_data.get("breakeven_price") else None,
-                "unrealized_pnl_pct": float(self.processed_data.get("unrealized_pnl_pct", 0)),
-            },
-            "cooldowns": {
-                side: {
-                    "active": data.get("active", False),
-                    "remaining_time": data.get("remaining_time", 0),
-                    "progress_pct": float(data.get("progress_pct", 0)),
-                }
-                for side, data in cooldown_status.items()
-            },
-            "executor_stats": executor_stats,
-            "effectivization": {
-                "total_hanging": effectivization.get("total_hanging", 0),
-                "ready_for_effectivization": effectivization.get("ready_for_effectivization", 0),
-            },
-            "refresh": {
-                "near_refresh": refresh_tracking.get("near_refresh", 0),
-                "refresh_ready": refresh_tracking.get("refresh_ready", 0),
-                "distance_violations": refresh_tracking.get("distance_violations", 0),
-            },
-            "levels": {
-                level_id: {
-                    "can_execute": cond.get("can_execute", False),
-                    "blocking": cond.get("blocking_conditions", []),
-                    "active": cond.get("active_executors", 0),
-                    "hanging": cond.get("hanging_executors", 0),
-                }
-                for level_id, cond in level_conditions.items()
-            },
-        }
 
     # ── Status display ────────────────────────────────────────────────────
 
