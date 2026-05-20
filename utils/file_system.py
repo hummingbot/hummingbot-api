@@ -418,12 +418,16 @@ class FileSystemUtil:
     def delete_archived_bot(self, db_path: str) -> str:
         """
         Deletes an archived bot directory given a database file path.
-        :param db_path: Path to a database file (e.g. bots/archived/{instance}/data/file.sqlite)
+        :param db_path: Path to a database file (as returned by list_databases, e.g. bots/archived/{instance}/data/file.sqlite)
         :return: The name of the deleted archived bot directory.
         :raises FileNotFoundError: If the path or archived directory doesn't exist.
         :raises ValueError: If the path doesn't point to a valid archived bot.
         """
-        full_path = db_path if os.path.isabs(db_path) else self._get_full_path(db_path)
+        # list_databases returns paths that already include base_path prefix (e.g. bots/archived/...)
+        # Strip it to avoid double-prefixing when _get_full_path adds it again
+        prefix = self.base_path + os.sep
+        normalized = db_path[len(prefix):] if db_path.startswith(prefix) else db_path
+        full_path = normalized if os.path.isabs(normalized) else self._get_full_path(normalized)
         if not os.path.exists(full_path):
             raise FileNotFoundError(f"Database path '{db_path}' not found")
 
@@ -439,7 +443,9 @@ class FileSystemUtil:
         if not os.path.isdir(archived_bot_dir):
             raise FileNotFoundError(f"Archived bot directory '{bot_name}' not found")
 
-        shutil.rmtree(archived_bot_dir)
+        shutil.rmtree(archived_bot_dir, ignore_errors=False, onerror=lambda func, path, exc: (
+            os.chmod(path, 0o777), func(path)
+        ))
         return bot_name
 
     def list_databases(self) -> List[str]:
