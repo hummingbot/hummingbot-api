@@ -1,9 +1,14 @@
+import logging
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from database import AsyncDatabaseManager, BotRunRepository
+from deps import get_database_manager
 from utils.file_system import fs_util
 from utils.hummingbot_database_reader import HummingbotDatabase
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Archived Bots"], prefix="/archived-bots")
 
@@ -20,19 +25,22 @@ async def list_databases():
 
 
 @router.delete("/{db_path:path}")
-async def delete_archived_bot(db_path: str):
+async def delete_archived_bot(
+    db_path: str,
+    db_manager: AsyncDatabaseManager = Depends(get_database_manager)
+):
     """
     Delete an archived bot and its entire directory.
+    Also attempts to delete matching BotRun records from PostgreSQL (best-effort).
 
     Args:
         db_path: Path to the database file (as returned by list_databases)
 
     Returns:
-        Confirmation message with the deleted bot name
+        Confirmation message with the deleted bot name and count of cleaned PG records
     """
     try:
         bot_name = fs_util.delete_archived_bot(db_path)
-        return {"message": f"Archived bot '{bot_name}' deleted successfully", "bot_name": bot_name}
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
@@ -41,6 +49,23 @@ async def delete_archived_bot(db_path: str):
         raise HTTPException(status_code=403, detail=f"Permission denied: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error deleting archived bot: {str(e)}")
+
+    # Best-effort: also clean matching BotRun records from PG
+    bot_runs_deleted = 0
+    try:
+        async with db_manager.get_session_context() as session:
+            bot_run_repo = BotRunRepository(session)
+            bot_runs_deleted = await bot_run_repo.delete_bot_runs_by_bot_name(bot_name)
+            if bot_runs_deleted > 0:
+                logger.info(f"Deleted {bot_runs_deleted} bot run record(s) for '{bot_name}'")
+    except Exception as e:
+        logger.warning(f"Failed to clean bot run records for '{bot_name}': {e}")
+
+    return {
+        "message": f"Archived bot '{bot_name}' deleted successfully",
+        "bot_name": bot_name,
+        "bot_runs_deleted": bot_runs_deleted
+    }
 
 
 @router.get("/{db_path:path}/status")

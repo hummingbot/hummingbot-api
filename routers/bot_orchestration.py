@@ -387,6 +387,44 @@ async def get_bot_run_by_id(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.delete("/bot-runs/{bot_run_id}")
+async def delete_bot_run(
+    bot_run_id: int,
+    db_manager: AsyncDatabaseManager = Depends(get_database_manager)
+):
+    """
+    Delete a bot run record by ID.
+
+    Args:
+        bot_run_id: ID of the bot run to delete
+        db_manager: Database manager dependency
+
+    Returns:
+        Confirmation of deletion
+
+    Raises:
+        HTTPException: 404 if bot run not found
+    """
+    try:
+        async with db_manager.get_session_context() as session:
+            bot_run_repo = BotRunRepository(session)
+            bot_run = await bot_run_repo.delete_bot_run(bot_run_id)
+
+            if not bot_run:
+                raise HTTPException(status_code=404, detail=f"Bot run {bot_run_id} not found")
+
+            return {
+                "status": "success",
+                "message": f"Bot run {bot_run_id} deleted successfully",
+                "bot_name": bot_run.bot_name
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete bot run {bot_run_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/bot-runs/stats")
 async def get_bot_run_stats(
     db_manager: AsyncDatabaseManager = Depends(get_database_manager)
