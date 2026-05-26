@@ -698,6 +698,38 @@ class PMMister(ControllerBase):
     def get_level_from_level_id(self, level_id: str) -> int:
         return int(level_id.split('_')[1])
 
+    # ── Custom info for MQTT reporting ──────────────────────────────────
+
+    def get_custom_info(self) -> dict:
+        if not self.processed_data:
+            return {}
+
+        executor_stats = self.processed_data.get("executor_stats", {})
+        level_conditions = self.processed_data.get("level_conditions", {})
+
+        # Count blocking reasons across all levels
+        blocking_summary = {}
+        for lc in level_conditions.values():
+            for condition in lc.get("blocking_conditions", []):
+                blocking_summary[condition] = blocking_summary.get(condition, 0) + 1
+
+        return {
+            "reference_price": float(self.processed_data.get("reference_price", 0)),
+            "spread_multiplier": float(self.processed_data.get("spread_multiplier", 1)),
+            "current_base_pct": float(self.processed_data.get("current_base_pct", 0)),
+            "deviation": float(self.processed_data.get("deviation", 0)),
+            "buy_skew": float(self.processed_data.get("buy_skew", 1)),
+            "sell_skew": float(self.processed_data.get("sell_skew", 1)),
+            "breakeven_price": float(self.processed_data.get("breakeven_price") or 0),
+            "position_amount": float(self.processed_data.get("position_amount", 0)),
+            "unrealized_pnl_pct": float(self.processed_data.get("unrealized_pnl_pct", 0)),
+            "total_active": executor_stats.get("total_active", 0),
+            "total_trading": executor_stats.get("total_trading", 0),
+            "total_not_trading": executor_stats.get("total_not_trading", 0),
+            "executable_levels": len(self.processed_data.get("levels_to_execute", [])),
+            "blocking_summary": blocking_summary,
+        }
+
     # ── Status display ────────────────────────────────────────────────────
 
     def to_format_status(self) -> List[str]:
