@@ -69,18 +69,12 @@ class V2WithControllers(StrategyV2Base):
                         filter_func=lambda x: x.is_active and not x.is_trading,
                     )
                     self.executor_orchestrator.execute_actions(
-                        actions=[
-                            StopExecutorAction(controller_id=controller_id, executor_id=executor.id)
-                            for executor in executors_order_placed
-                        ]
+                        actions=[StopExecutorAction(controller_id=controller_id, executor_id=executor.id) for executor in executors_order_placed]
                     )
                     self.drawdown_exited_controllers.append(controller_id)
 
     def check_max_global_drawdown(self):
-        current_global_pnl = sum([
-            self.get_performance_report(controller_id).global_pnl_quote
-            for controller_id in self.controllers.keys()
-        ])
+        current_global_pnl = sum([self.get_performance_report(controller_id).global_pnl_quote for controller_id in self.controllers.keys()])
         if current_global_pnl > self.max_global_pnl:
             self.max_global_pnl = current_global_pnl
         else:
@@ -103,10 +97,7 @@ class V2WithControllers(StrategyV2Base):
 
     def send_performance_report(self):
         if self.current_timestamp - self._last_performance_report_timestamp >= self.performance_report_interval and self._pub:
-            controller_reports = {
-                controller_id: self.get_controller_report(controller_id)
-                for controller_id in self.controllers.keys()
-            }
+            controller_reports = {controller_id: self.get_controller_report(controller_id) for controller_id in self.controllers.keys()}
             self._pub(controller_reports)
             self._last_performance_report_timestamp = self.current_timestamp
 
