@@ -443,9 +443,11 @@ class FileSystemUtil:
         if not os.path.isdir(archived_bot_dir):
             raise FileNotFoundError(f"Archived bot directory '{bot_name}' not found")
 
-        shutil.rmtree(archived_bot_dir, ignore_errors=False, onerror=lambda func, path, exc: (
-            os.chmod(path, 0o777), func(path)
-        ))
+        import subprocess, platform
+        if platform.system() == 'Darwin':
+            # Strip macOS ACLs (Docker adds "deny delete" ACLs)
+            subprocess.run(['chmod', '-R', '-N', archived_bot_dir], check=False)
+        shutil.rmtree(archived_bot_dir)
         return bot_name
 
     def list_databases(self) -> List[str]:

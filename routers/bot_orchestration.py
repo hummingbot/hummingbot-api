@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import shutil
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
@@ -413,10 +414,26 @@ async def delete_bot_run(
             if not bot_run:
                 raise HTTPException(status_code=404, detail=f"Bot run {bot_run_id} not found")
 
+            # Also delete the archived bot folder if it exists
+            archived_dir = os.path.join('bots', 'archived', bot_run.instance_name)
+            archived_deleted = False
+            if os.path.isdir(archived_dir):
+                try:
+                    import subprocess, platform
+                    if platform.system() == 'Darwin':
+                        # Strip macOS ACLs (Docker adds "deny delete" ACLs)
+                        subprocess.run(['chmod', '-R', '-N', archived_dir], check=False)
+                    shutil.rmtree(archived_dir)
+                    archived_deleted = True
+                    logger.info(f"Deleted archived folder: {archived_dir}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete archived folder {archived_dir}: {e}")
+
             return {
                 "status": "success",
                 "message": f"Bot run {bot_run_id} deleted successfully",
-                "bot_name": bot_run.bot_name
+                "bot_name": bot_run.bot_name,
+                "archived_folder_deleted": archived_deleted
             }
     except HTTPException:
         raise
