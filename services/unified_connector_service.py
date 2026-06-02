@@ -914,6 +914,103 @@ class UnifiedConnectorService:
         for order_id in orders_to_remove:
             connector.in_flight_orders.pop(order_id, None)
 
+    @staticmethod
+    def _supports_order_status_query(connector: ConnectorBase) -> bool:
+        """Whether a connector can be asked the real state of a single order."""
+        return (
+            hasattr(connector, "_request_order_status")
+            and hasattr(connector, "_is_order_not_found_during_status_update_error")
+            and hasattr(connector, "in_flight_orders")
+        )
+
+    async def reconcile_active_orders(self) -> Dict[str, int]:
+        """Reconcile persisted active orders against the exchange on startup.
+
+        Must be called AFTER ``initialize_all_trading_connectors`` so that each
+        connector's persisted active orders have been reloaded into
+        ``in_flight_orders``. For every tracked order we ask the exchange for its
+        real state (``_request_order_status``) and:
+
+        - **Confirmed terminal** (filled/cancelled/failed) -> update the DB to the
+          real status and drop it from tracking.
+        - **Confirmed not found** on the exchange -> mark it CANCELLED in the DB
+          (it no longer exists) and drop it from tracking.
+        - **Still open** -> sync the DB to the live state and KEEP it tracked, so
+          it remains visible and cancelable via the trading endpoints.
+        - **Unverifiable** (transient error, or the connector isn't available)
+          -> leave the order untouched. We never mark an order terminal unless
+          the exchange confirms it, so a connector that failed to start can never
+          cause a live order to be falsely reported as cancelled.
+
+        Returns a summary dict with counts for logging/telemetry.
+        """
+        summary = {"reconciled_terminal": 0, "still_open": 0, "unverified": 0, "skipped_connectors": 0}
+        if not self.db_manager:
+            return summary
+
+        terminal_states = {
+            OrderState.FILLED, OrderState.CANCELED,
+            OrderState.FAILED, OrderState.COMPLETED,
+        }
+
+        from database import OrderRepository
+
+        for account_name, connectors in self._trading_connectors.items():
+            for connector_name, connector in connectors.items():
+                if not self._supports_order_status_query(connector) or not connector.in_flight_orders:
+                    continue
+
+                # Snapshot tracked orders (the set was loaded from the DB at init).
+                tracked_orders = list(connector.in_flight_orders.values())
+                for order in tracked_orders:
+                    client_order_id = order.client_order_id
+                    note = None
+                    try:
+                        order_update = await connector._request_order_status(order)
+                        new_state = order_update.new_state
+                    except Exception as exc:
+                        if connector._is_order_not_found_during_status_update_error(exc):
+                            # The exchange does not know this order -> it is gone.
+                            new_state = OrderState.CANCELED
+                            note = "Reconciled on startup: order not found on exchange"
+                        else:
+                            # Transient/unknown error - do not touch the order.
+                            logger.warning(
+                                f"Could not verify order {client_order_id} on "
+                                f"{account_name}/{connector_name}: {exc}"
+                            )
+                            summary["unverified"] += 1
+                            continue
+
+                    db_status = self._map_order_state_to_status(new_state)
+                    try:
+                        async with self.db_manager.get_session_context() as session:
+                            order_repo = OrderRepository(session)
+                            await order_repo.update_order_status(
+                                client_order_id=client_order_id,
+                                status=db_status,
+                                error_message=note,
+                            )
+                    except Exception as exc:
+                        logger.error(f"Failed to persist reconciled order {client_order_id}: {exc}")
+                        summary["unverified"] += 1
+                        continue
+
+                    if new_state in terminal_states:
+                        connector.in_flight_orders.pop(client_order_id, None)
+                        summary["reconciled_terminal"] += 1
+                    else:
+                        # Keep tracking so it stays cancelable via the trading endpoints.
+                        summary["still_open"] += 1
+
+        logger.info(
+            "Order reconciliation complete: "
+            f"{summary['reconciled_terminal']} closed, "
+            f"{summary['still_open']} still open (re-tracked), "
+            f"{summary['unverified']} unverified"
+        )
+        return summary
+
     async def sync_all_orders_to_database(self):
         """
         Sync connector's in_flight_orders state to database for all trading connectors.
