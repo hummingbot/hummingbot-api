@@ -336,6 +336,30 @@ async def get_bot_runs(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/bot-runs/stats")
+async def get_bot_run_stats(
+    db_manager: AsyncDatabaseManager = Depends(get_database_manager)
+):
+    """
+    Get statistics about bot runs.
+
+    Args:
+        db_manager: Database manager dependency
+
+    Returns:
+        Bot run statistics
+    """
+    try:
+        async with db_manager.get_session_context() as session:
+            bot_run_repo = BotRunRepository(session)
+            stats = await bot_run_repo.get_bot_run_stats()
+
+            return {"status": "success", "data": stats}
+    except Exception as e:
+        logger.error(f"Failed to get bot run stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/bot-runs/{bot_run_id}")
 async def get_bot_run_by_id(
     bot_run_id: int,
@@ -439,30 +463,6 @@ async def delete_bot_run(
         raise
     except Exception as e:
         logger.error(f"Failed to delete bot run {bot_run_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/bot-runs/stats")
-async def get_bot_run_stats(
-    db_manager: AsyncDatabaseManager = Depends(get_database_manager)
-):
-    """
-    Get statistics about bot runs.
-
-    Args:
-        db_manager: Database manager dependency
-
-    Returns:
-        Bot run statistics
-    """
-    try:
-        async with db_manager.get_session_context() as session:
-            bot_run_repo = BotRunRepository(session)
-            stats = await bot_run_repo.get_bot_run_stats()
-
-            return {"status": "success", "data": stats}
-    except Exception as e:
-        logger.error(f"Failed to get bot run stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
