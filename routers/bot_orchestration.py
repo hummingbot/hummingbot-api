@@ -1,9 +1,10 @@
 import asyncio
 import logging
 import os
-from datetime import datetime
+import shutil
+from datetime import datetime, timezone
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 
 from database import AsyncDatabaseManager, BotRunRepository
 from deps import get_bot_archiver, get_bots_orchestrator, get_database_manager, get_docker_service
@@ -63,6 +64,68 @@ def get_mqtt_status(bots_manager: BotsOrchestrator = Depends(get_bots_orchestrat
             "client_state": client_state
         }
     }
+
+
+@router.get("/controller-performance-latest")
+async def get_latest_controller_performance(
+    bot_name: str = None,
+    bots_manager: BotsOrchestrator = Depends(get_bots_orchestrator)
+):
+    """
+    Get the most recent performance snapshot for each bot/controller.
+    Optionally filter by bot_name.
+    """
+    try:
+        snapshots = await bots_manager.get_latest_controller_performance(bot_name=bot_name)
+        return {"status": "success", "data": snapshots}
+    except Exception as e:
+        logger.error(f"Failed to get latest controller performance: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/controller-performance-history")
+async def get_controller_performance_history(
+    bot_name: str = None,
+    controller_id: str = None,
+    limit: int = Query(default=100, le=1000),
+    cursor: str = None,
+    start_time: str = None,
+    end_time: str = None,
+    interval: str = Query(default="5m", pattern="^(5m|15m|30m|1h|4h|12h|1d)$"),
+    bots_manager: BotsOrchestrator = Depends(get_bots_orchestrator)
+):
+    """
+    Get historical controller performance snapshots with pagination and interval sampling.
+    """
+    try:
+        parsed_start = datetime.fromisoformat(start_time) if start_time else None
+        parsed_end = datetime.fromisoformat(end_time) if end_time else None
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid datetime format: {e}")
+
+    try:
+        history, next_cursor, has_more = await bots_manager.get_controller_performance_history(
+            bot_name=bot_name,
+            controller_id=controller_id,
+            limit=limit,
+            cursor=cursor,
+            start_time=parsed_start,
+            end_time=parsed_end,
+            interval=interval
+        )
+        return {
+            "status": "success",
+            "data": history,
+            "pagination": {
+                "next_cursor": next_cursor,
+                "has_more": has_more,
+                "limit": limit,
+                "interval": interval,
+            }
+        }
+    except Exception as e:
+        logger.error(f"Failed to get controller performance history: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/{bot_name}/status")
@@ -273,6 +336,30 @@ async def get_bot_runs(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/bot-runs/stats")
+async def get_bot_run_stats(
+    db_manager: AsyncDatabaseManager = Depends(get_database_manager)
+):
+    """
+    Get statistics about bot runs.
+
+    Args:
+        db_manager: Database manager dependency
+
+    Returns:
+        Bot run statistics
+    """
+    try:
+        async with db_manager.get_session_context() as session:
+            bot_run_repo = BotRunRepository(session)
+            stats = await bot_run_repo.get_bot_run_stats()
+
+            return {"status": "success", "data": stats}
+    except Exception as e:
+        logger.error(f"Failed to get bot run stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/bot-runs/{bot_run_id}")
 async def get_bot_run_by_id(
     bot_run_id: int,
@@ -325,27 +412,57 @@ async def get_bot_run_by_id(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/bot-runs/stats")
-async def get_bot_run_stats(
+@router.delete("/bot-runs/{bot_run_id}")
+async def delete_bot_run(
+    bot_run_id: int,
     db_manager: AsyncDatabaseManager = Depends(get_database_manager)
 ):
     """
-    Get statistics about bot runs.
+    Delete a bot run record by ID.
 
     Args:
+        bot_run_id: ID of the bot run to delete
         db_manager: Database manager dependency
 
     Returns:
-        Bot run statistics
+        Confirmation of deletion
+
+    Raises:
+        HTTPException: 404 if bot run not found
     """
     try:
         async with db_manager.get_session_context() as session:
             bot_run_repo = BotRunRepository(session)
-            stats = await bot_run_repo.get_bot_run_stats()
+            bot_run = await bot_run_repo.delete_bot_run(bot_run_id)
 
-            return {"status": "success", "data": stats}
+            if not bot_run:
+                raise HTTPException(status_code=404, detail=f"Bot run {bot_run_id} not found")
+
+            # Also delete the archived bot folder if it exists
+            archived_dir = os.path.join('bots', 'archived', bot_run.instance_name)
+            archived_deleted = False
+            if os.path.isdir(archived_dir):
+                try:
+                    import subprocess, platform
+                    if platform.system() == 'Darwin':
+                        # Strip macOS ACLs (Docker adds "deny delete" ACLs)
+                        subprocess.run(['chmod', '-R', '-N', archived_dir], check=False)
+                    shutil.rmtree(archived_dir)
+                    archived_deleted = True
+                    logger.info(f"Deleted archived folder: {archived_dir}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete archived folder {archived_dir}: {e}")
+
+            return {
+                "status": "success",
+                "message": f"Bot run {bot_run_id} deleted successfully",
+                "bot_name": bot_run.bot_name,
+                "archived_folder_deleted": archived_deleted
+            }
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Failed to get bot run stats: {e}")
+        logger.error(f"Failed to delete bot run {bot_run_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

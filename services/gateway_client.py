@@ -68,7 +68,7 @@ class GatewayClient:
                         return {"error": error_body, "status": response.status}
                     return await response.json()
             elif method == "POST":
-                async with session.post(url, json=json) as response:
+                async with session.post(url, params=params, json=json) as response:
                     if not response.ok:
                         error_body = await self._get_error_body(response)
                         logger.warning(f"Gateway request failed: {method} {url} - {response.status} - {error_body}")
@@ -255,6 +255,13 @@ class GatewayClient:
             "network": network
         })
 
+    async def save_token(self, chain: str, network: str, token_address: str) -> Dict:
+        """Save a token by address - auto-fetches info from GeckoTerminal"""
+        chain_network = f"{chain}-{network}"
+        return await self._request("POST", f"tokens/save/{token_address}", params={
+            "chainNetwork": chain_network
+        }, json={})
+
     async def get_config(self, namespace: str) -> Dict:
         """Get configuration for a specific namespace (connector or chain-network)"""
         return await self._request("GET", "config", params={"namespace": namespace})
@@ -267,18 +274,58 @@ class GatewayClient:
             "value": value
         })
 
-    async def get_pools(self, connector: str, network: str) -> List[Dict]:
-        """Get pools for a connector and network"""
-        return await self._request("GET", "pools", params={
-            "connector": connector,
+    async def get_api_keys(self) -> Dict:
+        """Get all configured API keys from Gateway"""
+        return await self._request("GET", "config", params={"namespace": "apiKeys"})
+
+    async def update_api_keys(self, api_keys: Dict[str, str]) -> List[Dict]:
+        """
+        Update API keys in Gateway configuration.
+
+        Args:
+            api_keys: Dict mapping provider name to API key value
+                     (e.g., {"helius": "abc123", "infura": "xyz789"})
+
+        Returns:
+            List of results for each API key update
+        """
+        results = []
+        for provider, api_key in api_keys.items():
+            result = await self._request("POST", "config/update", json={
+                "namespace": "apiKeys",
+                "path": provider,
+                "value": api_key
+            })
+            results.append(result)
+        return results
+
+    async def get_pools(
+        self,
+        chain: str,
+        network: str,
+        connector: Optional[str] = None,
+        pool_type: Optional[str] = None,
+        search: Optional[str] = None
+    ) -> List[Dict]:
+        """Get pools for a chain and network with optional filtering"""
+        params = {
+            "chain": chain,
             "network": network
-        })
+        }
+        if connector:
+            params["connector"] = connector
+        if pool_type:
+            params["type"] = pool_type.lower()
+        if search:
+            params["search"] = search
+        return await self._request("GET", "pools", params=params)
 
     async def add_pool(
         self,
+        chain: str,
+        network: str,
         connector: str,
         pool_type: str,
-        network: str,
         address: str,
         base_symbol: str,
         quote_symbol: str,
@@ -288,6 +335,7 @@ class GatewayClient:
     ) -> Dict:
         """Add a new pool"""
         payload = {
+            "chain": chain,
             "connector": connector,
             "type": pool_type.lower(),  # Gateway expects lowercase (amm, clmm)
             "network": network,
@@ -301,12 +349,17 @@ class GatewayClient:
             payload["feePct"] = fee_pct
         return await self._request("POST", "pools", json=payload)
 
-    async def delete_pool(self, connector: str, network: str, pool_type: str, address: str) -> Dict:
+    async def save_pool(self, chain_network: str, address: str) -> Dict:
+        """Save a pool by address using GeckoTerminal lookup"""
+        return await self._request("POST", f"pools/save/{address}", params={
+            "chainNetwork": chain_network
+        }, json={})
+
+    async def delete_pool(self, chain: str, network: str, address: str) -> Dict:
         """Delete a pool from Gateway's pool list"""
         return await self._request("DELETE", f"pools/{address}", params={
-            "connector": connector,
-            "network": network,
-            "type": pool_type.lower()  # Gateway expects lowercase (amm, clmm)
+            "chain": chain,
+            "network": network
         })
 
     async def pool_info(self, connector: str, network: str, pool_address: str) -> Dict:

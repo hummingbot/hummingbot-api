@@ -1,8 +1,10 @@
-from typing import Dict, List, Optional, Any, Literal
-from pydantic import BaseModel, Field, field_validator
-from decimal import Decimal
 from datetime import datetime
-from hummingbot.core.data_type.common import OrderType, TradeType, PositionAction
+from decimal import Decimal
+from typing import Any, Dict, List, Literal, Optional
+
+from hummingbot.core.data_type.common import OrderType, PositionAction, TradeType
+from pydantic import BaseModel, Field, field_validator
+
 from .pagination import PaginationParams, TimeRangePaginationParams
 
 
@@ -190,7 +192,7 @@ class PortfolioStateFilterRequest(BaseModel):
     account_names: Optional[List[str]] = Field(default=None, description="List of account names to filter by")
     connector_names: Optional[List[str]] = Field(default=None, description="List of connector names to filter by")
     skip_gateway: bool = Field(default=False, description="Skip Gateway wallet balance updates for faster CEX-only queries")
-    refresh: bool = Field(default=False, description="If True, refresh balances before returning. If False, return cached state")
+    refresh: bool = Field(default=False, description="If True, refresh balances from exchanges. If False, return cached state.")
 
 
 class PortfolioHistoryFilterRequest(TimeRangePaginationParams):

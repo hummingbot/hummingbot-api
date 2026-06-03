@@ -4,10 +4,10 @@ Supports swaps via routers (Jupiter, 0x) and CLMM liquidity positions (Meteora, 
 
 Note: AMM support has been removed. Use Router for simple swaps, CLMM for liquidity provision.
 """
-from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, Field
 from decimal import Decimal
+from typing import Any, Dict, List, Optional
 
+from pydantic import BaseModel, Field
 
 # ============================================
 # Swap Models (Router: Jupiter, 0x)
@@ -278,58 +278,25 @@ class TimeBasedMetrics(BaseModel):
 
 
 class CLMMPoolListItem(BaseModel):
-    """Individual pool item in CLMM pool listing"""
+    """Individual pool item in CLMM pool listing - matches Gateway fetch-pools response"""
     address: str = Field(description="Pool address")
     name: str = Field(description="Pool name (e.g., 'SOL-USDC')")
     trading_pair: str = Field(description="Trading pair derived from tokens")
     mint_x: str = Field(description="Base token mint address")
     mint_y: str = Field(description="Quote token mint address")
-    bin_step: int = Field(description="Bin step size")
+    bin_step: int = Field(description="Bin step / tick spacing")
     current_price: Decimal = Field(description="Current pool price")
-    liquidity: str = Field(description="Total liquidity in pool")
-    reserve_x: str = Field(description="Base token reserves")
-    reserve_y: str = Field(description="Quote token reserves")
-    reserve_x_amount: Optional[Decimal] = Field(default=None, description="Base token reserves as decimal amount")
-    reserve_y_amount: Optional[Decimal] = Field(default=None, description="Quote token reserves as decimal amount")
-
-    # Fee structure
+    liquidity: str = Field(description="Total value locked (TVL) in USD")
     base_fee_percentage: Optional[str] = Field(default=None, description="Base fee percentage")
-    max_fee_percentage: Optional[str] = Field(default=None, description="Maximum fee percentage")
-    protocol_fee_percentage: Optional[str] = Field(default=None, description="Protocol fee percentage")
-
-    # APR/APY
     apr: Optional[Decimal] = Field(default=None, description="Annual percentage rate")
     apy: Optional[Decimal] = Field(default=None, description="Annual percentage yield")
-    farm_apr: Optional[Decimal] = Field(default=None, description="Farming annual percentage rate")
-    farm_apy: Optional[Decimal] = Field(default=None, description="Farming annual percentage yield")
-
-    # Volume and fees
     volume_24h: Optional[Decimal] = Field(default=None, description="24h trading volume")
     fees_24h: Optional[Decimal] = Field(default=None, description="24h fees collected")
-    today_fees: Optional[Decimal] = Field(default=None, description="Today's fees collected")
-    cumulative_trade_volume: Optional[str] = Field(default=None, description="Cumulative trade volume")
-    cumulative_fee_volume: Optional[str] = Field(default=None, description="Cumulative fee volume")
-
-    # Time-based metrics
-    volume: Optional[TimeBasedMetrics] = Field(default=None, description="Volume across different time periods")
-    fees: Optional[TimeBasedMetrics] = Field(default=None, description="Fees across different time periods")
-    fee_tvl_ratio: Optional[TimeBasedMetrics] = Field(default=None, description="Fee-to-TVL ratio across different time periods")
-
-    # Rewards
-    reward_mint_x: Optional[str] = Field(default=None, description="Base token reward mint address")
-    reward_mint_y: Optional[str] = Field(default=None, description="Quote token reward mint address")
-
-    # Metadata
-    tags: Optional[List[str]] = Field(default=None, description="Pool tags")
-    is_verified: bool = Field(default=False, description="Whether tokens are verified")
-    is_blacklisted: Optional[bool] = Field(default=None, description="Whether pool is blacklisted")
-    hide: Optional[bool] = Field(default=None, description="Whether pool should be hidden")
-    launchpad: Optional[str] = Field(default=None, description="Associated launchpad")
 
 
 class CLMMPoolListResponse(BaseModel):
-    """Response with list of available CLMM pools"""
+    """Response with list of available CLMM pools - matches Gateway fetch-pools response"""
     pools: List[CLMMPoolListItem] = Field(description="List of available pools")
-    total: int = Field(description="Total number of pools")
+    total: int = Field(description="Total number of matching pools")
     page: int = Field(description="Current page number")
-    limit: int = Field(description="Results per page")
+    pageSize: int = Field(description="Number of pools per page")

@@ -626,16 +626,24 @@ class ExecutorService:
             # Convert TradeType enum or int to string
             result["side"] = side.name if hasattr(side, 'name') else str(side)
 
-        # For grid executors, filter out heavy fields from custom_info
-        if executor_type == "grid_executor" and result.get("custom_info"):
-            heavy_fields = {"levels_by_state", "filled_orders", "failed_orders", "canceled_orders"}
-            result["custom_info"] = {k: v for k, v in result["custom_info"].items() if k not in heavy_fields}
+        # Filter out heavy fields from custom_info
+        result["custom_info"] = self._strip_heavy_fields(result.get("custom_info"), executor_type)
 
         # Add log capture info
         result["error_count"] = self._log_capture.get_error_count(executor_id)
         result["last_error"] = self._log_capture.get_last_error(executor_id)
 
         return result
+
+    @staticmethod
+    def _strip_heavy_fields(custom_info: Optional[Dict], executor_type: Optional[str] = None) -> Optional[Dict]:
+        """Remove heavy fields from custom_info to reduce payload size."""
+        if not custom_info:
+            return custom_info
+        heavy_fields = {"fill_events"}
+        if executor_type == "grid_executor":
+            heavy_fields |= {"levels_by_state", "filled_orders", "failed_orders", "canceled_orders"}
+        return {k: v for k, v in custom_info.items() if k not in heavy_fields}
 
     def _format_db_record(self, record) -> Dict[str, Any]:
         """Format a database ExecutorRecord for API response."""
@@ -672,7 +680,9 @@ class ExecutorService:
             "cum_fees_quote": float(record.cum_fees_quote) if record.cum_fees_quote else 0.0,
             "filled_amount_quote": float(record.filled_amount_quote) if record.filled_amount_quote else 0.0,
             "config": json.loads(record.config) if record.config else None,
-            "custom_info": json.loads(record.final_state) if record.final_state else None,
+            "custom_info": self._strip_heavy_fields(
+                json.loads(record.final_state), record.executor_type
+            ) if record.final_state else None,
             "error_count": error_count,
             "last_error": last_error,
         }

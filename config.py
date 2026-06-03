@@ -11,6 +11,7 @@ class BrokerSettings(BaseSettings):
     port: int = Field(default=1883, description="MQTT broker port")
     username: str = Field(default="admin", description="MQTT broker username")
     password: str = Field(default="password", description="MQTT broker password")
+    performance_dump_interval: int = Field(default=5, description="Controller performance dump interval in minutes")
 
     model_config = SettingsConfigDict(env_prefix="BROKER_", extra="ignore")
 

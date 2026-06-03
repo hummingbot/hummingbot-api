@@ -1,8 +1,14 @@
+import logging
 from typing import List, Optional
-from fastapi import APIRouter, HTTPException, Query
 
+from fastapi import APIRouter, Depends, HTTPException, Query
+
+from database import AsyncDatabaseManager, BotRunRepository
+from deps import get_database_manager
 from utils.file_system import fs_util
 from utils.hummingbot_database_reader import HummingbotDatabase
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Archived Bots"], prefix="/archived-bots")
 
@@ -11,21 +17,65 @@ router = APIRouter(tags=["Archived Bots"], prefix="/archived-bots")
 async def list_databases():
     """
     List all available database files in the system.
-    
+
     Returns:
         List of database file paths
     """
     return fs_util.list_databases()
 
 
+@router.delete("/{db_path:path}")
+async def delete_archived_bot(
+    db_path: str,
+    db_manager: AsyncDatabaseManager = Depends(get_database_manager)
+):
+    """
+    Delete an archived bot and its entire directory.
+    Also attempts to delete matching BotRun records from PostgreSQL (best-effort).
+
+    Args:
+        db_path: Path to the database file (as returned by list_databases)
+
+    Returns:
+        Confirmation message with the deleted bot name and count of cleaned PG records
+    """
+    try:
+        bot_name = fs_util.delete_archived_bot(db_path)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=f"Permission denied: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error deleting archived bot: {str(e)}")
+
+    # Best-effort: also clean matching BotRun records from PG
+    bot_runs_deleted = 0
+    try:
+        async with db_manager.get_session_context() as session:
+            bot_run_repo = BotRunRepository(session)
+            bot_runs_deleted = await bot_run_repo.delete_bot_runs_by_bot_name(bot_name)
+            if bot_runs_deleted > 0:
+                logger.info(f"Deleted {bot_runs_deleted} bot run record(s) for '{bot_name}'")
+    except Exception as e:
+        logger.warning(f"Failed to clean bot run records for '{bot_name}': {e}")
+
+    return {
+        "message": f"Archived bot '{bot_name}' deleted successfully",
+        "bot_name": bot_name,
+        "bot_runs_deleted": bot_runs_deleted
+    }
+
+
 @router.get("/{db_path:path}/status")
 async def get_database_status(db_path: str):
     """
     Get status information for a specific database.
-    
+
     Args:
         db_path: Path to the database file
-        
+
     Returns:
         Database status including table health
     """
@@ -44,23 +94,23 @@ async def get_database_status(db_path: str):
 async def get_database_summary(db_path: str):
     """
     Get a summary of database contents including basic statistics.
-    
+
     Args:
         db_path: Full path to the database file
-        
+
     Returns:
         Summary statistics of the database contents
     """
     try:
         db = HummingbotDatabase(db_path)
-        
+
         # Get basic counts
         orders = db.get_orders()
         trades = db.get_trade_fills()
         executors = db.get_executors_data()
         positions = db.get_positions()
         controllers = db.get_controllers_data()
-        
+
         return {
             "db_path": db_path,
             "total_orders": len(orders),
@@ -79,78 +129,79 @@ async def get_database_summary(db_path: str):
 async def get_database_performance(db_path: str):
     """
     Get trade-based performance analysis for a bot database.
-    
+
     Args:
         db_path: Full path to the database file
-        
+
     Returns:
         Trade-based performance metrics with rolling calculations
     """
     try:
         db = HummingbotDatabase(db_path)
-        
+
         # Use new trade-based performance calculation
         performance_data = db.calculate_trade_based_performance()
-        
+
         if len(performance_data) == 0:
             return {
                 "db_path": db_path,
                 "error": "No trades found in database",
                 "performance_data": []
             }
-        
+
         # Convert to records for JSON response
         performance_records = performance_data.fillna(0).to_dict('records')
-        
+
         # Calculate summary statistics
         final_row = performance_data.iloc[-1] if len(performance_data) > 0 else {}
         summary = {
             "total_trades": len(performance_data),
             "final_net_pnl_quote": float(final_row.get('net_pnl_quote', 0)),
-            "final_realized_pnl_quote": float(final_row.get('realized_trade_pnl_quote', 0)), 
+            "final_realized_pnl_quote": float(final_row.get('realized_trade_pnl_quote', 0)),
             "final_unrealized_pnl_quote": float(final_row.get('unrealized_trade_pnl_quote', 0)),
             "total_fees_quote": float(performance_data['fees_quote'].sum()),
-            "total_volume_quote": float(performance_data['cum_volume_quote'].iloc[-1] if len(performance_data) > 0 else 0),
+            "total_volume_quote": float(
+                performance_data['cum_volume_quote'].iloc[-1] if len(performance_data) > 0 else 0),
             "final_net_position": float(final_row.get('net_position', 0)),
             "trading_pairs": performance_data['trading_pair'].unique().tolist(),
             "connector_names": performance_data['connector_name'].unique().tolist()
         }
-        
+
         return {
             "db_path": db_path,
             "summary": summary,
             "performance_data": performance_records
         }
-        
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error calculating performance: {str(e)}")
 
 
 @router.get("/{db_path:path}/trades")
 async def get_database_trades(
-    db_path: str,
-    limit: int = Query(default=100, description="Limit number of trades returned"),
-    offset: int = Query(default=0, description="Offset for pagination")
+        db_path: str,
+        limit: int = Query(default=100, description="Limit number of trades returned"),
+        offset: int = Query(default=0, description="Offset for pagination")
 ):
     """
     Get trade history from a database.
-    
+
     Args:
         db_path: Full path to the database file
         limit: Maximum number of trades to return
         offset: Offset for pagination
-        
+
     Returns:
         List of trades with pagination info
     """
     try:
         db = HummingbotDatabase(db_path)
         trades = db.get_trade_fills()
-        
+
         # Apply pagination
         total_trades = len(trades)
         trades_page = trades.iloc[offset:offset + limit]
-        
+
         return {
             "db_path": db_path,
             "trades": trades_page.fillna(0).to_dict('records'),
@@ -167,35 +218,35 @@ async def get_database_trades(
 
 @router.get("/{db_path:path}/orders")
 async def get_database_orders(
-    db_path: str,
-    limit: int = Query(default=100, description="Limit number of orders returned"),
-    offset: int = Query(default=0, description="Offset for pagination"),
-    status: Optional[str] = Query(default=None, description="Filter by order status")
+        db_path: str,
+        limit: int = Query(default=100, description="Limit number of orders returned"),
+        offset: int = Query(default=0, description="Offset for pagination"),
+        status: Optional[str] = Query(default=None, description="Filter by order status")
 ):
     """
     Get order history from a database.
-    
+
     Args:
         db_path: Full path to the database file
         limit: Maximum number of orders to return
         offset: Offset for pagination
         status: Optional status filter
-        
+
     Returns:
         List of orders with pagination info
     """
     try:
         db = HummingbotDatabase(db_path)
         orders = db.get_orders()
-        
+
         # Apply status filter if provided
         if status:
             orders = orders[orders["last_status"] == status]
-        
+
         # Apply pagination
         total_orders = len(orders)
         orders_page = orders.iloc[offset:offset + limit]
-        
+
         return {
             "db_path": db_path,
             "orders": orders_page.fillna(0).to_dict('records'),
@@ -214,17 +265,17 @@ async def get_database_orders(
 async def get_database_executors(db_path: str):
     """
     Get executor data from a database.
-    
+
     Args:
         db_path: Full path to the database file
-        
+
     Returns:
         List of executors with their configurations and results
     """
     try:
         db = HummingbotDatabase(db_path)
         executors = db.get_executors_data()
-        
+
         return {
             "db_path": db_path,
             "executors": executors.fillna(0).to_dict('records'),
@@ -236,29 +287,29 @@ async def get_database_executors(db_path: str):
 
 @router.get("/{db_path:path}/positions")
 async def get_database_positions(
-    db_path: str,
-    limit: int = Query(default=100, description="Limit number of positions returned"),
-    offset: int = Query(default=0, description="Offset for pagination")
+        db_path: str,
+        limit: int = Query(default=100, description="Limit number of positions returned"),
+        offset: int = Query(default=0, description="Offset for pagination")
 ):
     """
     Get position data from a database.
-    
+
     Args:
         db_path: Full path to the database file
         limit: Maximum number of positions to return
         offset: Offset for pagination
-        
+
     Returns:
         List of positions with pagination info
     """
     try:
         db = HummingbotDatabase(db_path)
         positions = db.get_positions()
-        
+
         # Apply pagination
         total_positions = len(positions)
         positions_page = positions.iloc[offset:offset + limit]
-        
+
         return {
             "db_path": db_path,
             "positions": positions_page.fillna(0).to_dict('records'),
@@ -277,17 +328,17 @@ async def get_database_positions(
 async def get_database_controllers(db_path: str):
     """
     Get controller data from a database.
-    
+
     Args:
         db_path: Full path to the database file
-        
+
     Returns:
         List of controllers that were running with their configurations
     """
     try:
         db = HummingbotDatabase(db_path)
         controllers = db.get_controllers_data()
-        
+
         return {
             "db_path": db_path,
             "controllers": controllers.fillna(0).to_dict('records'),

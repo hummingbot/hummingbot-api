@@ -3,9 +3,6 @@ from decimal import Decimal
 from typing import List, Optional, Tuple
 
 import pandas_ta as ta  # noqa: F401
-from pydantic import Field, field_validator
-from pydantic_core.core_schema import ValidationInfo
-
 from hummingbot.core.data_type.common import TradeType
 from hummingbot.data_feed.candles_feed.data_types import CandlesConfig
 from hummingbot.strategy_v2.controllers.directional_trading_controller_base import (
@@ -14,6 +11,8 @@ from hummingbot.strategy_v2.controllers.directional_trading_controller_base impo
 )
 from hummingbot.strategy_v2.executors.dca_executor.data_types import DCAExecutorConfig, DCAMode
 from hummingbot.strategy_v2.executors.position_executor.data_types import TrailingStop
+from pydantic import Field, field_validator
+from pydantic_core.core_schema import ValidationInfo
 
 
 class DManV3ControllerConfig(DirectionalTradingControllerConfigBase):
@@ -48,7 +47,6 @@ class DManV3ControllerConfig(DirectionalTradingControllerConfigBase):
     )
     dca_spreads: List[Decimal] = Field(
         default="0.001,0.018,0.15,0.25",
-        validate_default=True,
         json_schema_extra={
             "prompt": "Enter the spreads for each DCA level (comma-separated) if dynamic_spread=True this value "
                       "will multiply the Bollinger Bands width, e.g. if the Bollinger Bands width is 0.1 (10%)"
@@ -57,7 +55,6 @@ class DManV3ControllerConfig(DirectionalTradingControllerConfigBase):
     )
     dca_amounts_pct: List[Decimal] = Field(
         default=None,
-        validate_default=True,
         json_schema_extra={
             "prompt": "Enter the amounts for each DCA level (as a percentage of the total balance, "
                       "comma-separated). Don't worry about the final sum, it will be normalized. ",

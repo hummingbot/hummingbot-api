@@ -1,10 +1,13 @@
 import asyncio
 import logging
-from typing import Optional
 import re
+from datetime import datetime, timezone
+from typing import Dict, List, Optional
 
 import docker
 
+from config import settings
+from database import AsyncDatabaseManager, ControllerPerformanceRepository
 from utils.mqtt_manager import MQTTManager
 
 logger = logging.getLogger(__name__)
@@ -17,7 +20,8 @@ logger = logging.getLogger(__name__)
 class BotsOrchestrator:
     """Orchestrates Hummingbot instances using Docker and MQTT communication."""
 
-    def __init__(self, broker_host, broker_port, broker_username, broker_password):
+    def __init__(self, broker_host, broker_port, broker_username, broker_password,
+                 performance_dump_interval: int = 5):
         self.broker_host = broker_host
         self.broker_port = broker_port
         self.broker_username = broker_username
@@ -32,9 +36,15 @@ class BotsOrchestrator:
         # Active bots tracking
         self.active_bots = {}
         self._update_bots_task: Optional[asyncio.Task] = None
-        
+
         # Track bots that are currently being stopped and archived
         self.stopping_bots = set()
+
+        # Controller performance dump (similar to AccountsService.dump_account_state)
+        self.performance_dump_interval = performance_dump_interval * 60  # Convert minutes to seconds
+        self._performance_dump_task: Optional[asyncio.Task] = None
+        self.db_manager = AsyncDatabaseManager(settings.database.url)
+        self._db_initialized = False
 
         # MQTT manager will be started asynchronously later
 
@@ -65,6 +75,10 @@ class BotsOrchestrator:
         # Start MQTT manager and update loop in async context
         self._update_bots_task = asyncio.create_task(self._start_async())
 
+        # Start controller performance dump loop
+        self._performance_dump_task = asyncio.create_task(self._performance_dump_loop())
+        logger.info(f"Controller performance dump started ({self.performance_dump_interval}s interval)")
+
     async def _start_async(self):
         """Start MQTT manager and update loop asynchronously."""
         logger.info("Starting MQTT manager...")
@@ -78,6 +92,10 @@ class BotsOrchestrator:
         if self._update_bots_task:
             self._update_bots_task.cancel()
         self._update_bots_task = None
+
+        if self._performance_dump_task:
+            self._performance_dump_task.cancel()
+        self._performance_dump_task = None
 
         # Stop MQTT manager asynchronously
         asyncio.create_task(self.mqtt_manager.stop())
@@ -303,7 +321,7 @@ class BotsOrchestrator:
                     "general_logs": [],
                     "recently_active": False,
                 }
-            
+
             # Get data from MQTT manager
             controller_reports = self.mqtt_manager.get_bot_controller_reports(bot_name)
             performance = self.determine_controller_performance(controller_reports)
@@ -331,18 +349,116 @@ class BotsOrchestrator:
             }
         except Exception as e:
             return {"status": "error", "error": str(e)}
-    
+
     def set_bot_stopping(self, bot_name: str):
         """Mark a bot as currently being stopped and archived."""
         self.stopping_bots.add(bot_name)
         logger.info(f"Marked bot {bot_name} as stopping")
-    
+
     def clear_bot_stopping(self, bot_name: str):
         """Clear the stopping status for a bot."""
         self.stopping_bots.discard(bot_name)
         logger.info(f"Cleared stopping status for bot {bot_name}")
-    
+
     def is_bot_stopping(self, bot_name: str) -> bool:
         """Check if a bot is currently being stopped."""
         return bot_name in self.stopping_bots
-    
+
+    # ============================================
+    # Controller Performance Snapshots
+    # ============================================
+
+    async def _ensure_db_initialized(self):
+        """Ensure database is initialized before using it."""
+        if not self._db_initialized:
+            await self.db_manager.create_tables()
+            self._db_initialized = True
+
+    async def _performance_dump_loop(self):
+        """Periodically dump controller performance to the database (default every 5 minutes)."""
+        while True:
+            try:
+                await self.dump_controller_performance()
+            except Exception as e:
+                logger.error(f"Error dumping controller performance: {e}")
+            finally:
+                await asyncio.sleep(self.performance_dump_interval)
+
+    async def dump_controller_performance(self):
+        """Save current controller performance for all active bots to the database."""
+        await self._ensure_db_initialized()
+
+        snapshot_timestamp = datetime.now(timezone.utc)
+        saved_count = 0
+
+        try:
+            async with self.db_manager.get_session_context() as session:
+                repo = ControllerPerformanceRepository(session)
+
+                for bot_name in list(self.active_bots):
+                    if self.is_bot_stopping(bot_name):
+                        continue
+
+                    controller_reports = self.mqtt_manager.get_bot_controller_reports(bot_name)
+                    performance_data = self.determine_controller_performance(controller_reports)
+
+                    for controller_id, data in performance_data.items():
+                        await repo.save_controller_performance(
+                            bot_name=bot_name,
+                            controller_id=controller_id,
+                            status=data.get("status", "unknown"),
+                            performance=data.get("performance", {}),
+                            custom_info=data.get("custom_info", {}),
+                            snapshot_timestamp=snapshot_timestamp,
+                        )
+                        saved_count += 1
+
+            if saved_count > 0:
+                logger.info(f"Dumped {saved_count} controller performance snapshots")
+        except Exception as e:
+            logger.error(f"Error saving controller performance to database: {e}")
+            raise
+
+    async def get_controller_performance_history(
+        self,
+        bot_name: Optional[str] = None,
+        controller_id: Optional[str] = None,
+        limit: Optional[int] = None,
+        cursor: Optional[str] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
+        interval: str = "5m"
+    ):
+        """Get historical controller performance with pagination and interval sampling."""
+        await self._ensure_db_initialized()
+
+        try:
+            async with self.db_manager.get_session_context() as session:
+                repo = ControllerPerformanceRepository(session)
+                return await repo.get_performance_history(
+                    bot_name=bot_name,
+                    controller_id=controller_id,
+                    limit=limit,
+                    cursor=cursor,
+                    start_time=start_time,
+                    end_time=end_time,
+                    interval=interval
+                )
+        except Exception as e:
+            logger.error(f"Error getting controller performance history: {e}")
+            return [], None, False
+
+    async def get_latest_controller_performance(
+        self,
+        bot_name: Optional[str] = None
+    ) -> List[Dict]:
+        """Get the most recent performance snapshot for each bot/controller."""
+        await self._ensure_db_initialized()
+
+        try:
+            async with self.db_manager.get_session_context() as session:
+                repo = ControllerPerformanceRepository(session)
+                return await repo.get_latest_performance(bot_name=bot_name)
+        except Exception as e:
+            logger.error(f"Error getting latest controller performance: {e}")
+            return []

@@ -2,7 +2,7 @@ import json
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 
-from sqlalchemy import desc, select, and_, or_, func
+from sqlalchemy import delete, desc, select, and_, or_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import BotRun
@@ -189,3 +189,30 @@ class BotRunRepository:
             "strategy_type_counts": strategy_counts,
             "status_counts": status_counts
         }
+
+    async def delete_bot_run(self, bot_run_id: int) -> Optional[BotRun]:
+        """Delete a bot run record by ID. Returns the deleted record or None."""
+        stmt = select(BotRun).where(BotRun.id == bot_run_id)
+        result = await self.session.execute(stmt)
+        bot_run = result.scalar_one_or_none()
+
+        if bot_run:
+            await self.session.delete(bot_run)
+            await self.session.flush()
+
+        return bot_run
+
+    async def delete_bot_runs_by_bot_name(self, bot_name: str) -> int:
+        """Delete all bot run records for a given bot_name. Returns count deleted."""
+        stmt = select(BotRun).where(BotRun.bot_name == bot_name)
+        result = await self.session.execute(stmt)
+        bot_runs = result.scalars().all()
+
+        count = len(bot_runs)
+        for bot_run in bot_runs:
+            await self.session.delete(bot_run)
+
+        if count > 0:
+            await self.session.flush()
+
+        return count
