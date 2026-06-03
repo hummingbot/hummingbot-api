@@ -1,4 +1,4 @@
-.PHONY: setup run deploy stop install uninstall build install-pre-commit
+.PHONY: setup run deploy stop install uninstall build install-pre-commit tailscale-status
 
 SETUP_SENTINEL := .setup-complete
 
@@ -9,13 +9,56 @@ $(SETUP_SENTINEL):
 	./setup.sh
 
 # Run locally (dev mode)
+# When TAILSCALE_ENABLED=true: installs Tailscale if needed, connects, configures tailscale serve,
+# then binds uvicorn to 127.0.0.1 only (tailscale serve exposes port 8000 on the tailnet)
 run:
 	docker compose up emqx postgres -d
-	conda run --no-capture-output -n hummingbot-api uvicorn main:app --reload
+	@set -a; [ -f .env ] && . ./.env; set +a; \
+	if [ "$${TAILSCALE_ENABLED:-false}" = "true" ]; then \
+		echo "[INFO] Tailscale mode: setting up Tailscale for source install..."; \
+		if ! command -v tailscale >/dev/null 2>&1; then \
+			echo "[INFO] Installing Tailscale..."; \
+			curl -fsSL https://tailscale.com/install.sh | sh; \
+		fi; \
+		if ! tailscale status >/dev/null 2>&1; then \
+			echo "[INFO] Connecting to Tailscale network..."; \
+			sudo tailscale up --authkey="$${TAILSCALE_AUTH_KEY}" --hostname="$${TAILSCALE_HOSTNAME:-hummingbot-api}" --accept-dns=true; \
+		fi; \
+		tailscale serve status 2>/dev/null | grep -q ":8000" || \
+			sudo tailscale serve --bg http:8000 http://localhost:8000; \
+		echo "[INFO] Binding uvicorn to 127.0.0.1 (tailscale serve exposes port 8000 on tailnet)"; \
+		conda run --no-capture-output -n hummingbot-api uvicorn main:app --reload --host 127.0.0.1 --port 8000; \
+	else \
+		conda run --no-capture-output -n hummingbot-api uvicorn main:app --reload; \
+	fi
 
 # Deploy with Docker
+# When TAILSCALE_ENABLED=true: adds the Tailscale sidecar compose override
 deploy: $(SETUP_SENTINEL)
-	docker compose up -d
+	@set -a; [ -f .env ] && . ./.env; set +a; \
+	if [ "$${TAILSCALE_ENABLED:-false}" = "true" ]; then \
+		echo "[INFO] Deploying with Tailscale sidecar..."; \
+		docker compose -f docker-compose.yml -f docker-compose.tailscale.yml up -d; \
+	else \
+		docker compose up -d; \
+	fi
+
+TAILSCALE_CONTAINER := hummingbot-tailscale
+
+# Show Tailscale connection status (Docker sidecar or local install)
+tailscale-status:
+	@if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx '$(TAILSCALE_CONTAINER)'; then \
+		echo "[INFO] Tailscale sidecar (Docker)"; \
+		docker exec $(TAILSCALE_CONTAINER) tailscale status; \
+	elif command -v tailscale >/dev/null 2>&1; then \
+		echo "[INFO] Tailscale (local)"; \
+		tailscale status; \
+	else \
+		echo "Tailscale is not available."; \
+		echo "  Docker deploy: ensure TAILSCALE_ENABLED=true and run 'make deploy'"; \
+		echo "  Source run:    use 'make run' with Tailscale enabled (installs locally)"; \
+		exit 1; \
+	fi
 
 # Stop all services
 stop:
