@@ -950,10 +950,25 @@ class AccountsService:
             raise HTTPException(status_code=500, detail="Connector service not initialized")
 
         try:
-            # Update the connector keys (this saves the credentials to file and validates them)
-            connector = await self._connector_service.update_connector_keys(account_name, connector_name, credentials)
+            # Saves the credentials to file + fast balances-only validation, and caches the connector
+            # so its balances are available immediately; the full bring-up runs in the background.
+            await self._connector_service.update_connector_keys(account_name, connector_name, credentials)
 
-            await self.update_account_state()
+            # Surface the new connector's balances in the portfolio right away — scoped to just this
+            # connector and skipping Gateway, so it's fast (no all-connectors / unreachable-Gateway
+            # refresh). The full bring-up finishes in the background. A failure here is display-only
+            # and must NOT delete the just-validated credential.
+            try:
+                await self.update_account_state(
+                    account_names=[account_name],
+                    connector_names=[connector_name],
+                    skip_gateway=True,
+                )
+            except Exception as refresh_err:
+                logger.warning(
+                    f"Initial account-state refresh for {connector_name} failed (will refresh on the "
+                    f"next loop): {refresh_err}"
+                )
         except Exception as e:
             logger.error(f"Error adding connector credentials for account {account_name}: {e}")
             await self.delete_credentials(account_name, connector_name)

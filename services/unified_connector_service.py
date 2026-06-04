@@ -35,6 +35,9 @@ from utils.security import BackendAPISecurity
 
 logger = logging.getLogger(__name__)
 
+# Strong refs to fire-and-forget background connector-init tasks so they aren't GC'd mid-run.
+_BACKGROUND_INIT_TASKS: set = set()
+
 
 class UnifiedConnectorService:
     """
@@ -581,10 +584,27 @@ class UnifiedConnectorService:
         # Authenticate and create connector
         connector = self._create_trading_connector(account_name, connector_name)
 
+        # Fetch balances first (fast, account-level) so the connector is usable for the portfolio
+        # before the heavy bring-up, then finish the rest.
+        await connector._update_balances()
+        await self._finish_trading_connector_init(connector, account_name, connector_name)
+
+        logger.info(f"Initialized trading connector {connector_name} for {account_name}")
+        return connector
+
+    async def _finish_trading_connector_init(
+        self,
+        connector: ConnectorBase,
+        account_name: str,
+        connector_name: str,
+    ) -> None:
+        """Heavy part of trading-connector bring-up: symbol map, trading rules, positions, recorders,
+        metrics, and network tasks. Split out so it can run in the background after a fast
+        balances-only init, upgrading an already-cached connector in place without blocking
+        add-credential or flickering the portfolio."""
         # Initialize symbol map and trading rules
         await connector._initialize_trading_pair_symbol_map()
         await connector._update_trading_rules()
-        await connector._update_balances()
 
         # Perpetual-specific setup
         if self._is_perpetual_connector(connector):
@@ -624,9 +644,6 @@ class UnifiedConnectorService:
                 await connector._update_order_status()
             except Exception as e:
                 logger.error(f"Error updating initial order status for {connector_name}: {e}")
-
-        logger.info(f"Initialized trading connector {connector_name} for {account_name}")
-        return connector
 
     def _create_trading_connector(
         self,
@@ -1061,8 +1078,43 @@ class UnifiedConnectorService:
         # Properly stop old connector (stops recorders, network tasks, cleans up caches)
         await self.stop_trading_connector(account_name, connector_name)
 
-        # Create new connector with fresh recorders
-        return await self.get_trading_connector(account_name, connector_name)
+        # Fast path: create the connector and fetch balances only (mirrors the Hummingbot CLI
+        # `connect`), then CACHE it so the new connector's balances surface in the portfolio
+        # immediately via a scoped update_account_state — instead of blocking ~85s on the full
+        # bring-up (which for Hyperliquid perp fans out a metaAndAssetCtxs call per HIP-3 DEX plus
+        # order-book/websocket startup waits). Bad keys still fail here and the caller deletes the
+        # credential.
+        connector = self._create_trading_connector(account_name, connector_name)
+        await connector._update_balances()
+        self._trading_connectors.setdefault(account_name, {})[connector_name] = connector
+
+        # Finish the heavy bring-up (symbol map, trading rules, HIP-3 markets, network, recorders) in
+        # the background, IN PLACE on the cached connector, so it becomes trade-ready without blocking
+        # the response or flickering the portfolio.
+        task = asyncio.create_task(self._finish_init_background(account_name, connector_name, connector))
+        _BACKGROUND_INIT_TASKS.add(task)
+        task.add_done_callback(_BACKGROUND_INIT_TASKS.discard)
+
+        return connector
+
+    async def _finish_init_background(self, account_name: str, connector_name: str, connector: ConnectorBase) -> None:
+        """Finish the heavy trading-connector bring-up in the background, upgrading the already-cached
+        balances-only connector in place so it becomes trade-ready — without blocking add-credential."""
+        try:
+            # Skip if the credential was already removed before this ran.
+            if connector_name not in self.list_available_credentials(account_name):
+                self.clear_trading_connector(account_name, connector_name)
+                return
+            await self._finish_trading_connector_init(connector, account_name, connector_name)
+            # If the credential was deleted WHILE finishing, tear the connector back down so a removed
+            # key doesn't linger in the cache / account state / portfolio.
+            if connector_name not in self.list_available_credentials(account_name):
+                await self.stop_trading_connector(account_name, connector_name)
+                self.clear_trading_connector(account_name, connector_name)
+                return
+            logger.info(f"Background-finished trading connector {connector_name} for {account_name}")
+        except Exception as e:
+            logger.error(f"Background finish failed for {account_name}/{connector_name}: {e}")
 
     def clear_trading_connector(
         self,
