@@ -396,6 +396,11 @@ class MarketDataService:
             max_records=10,
         ))
         try:
+            # Some feeds (e.g. Hyperliquid spot) resolve exchange-specific symbol data in
+            # initialize_exchange_data() that fetch_candles' REST payload depends on; without it
+            # the payload dereferences uninitialized state. get_historical_candles initializes the
+            # same way, so mirror it here in the validation fetch.
+            await feed.initialize_exchange_data()
             end_time = int(_time.time())
             candles = await feed.fetch_candles(end_time=end_time, limit=1)
             if candles is None or len(candles) == 0:
