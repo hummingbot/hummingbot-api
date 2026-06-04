@@ -247,6 +247,12 @@ async def lifespan(app: FastAPI):
     logging.info("Initializing all trading connectors...")
     await connector_service.initialize_all_trading_connectors()
 
+    # Reconcile persisted active orders against the exchange (e.g. after an API
+    # restart/crash that lost in-memory references). Confirmed-closed orders are
+    # marked terminal; still-open orders are re-tracked so they stay cancelable.
+    # Runs after connectors reload their persisted in-flight orders.
+    await connector_service.reconcile_active_orders()
+
     bots_orchestrator.start()
     market_data_service.start()
     await market_data_service.warmup_rate_oracle()
