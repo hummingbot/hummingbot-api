@@ -11,8 +11,9 @@ files:
   - services/accounts_service.py:978
   - services/accounts_service.py:1038
   - utils/file_system.py:138
-commits: []
-status: todo
+commits:
+  - "10ea186 (fix) SEC-017: reject path traversal in account/connector names"
+status: done
 created: 2026-06-11
 ---
 
@@ -23,11 +24,11 @@ En routers/accounts.py:50 (add_account) y :71 (delete_account) el account_name l
 Validar account_name (y connector_name) en el borde de confianza: aceptar solo un patron seguro (p.ej. regex ^[A-Za-z0-9_-]+$, rechazando '/', '\', '.' inicial y '..') en los routers o en los metodos del servicio antes de cualquier operacion de filesystem. Adicionalmente, endurecer fs_util.delete_folder/list_files para validar folder_name igual que create_folder ya lo hace, de forma defensiva.
 
 ## Criterio de aceptación
-- [ ] POST /accounts/delete-account?account_name=../foo devuelve 400 sin tocar el filesystem
-- [ ] POST /accounts/add-account con account_name conteniendo '/', '\' o '..' es rechazado con 400
-- [ ] delete_folder/list_files rechazan nombres con separadores de ruta o componentes '..'
-- [ ] Los nombres de cuenta validos (alfanumericos, guion, guion bajo) siguen funcionando
-- [ ] No se rompe ningún test existente en test/ (se añade test si aplica)
+- [x] POST /accounts/delete-account?account_name=../foo devuelve 400 sin tocar el filesystem
+- [x] POST /accounts/add-account con account_name conteniendo '/', '\' o '..' es rechazado con 400
+- [x] delete_folder/list_files rechazan nombres con separadores de ruta o componentes '..'
+- [x] Los nombres de cuenta validos (alfanumericos, guion, guion bajo) siguen funcionando
+- [x] No se rompe ningún test existente en test/ (se añade test si aplica)
 
 ## Notas
 Hallazgo confirmado por verificación adversarial. Veredicto: Verified against the real code. The vulnerability is real and exploitable by an authenticated user.
@@ -36,3 +37,5 @@ CONFIRMED:
 - routers/accounts.py:50 (add_account) and :71 (delete_account) take account_name as a QUERY param (routes are /add-account and /delete-account, NOT /{account_name}), so the raw value can contain '/' and '..'. No validation occurs in the routers (only a 'master_account' literal check).
 - delete_account in services/accounts_service.py:1024 does no validation and calls fs_util.delete_folder('credentials', account_name) at line 1038.
 - utils/file_system.py:138 delete_folder builds self.
+
+Desvío menor: validate_safe_name vive en services/accounts_service.py e importado por el router (el spec permitía cualquiera de las dos capas).
