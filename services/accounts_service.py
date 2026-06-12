@@ -702,7 +702,8 @@ class AccountsService:
                                         cursor: Optional[str] = None,
                                         start_time: Optional[datetime] = None,
                                         end_time: Optional[datetime] = None,
-                                        interval: str = "5m"):
+                                        interval: str = "5m",
+                                        account_names: Optional[List[str]] = None):
         """
         Load the account state history from the database with pagination and interval sampling.
 
@@ -712,6 +713,7 @@ class AccountsService:
             start_time: Start time filter
             end_time: End time filter
             interval: Sampling interval (5m, 15m, 30m, 1h, 4h, 12h, 1d)
+            account_names: Optional list of account names to filter by (single IN query)
 
         :return: Tuple of (data, next_cursor, has_more).
         """
@@ -722,6 +724,7 @@ class AccountsService:
                 repository = AccountRepository(session)
                 return await repository.get_account_state_history(
                     limit=limit,
+                    account_names=account_names,
                     cursor=cursor,
                     start_time=start_time,
                     end_time=end_time,

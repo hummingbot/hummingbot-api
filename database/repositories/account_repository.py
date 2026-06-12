@@ -150,6 +150,7 @@ class AccountRepository:
     async def get_account_state_history(self,
                                       limit: Optional[int] = None,
                                       account_name: Optional[str] = None,
+                                      account_names: Optional[List[str]] = None,
                                       connector_name: Optional[str] = None,
                                       cursor: Optional[str] = None,
                                       start_time: Optional[datetime] = None,
@@ -160,7 +161,8 @@ class AccountRepository:
 
         Args:
             limit: Maximum number of records to return
-            account_name: Filter by account name
+            account_name: Filter by a single account name
+            account_names: Filter by multiple account names (IN filter)
             connector_name: Filter by connector name
             cursor: Cursor for pagination
             start_time: Start time filter
@@ -176,10 +178,12 @@ class AccountRepository:
             .options(joinedload(AccountState.token_states))
             .order_by(desc(AccountState.timestamp))
         )
-        
+
         # Apply filters
         if account_name:
             query = query.filter(AccountState.account_name == account_name)
+        if account_names:
+            query = query.filter(AccountState.account_name.in_(account_names))
         if connector_name:
             query = query.filter(AccountState.connector_name == connector_name)
         if start_time:

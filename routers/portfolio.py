@@ -92,37 +92,17 @@ async def get_portfolio_history(
         start_time_dt = datetime.fromtimestamp(filter_request.start_time / 1000) if filter_request.start_time else None
         end_time_dt = datetime.fromtimestamp(filter_request.end_time / 1000) if filter_request.end_time else None
 
-        if not filter_request.account_names:
-            # Get history for all accounts
-            data, next_cursor, has_more = await accounts_service.load_account_state_history(
-                limit=filter_request.limit,
-                cursor=filter_request.cursor,
-                start_time=start_time_dt,
-                end_time=end_time_dt,
-                interval=filter_request.interval
-            )
-        else:
-            # Get history for specific accounts - need to aggregate
-            all_data = []
-            for account_name in filter_request.account_names:
-                acc_data, _, _ = await accounts_service.get_account_state_history(
-                    account_name=account_name,
-                    limit=filter_request.limit,
-                    cursor=filter_request.cursor,
-                    start_time=start_time_dt,
-                    end_time=end_time_dt,
-                    interval=filter_request.interval
-                )
-                all_data.extend(acc_data)
-            
-            # Sort by timestamp and apply pagination
-            all_data.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
-            
-            # Apply limit
-            data = all_data[:filter_request.limit]
-            has_more = len(all_data) > filter_request.limit
-            next_cursor = data[-1]["timestamp"] if data and has_more else None
-        
+        # Single query handles both all-accounts and filtered-accounts cases (IN filter),
+        # returning data ordered by timestamp desc with a consistent pagination cursor.
+        data, next_cursor, has_more = await accounts_service.load_account_state_history(
+            limit=filter_request.limit,
+            cursor=filter_request.cursor,
+            start_time=start_time_dt,
+            end_time=end_time_dt,
+            interval=filter_request.interval,
+            account_names=filter_request.account_names
+        )
+
         # Apply connector filter to the data if specified
         if filter_request.connector_names:
             for item in data:
