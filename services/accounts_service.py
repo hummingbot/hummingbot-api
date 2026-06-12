@@ -251,6 +251,8 @@ class AccountsService:
         """
         Save the current account state to the database.
         All account/connector combinations from the same snapshot will use the same timestamp.
+        The whole snapshot is persisted atomically in a single transaction: save_account_state
+        only flushes, and get_session_context commits once on successful exit.
         :return:
         """
         # Snapshot the live dict synchronously (no awaits) so concurrent mutations of
@@ -266,12 +268,14 @@ class AccountsService:
             async with self.db_manager.get_session_context() as session:
                 repository = AccountRepository(session)
 
-                # Save each account-connector combination with the same timestamp
+                # Save each account-connector combination with the same timestamp.
+                # No commit happens inside the loop; the session context commits once
+                # after all rows are added (one transaction per snapshot).
                 for account_name, connectors in accounts_state_snapshot.items():
                     for connector_name, tokens_info in connectors.items():
                         if tokens_info:  # Only save if there's token data
                             await repository.save_account_state(account_name, connector_name, tokens_info, snapshot_timestamp)
-                            
+
         except Exception as e:
             logger.error(f"Error saving account state to database: {e}")
             # Re-raise the exception since we no longer have a fallback

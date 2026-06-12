@@ -63,11 +63,16 @@ class AccountRepository:
 
         return sampled
 
-    async def save_account_state(self, account_name: str, connector_name: str, tokens_info: List[Dict], 
+    async def save_account_state(self, account_name: str, connector_name: str, tokens_info: List[Dict],
                                 snapshot_timestamp: Optional[datetime] = None) -> AccountState:
         """
         Save account state with token information to the database.
         If snapshot_timestamp is provided, use it instead of server default.
+
+        Note: this method does NOT commit; it only flushes to obtain the AccountState id.
+        The caller's session context owns the transaction and commits once
+        (e.g. get_session_context commits on successful exit), so a snapshot spanning
+        multiple accounts/connectors persists atomically in a single transaction.
         """
         account_state_data = {
             "account_name": account_name,
@@ -93,8 +98,7 @@ class AccountRepository:
                 available_units=Decimal(str(token_info["available_units"]))
             )
             self.session.add(token_state)
-        
-        await self.session.commit()
+
         return account_state
 
     async def get_latest_account_states(self) -> Dict[str, Dict[str, List[Dict]]]:
