@@ -13,6 +13,9 @@ from config import settings
 from database import AccountRepository, AsyncDatabaseManager, FundingRepository, OrderRepository, TradeRepository
 from services.gateway_client import GatewayClient
 from services.gateway_transaction_poller import GatewayTransactionPoller
+from services.gateway_wallet_service import GatewayWalletService, balance_entry
+from services.perpetual_trading_service import PerpetualTradingService
+from services.portfolio_analytics_service import PortfolioAnalyticsService
 from utils.file_system import fs_util
 
 # Create module-specific logger
@@ -85,6 +88,11 @@ class AccountsService:
         # Initialize Gateway client
         self.gateway_base_url = gateway_url
         self.gateway_client = GatewayClient(gateway_url)
+
+        # Composed services: gateway wallet CRUD/balances, perpetual trading and pure portfolio analytics
+        self.gateway_wallet_service = GatewayWalletService(self.gateway_client)
+        self.perpetual_trading_service = PerpetualTradingService(self.get_connector_instance)
+        self.portfolio_analytics_service = PortfolioAnalyticsService()
 
         # Initialize Gateway transaction poller
         self.gateway_tx_poller = GatewayTransactionPoller(
@@ -403,27 +411,6 @@ class AccountsService:
             else:
                 self.accounts_state[account_name][connector_name] = result
 
-    @staticmethod
-    def _balance_entry(token: str, units: Decimal, price: Optional[Decimal],
-                       available_units: Optional[Decimal] = None) -> Dict:
-        """Build the standard token balance entry dict shared across balance endpoints.
-
-        Args:
-            token: Token symbol
-            units: Token balance
-            price: Token price (None means unknown -> price/value reported as 0.0)
-            available_units: Available balance (defaults to units when not provided)
-        """
-        if available_units is None:
-            available_units = units
-        return {
-            "token": token,
-            "units": float(units),
-            "price": float(price) if price is not None else 0.0,
-            "value": float(price * units) if price is not None else 0.0,
-            "available_units": float(available_units),
-        }
-
     async def _get_connector_tokens_info(self, connector, connector_name: str, skip_balance_refresh: bool = False) -> List[Dict]:
         """Get token info from a connector instance using RateOracle cached prices.
 
@@ -467,7 +454,7 @@ class AccountsService:
                     missing_indices.append(len(tokens_info))
                     price = None  # resolved below
 
-            tokens_info.append(self._balance_entry(
+            tokens_info.append(balance_entry(
                 token,
                 balance["units"],
                 price,
@@ -806,178 +793,17 @@ class AccountsService:
     def get_portfolio_distribution(self, account_name: Optional[str] = None) -> Dict[str, Any]:
         """
         Get portfolio distribution by tokens with percentages.
+        Delegates the pure math to PortfolioAnalyticsService (snapshots the live state internally).
         """
-        try:
-            # Snapshot the live dict so concurrent mutations cannot affect the iteration
-            accounts_state_snapshot = {account: dict(connectors) for account, connectors in self.accounts_state.items()}
+        return self.portfolio_analytics_service.get_portfolio_distribution(self.accounts_state, account_name)
 
-            # Get accounts to process
-            accounts_to_process = [account_name] if account_name else list(accounts_state_snapshot.keys())
-
-            # Aggregate all tokens across accounts and connectors
-            token_values = {}
-            total_value = 0
-
-            for acc_name in accounts_to_process:
-                if acc_name in accounts_state_snapshot:
-                    for connector_name, connector_data in accounts_state_snapshot[acc_name].items():
-                        for token_info in connector_data:
-                            token = token_info.get("token", "")
-                            value = token_info.get("value", 0)
-                            
-                            if token not in token_values:
-                                token_values[token] = {
-                                    "token": token,
-                                    "total_value": 0,
-                                    "total_units": 0,
-                                    "accounts": {}
-                                }
-                            
-                            token_values[token]["total_value"] += value
-                            token_values[token]["total_units"] += token_info.get("units", 0)
-                            total_value += value
-                            
-                            # Track by account
-                            if acc_name not in token_values[token]["accounts"]:
-                                token_values[token]["accounts"][acc_name] = {
-                                    "value": 0,
-                                    "units": 0,
-                                    "connectors": {}
-                                }
-                            
-                            token_values[token]["accounts"][acc_name]["value"] += value
-                            token_values[token]["accounts"][acc_name]["units"] += token_info.get("units", 0)
-                            
-                            # Track by connector within account
-                            if connector_name not in token_values[token]["accounts"][acc_name]["connectors"]:
-                                token_values[token]["accounts"][acc_name]["connectors"][connector_name] = {
-                                    "value": 0,
-                                    "units": 0
-                                }
-                            
-                            token_values[token]["accounts"][acc_name]["connectors"][connector_name]["value"] += value
-                            token_values[token]["accounts"][acc_name]["connectors"][connector_name]["units"] += token_info.get("units", 0)
-            
-            # Calculate percentages
-            distribution = []
-            for token_data in token_values.values():
-                percentage = (token_data["total_value"] / total_value * 100) if total_value > 0 else 0
-                
-                token_dist = {
-                    "token": token_data["token"],
-                    "total_value": round(token_data["total_value"], 6),
-                    "total_units": token_data["total_units"],
-                    "percentage": round(percentage, 4),
-                    "accounts": {}
-                }
-                
-                # Add account-level percentages
-                for acc_name, acc_data in token_data["accounts"].items():
-                    acc_percentage = (acc_data["value"] / total_value * 100) if total_value > 0 else 0
-                    token_dist["accounts"][acc_name] = {
-                        "value": round(acc_data["value"], 6),
-                        "units": acc_data["units"],
-                        "percentage": round(acc_percentage, 4),
-                        "connectors": {}
-                    }
-                    
-                    # Add connector-level data
-                    for conn_name, conn_data in acc_data["connectors"].items():
-                        token_dist["accounts"][acc_name]["connectors"][conn_name] = {
-                            "value": round(conn_data["value"], 6),
-                            "units": conn_data["units"]
-                        }
-                
-                distribution.append(token_dist)
-            
-            # Sort by value (descending)
-            distribution.sort(key=lambda x: x["total_value"], reverse=True)
-            
-            return {
-                "total_portfolio_value": round(total_value, 6),
-                "token_count": len(distribution),
-                "distribution": distribution,
-                "account_filter": account_name if account_name else "all_accounts"
-            }
-            
-        except Exception as e:
-            logger.error(f"Error calculating portfolio distribution: {e}")
-            return {
-                "total_portfolio_value": 0,
-                "token_count": 0,
-                "distribution": [],
-                "account_filter": account_name if account_name else "all_accounts",
-                "error": str(e)
-            }
-    
     def get_account_distribution(self) -> Dict[str, Any]:
         """
         Get portfolio distribution by accounts with percentages.
+        Delegates the pure math to PortfolioAnalyticsService (snapshots the live state internally).
         """
-        try:
-            # Snapshot the live dict so concurrent mutations cannot affect the iteration
-            accounts_state_snapshot = {account: dict(connectors) for account, connectors in self.accounts_state.items()}
+        return self.portfolio_analytics_service.get_account_distribution(self.accounts_state)
 
-            account_values = {}
-            total_value = 0
-
-            for acc_name, account_data in accounts_state_snapshot.items():
-                account_value = 0
-                connector_values = {}
-                
-                for connector_name, connector_data in account_data.items():
-                    connector_value = 0
-                    for token_info in connector_data:
-                        value = token_info.get("value", 0)
-                        connector_value += value
-                        account_value += value
-                    
-                    connector_values[connector_name] = round(connector_value, 6)
-                
-                account_values[acc_name] = {
-                    "total_value": round(account_value, 6),
-                    "connectors": connector_values
-                }
-                total_value += account_value
-            
-            # Calculate percentages
-            distribution = []
-            for acc_name, acc_data in account_values.items():
-                percentage = (acc_data["total_value"] / total_value * 100) if total_value > 0 else 0
-                
-                connector_dist = {}
-                for conn_name, conn_value in acc_data["connectors"].items():
-                    conn_percentage = (conn_value / total_value * 100) if total_value > 0 else 0
-                    connector_dist[conn_name] = {
-                        "value": conn_value,
-                        "percentage": round(conn_percentage, 4)
-                    }
-                
-                distribution.append({
-                    "account": acc_name,
-                    "total_value": acc_data["total_value"],
-                    "percentage": round(percentage, 4),
-                    "connectors": connector_dist
-                })
-            
-            # Sort by value (descending)
-            distribution.sort(key=lambda x: x["total_value"], reverse=True)
-            
-            return {
-                "total_portfolio_value": round(total_value, 6),
-                "account_count": len(distribution),
-                "distribution": distribution
-            }
-            
-        except Exception as e:
-            logger.error(f"Error calculating account distribution: {e}")
-            return {
-                "total_portfolio_value": 0,
-                "account_count": 0,
-                "distribution": [],
-                "error": str(e)
-            }
-    
     async def place_trade(self, account_name: str, connector_name: str, trading_pair: str,
                          trade_type: TradeType, amount: Decimal, order_type: OrderType = OrderType.LIMIT,
                          price: Optional[Decimal] = None, position_action: PositionAction = PositionAction.OPEN) -> str:
@@ -1123,24 +949,6 @@ class AccountsService:
 
         return await self._connector_service.get_trading_connector(account_name, connector_name)
 
-    async def _get_perpetual_connector(self, account_name: str, connector_name: str):
-        """
-        Get a perpetual connector instance with validation.
-
-        Args:
-            account_name: Name of the account
-            connector_name: Name of the connector (must be perpetual)
-
-        Returns:
-            Perpetual connector instance
-
-        Raises:
-            HTTPException: If connector is not perpetual or not found
-        """
-        if "_perpetual" not in connector_name:
-            raise HTTPException(status_code=400, detail=f"Connector '{connector_name}' is not a perpetual connector")
-        return await self.get_connector_instance(account_name, connector_name)
-
     async def get_active_orders(self, account_name: str, connector_name: str) -> Dict[str, Any]:
         """
         Get active orders for a specific connector.
@@ -1188,106 +996,24 @@ class AccountsService:
                           trading_pair: str, leverage: int) -> Dict[str, str]:
         """
         Set leverage for a specific trading pair on a perpetual connector.
-
-        Args:
-            account_name: Name of the account
-            connector_name: Name of the connector (must be perpetual)
-            trading_pair: Trading pair to set leverage for
-            leverage: Leverage value (typically 1-125)
-
-        Returns:
-            Dictionary with success status and message
-
-        Raises:
-            HTTPException: If account/connector not found, not perpetual, or operation fails
+        Delegates to PerpetualTradingService.
         """
-        connector = await self._get_perpetual_connector(account_name, connector_name)
-
-        if not hasattr(connector, '_execute_set_leverage'):
-            raise HTTPException(status_code=400, detail=f"Connector '{connector_name}' does not support leverage setting")
-        
-        try:
-            await connector._execute_set_leverage(trading_pair, leverage)
-            message = f"Leverage for {trading_pair} set to {leverage} on {connector_name}"
-            logger.info(f"Set leverage for {trading_pair} to {leverage} on {connector_name} (Account: {account_name})")
-            return {"status": "success", "message": message}
-            
-        except Exception as e:
-            logger.error(f"Failed to set leverage for {trading_pair} to {leverage}: {e}")
-            raise HTTPException(status_code=500, detail=f"Failed to set leverage: {str(e)}")
+        return await self.perpetual_trading_service.set_leverage(account_name, connector_name, trading_pair, leverage)
 
     async def set_position_mode(self, account_name: str, connector_name: str,
                                position_mode: PositionMode) -> Dict[str, str]:
         """
         Set position mode for a perpetual connector.
-
-        Args:
-            account_name: Name of the account
-            connector_name: Name of the connector (must be perpetual)
-            position_mode: PositionMode.HEDGE or PositionMode.ONEWAY
-
-        Returns:
-            Dictionary with success status and message
-
-        Raises:
-            HTTPException: If account/connector not found, not perpetual, or operation fails
+        Delegates to PerpetualTradingService.
         """
-        connector = await self._get_perpetual_connector(account_name, connector_name)
-
-        # Check if the requested position mode is supported
-        supported_modes = connector.supported_position_modes()
-        if position_mode not in supported_modes:
-            supported_values = [mode.value for mode in supported_modes]
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Position mode '{position_mode.value}' not supported. Supported modes: {supported_values}"
-            )
-        
-        try:
-            # Try to call the method - it might be sync or async
-            result = connector.set_position_mode(position_mode)
-            # If it's a coroutine, await it
-            if asyncio.iscoroutine(result):
-                await result
-            
-            message = f"Position mode set to {position_mode.value} on {connector_name}"
-            logger.info(f"Set position mode to {position_mode.value} on {connector_name} (Account: {account_name})")
-            return {"status": "success", "message": message}
-            
-        except Exception as e:
-            logger.error(f"Failed to set position mode to {position_mode.value}: {e}")
-            raise HTTPException(status_code=500, detail=f"Failed to set position mode: {str(e)}")
+        return await self.perpetual_trading_service.set_position_mode(account_name, connector_name, position_mode)
 
     async def get_position_mode(self, account_name: str, connector_name: str) -> Dict[str, str]:
         """
         Get current position mode for a perpetual connector.
-
-        Args:
-            account_name: Name of the account
-            connector_name: Name of the connector (must be perpetual)
-
-        Returns:
-            Dictionary with current position mode
-
-        Raises:
-            HTTPException: If account/connector not found, not perpetual, or operation fails
+        Delegates to PerpetualTradingService.
         """
-        connector = await self._get_perpetual_connector(account_name, connector_name)
-
-        if not hasattr(connector, 'position_mode'):
-            raise HTTPException(status_code=400, detail=f"Connector '{connector_name}' does not support position mode")
-        
-        try:
-            current_mode = connector.position_mode
-            return {
-                "position_mode": current_mode.value if current_mode else "UNKNOWN",
-                "connector": connector_name,
-                "account": account_name
-            }
-            
-        except Exception as e:
-            logger.error(f"Failed to get position mode: {e}")
-            raise HTTPException(status_code=500, detail=f"Failed to get position mode: {str(e)}")
+        return await self.perpetual_trading_service.get_position_mode(account_name, connector_name)
 
     async def get_orders(self, account_name: Optional[str] = None, connector_name: Optional[str] = None,
                         trading_pair: Optional[str] = None, status: Optional[str] = None,
@@ -1384,51 +1110,9 @@ class AccountsService:
     async def get_account_positions(self, account_name: str, connector_name: str) -> List[Dict]:
         """
         Get current positions for a specific perpetual connector.
-
-        Args:
-            account_name: Name of the account
-            connector_name: Name of the connector (must be perpetual)
-
-        Returns:
-            List of position dictionaries
-
-        Raises:
-            HTTPException: If account/connector not found or not perpetual
+        Delegates to PerpetualTradingService.
         """
-        connector = await self._get_perpetual_connector(account_name, connector_name)
-
-        if not hasattr(connector, 'account_positions'):
-            raise HTTPException(status_code=400, detail=f"Connector '{connector_name}' does not support position tracking")
-        
-        try:
-            # Force position update to ensure current market prices are used
-            await connector._update_positions()
-            
-            positions = []
-            raw_positions = connector.account_positions
-            
-            for trading_pair, position_info in raw_positions.items():
-                # Convert position data to dict format
-                position_dict = {
-                    "account_name": account_name,
-                    "connector_name": connector_name,
-                    "trading_pair": position_info.trading_pair,
-                    "side": position_info.position_side.name if hasattr(position_info, 'position_side') else "UNKNOWN",
-                    "amount": float(position_info.amount) if hasattr(position_info, 'amount') else 0.0,
-                    "entry_price": float(position_info.entry_price) if hasattr(position_info, 'entry_price') else None,
-                    "unrealized_pnl": float(position_info.unrealized_pnl) if hasattr(position_info, 'unrealized_pnl') else None,
-                    "leverage": float(position_info.leverage) if hasattr(position_info, 'leverage') else None,
-                }
-                
-                # Only include positions with non-zero amounts
-                if position_dict["amount"] != 0:
-                    positions.append(position_dict)
-            
-            return positions
-            
-        except Exception as e:
-            logger.error(f"Failed to get positions for {connector_name}: {e}")
-            raise HTTPException(status_code=500, detail=f"Failed to get positions: {str(e)}")
+        return await self.perpetual_trading_service.get_account_positions(account_name, connector_name)
 
     async def get_funding_payments(self, account_name: str, connector_name: str = None, 
                                   trading_pair: str = None, limit: int = 100) -> List[Dict]:
@@ -1624,261 +1308,34 @@ class AccountsService:
         except Exception as e:
             logger.error(f"Error updating Gateway balances: {e}")
 
-    async def _require_gateway(self) -> None:
-        """Raise a 503 HTTPException if the Gateway service is not reachable."""
-        if not await self.gateway_client.ping():
-            raise HTTPException(status_code=503, detail="Gateway service is not available")
-
     async def get_gateway_wallets(self) -> List[Dict]:
         """
         Get all wallets from Gateway. Gateway manages its own encrypted wallets.
-
-        Returns:
-            List of wallet information from Gateway, with default_address included for each chain
+        Delegates to GatewayWalletService.
         """
-        await self._require_gateway()
-
-        try:
-            wallets = await self.gateway_client.get_wallets()
-
-            # Enrich with default wallet info for each chain
-            for wallet_group in wallets:
-                chain = wallet_group.get("chain")
-                if chain:
-                    default_wallet = await self.gateway_client.get_default_wallet_address(chain)
-                    wallet_group["default_address"] = default_wallet or ""
-
-            return wallets
-        except Exception as e:
-            logger.error(f"Error getting Gateway wallets: {e}")
-            raise HTTPException(status_code=500, detail=f"Failed to get wallets: {str(e)}")
+        return await self.gateway_wallet_service.get_gateway_wallets()
 
     async def add_gateway_wallet(self, chain: str, private_key: str, set_default: bool = True) -> Dict:
         """
         Add a wallet to Gateway. Gateway handles encryption internally.
-
-        Args:
-            chain: Blockchain chain (e.g., 'solana', 'ethereum')
-            private_key: Wallet private key
-            set_default: Set as default wallet for this chain (default: True)
-
-        Returns:
-            Dictionary with wallet information from Gateway
+        Delegates to GatewayWalletService.
         """
-        await self._require_gateway()
-
-        try:
-            result = await self.gateway_client.add_wallet(chain, private_key, set_default=set_default)
-
-            if "error" in result:
-                raise HTTPException(status_code=400, detail=f"Gateway error: {result['error']}")
-
-            logger.info(f"Added {chain} wallet {result.get('address')} to Gateway")
-            return result
-
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Error adding Gateway wallet: {e}")
-            raise HTTPException(status_code=500, detail=f"Failed to add wallet: {str(e)}")
+        return await self.gateway_wallet_service.add_gateway_wallet(chain, private_key, set_default=set_default)
 
     async def remove_gateway_wallet(self, chain: str, address: str) -> Dict:
         """
         Remove a wallet from Gateway.
-
-        Args:
-            chain: Blockchain chain
-            address: Wallet address to remove
-
-        Returns:
-            Success message
+        Delegates to GatewayWalletService.
         """
-        await self._require_gateway()
+        return await self.gateway_wallet_service.remove_gateway_wallet(chain, address)
 
-        try:
-            result = await self.gateway_client.remove_wallet(chain, address)
-
-            if "error" in result:
-                raise HTTPException(status_code=400, detail=f"Gateway error: {result['error']}")
-
-            logger.info(f"Removed {chain} wallet {address} from Gateway")
-            return {"success": True, "message": f"Successfully removed {chain} wallet"}
-
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Error removing Gateway wallet: {e}")
-            raise HTTPException(status_code=500, detail=f"Failed to remove wallet: {str(e)}")
-
-    async def get_gateway_balances(self, chain: str, address: str, network: Optional[str] = None, tokens: Optional[List[str]] = None) -> List[Dict]:
+    async def get_gateway_balances(self, chain: str, address: str, network: Optional[str] = None,
+                                   tokens: Optional[List[str]] = None) -> List[Dict]:
         """
         Get Gateway wallet balances with pricing from rate sources.
-
-        Args:
-            chain: Blockchain chain
-            address: Wallet address
-            network: Optional network name (if not provided, uses default network for chain)
-            tokens: Optional list of token symbols to query
-
-        Returns:
-            List of token balance dictionaries with prices from rate sources
+        Delegates to GatewayWalletService.
         """
-        await self._require_gateway()
-
-        try:
-            # Get default network for chain if not provided
-            if not network:
-                network = await self.gateway_client.get_default_network(chain)
-            if not network:
-                raise HTTPException(status_code=400, detail=f"Could not determine network for chain '{chain}'")
-
-            # Get balances from Gateway
-            balances_response = await self.gateway_client.get_balances(chain, network, address, tokens=tokens)
-
-            if "error" in balances_response:
-                raise HTTPException(status_code=400, detail=f"Gateway error: {balances_response['error']}")
-
-            # Format balances list
-            balances = balances_response.get("balances", {})
-            balances_list = []
-
-            for token, balance in balances.items():
-                if balance and float(balance) > 0:
-                    balances_list.append({
-                        "token": token,
-                        "units": Decimal(str(balance))
-                    })
-
-            # Get prices for tokens
-            unique_tokens = [b["token"] for b in balances_list]
-            all_prices = {}
-
-            # Fetch prices for Gateway tokens
-            if unique_tokens:
-                try:
-                    fetched_prices = await self._fetch_gateway_prices_immediate(
-                        chain, network, unique_tokens
-                    )
-                    for token, price in fetched_prices.items():
-                        if price > 0:
-                            all_prices[token] = price
-                except Exception as e:
-                    logger.warning(f"Error fetching gateway prices: {e}")
-
-            # Format final result with prices
-            formatted_balances = []
-            for balance in balances_list:
-                token = balance["token"]
-                if "USD" in token:
-                    price = Decimal("1")
-                else:
-                    # all_prices is now keyed by token name directly
-                    price = Decimal(str(all_prices.get(token, 0)))
-
-                formatted_balances.append(self._balance_entry(token, balance["units"], price))
-
-            return formatted_balances
-
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Error getting Gateway balances: {e}")
-            raise HTTPException(status_code=500, detail=f"Failed to get balances: {str(e)}")
-
-    async def _fetch_gateway_prices_immediate(self, chain: str, network: str,
-                                               tokens: List[str]) -> Dict[str, Decimal]:
-        """
-        Fetch prices immediately from Gateway for the given tokens.
-        This is used to get prices right away instead of waiting for the background update task.
-
-        Args:
-            chain: Blockchain chain (e.g., 'solana', 'ethereum')
-            network: Network name (e.g., 'mainnet-beta', 'mainnet')
-            tokens: List of token symbols to get prices for
-
-        Returns:
-            Dictionary mapping token symbol to price in USDC
-        """
-        from hummingbot.core.data_type.common import TradeType
-        from hummingbot.core.gateway.gateway_http_client import GatewayHttpClient
-        from hummingbot.core.rate_oracle.rate_oracle import RateOracle
-
-        gateway_client = GatewayHttpClient.get_instance()
-        rate_oracle = RateOracle.get_instance()
-        prices = {}
-
-        # Construct full network name (e.g., "solana-mainnet-beta")
-        full_network = f"{chain}-{network}"
-
-        # Create tasks for all tokens in parallel
-        tasks = []
-        task_tokens = []
-        quote_asset = "USDC"
-
-        # On ethereum networks, use WETH price for ETH to avoid duplicate calls
-        eth_needs_weth_price = False
-        if chain == "ethereum":
-            has_eth = any(t.upper() == "ETH" for t in tokens)
-            has_weth = any(t.upper() == "WETH" for t in tokens)
-            if has_eth and not has_weth:
-                # Replace ETH with WETH for fetching
-                tokens = [t if t.upper() != "ETH" else "WETH" for t in tokens]
-                eth_needs_weth_price = True
-                logger.debug("Replacing ETH with WETH for price fetch on ethereum")
-            elif has_eth and has_weth:
-                # Remove ETH, will copy WETH price later
-                tokens = [t for t in tokens if t.upper() != "ETH"]
-                eth_needs_weth_price = True
-                logger.debug("Removing duplicate ETH, will use WETH price on ethereum")
-
-        for token in tokens:
-            token_upper = token.upper()
-
-            # Skip same-token quotes (e.g., USDC/USDC) - price is always 1
-            if token_upper == quote_asset.upper():
-                prices[token] = Decimal("1")
-                rate_oracle.set_price(f"{token}-{quote_asset}", Decimal("1"))
-                logger.debug(f"Skipping same-token quote for {token}, price=1")
-                continue
-
-            try:
-                # get_price will auto-fetch dex/trading_type from network's swap provider
-                task = gateway_client.get_price(
-                    network=full_network,
-                    base_asset=token,
-                    quote_asset=quote_asset,
-                    amount=Decimal("1"),
-                    side=TradeType.SELL
-                )
-                tasks.append(task)
-                task_tokens.append(token)
-            except Exception as e:
-                logger.warning(f"Error preparing price request for {token}: {e}")
-                continue
-
-        if tasks:
-            try:
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                for token, result in zip(task_tokens, results):
-                    if isinstance(result, Exception):
-                        logger.warning(f"Error fetching price for {token}: {result}")
-                    elif result and "price" in result:
-                        price = Decimal(str(result["price"]))
-                        prices[token] = price
-                        # Also update the rate oracle so future lookups can find it
-                        trading_pair = f"{token}-USDC"
-                        rate_oracle.set_price(trading_pair, price)
-                        logger.debug(f"Fetched immediate price for {token}: {price} USDC")
-            except Exception as e:
-                logger.error(f"Error fetching gateway prices: {e}", exc_info=True)
-
-        # Copy WETH price to ETH on ethereum networks
-        if eth_needs_weth_price and "WETH" in prices:
-            prices["ETH"] = prices["WETH"]
-            rate_oracle.set_price("ETH-USDC", prices["WETH"])
-            logger.debug(f"Copied WETH price to ETH: {prices['WETH']} USDC")
-
-        return prices
+        return await self.gateway_wallet_service.get_gateway_balances(chain, address, network=network, tokens=tokens)
 
     def get_unwrapped_token(self, token: str) -> str:
         """Get the unwrapped version of a wrapped token symbol (e.g., WSOL -> SOL)."""
