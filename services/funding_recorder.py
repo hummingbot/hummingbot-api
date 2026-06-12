@@ -23,6 +23,9 @@ class FundingRecorder:
         self.connector_name = connector_name
         self._connector: Optional[ConnectorBase] = None
         self.logger = logging.getLogger(__name__)
+
+        # Strong references to in-flight event handler tasks so they are not garbage-collected before completing
+        self._pending_tasks: set[asyncio.Task] = set()
         
         # Create event forwarder for funding payments
         self._funding_payment_forwarder = SourceInfoEventForwarder(self._did_funding_payment)
@@ -53,11 +56,26 @@ class FundingRecorder:
             for event, forwarder in self._event_pairs:
                 self._connector.remove_listener(event, forwarder)
             self.logger.info(f"FundingRecorder stopped for {self.account_name}/{self.connector_name}")
-    
+
+        # Wait for in-flight write tasks so no funding payment records are lost
+        if self._pending_tasks:
+            await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+
+    def _create_tracked_task(self, coro) -> asyncio.Task:
+        """Create a task and keep a strong reference to it until it completes.
+
+        The event loop only keeps weak references to tasks, so without this a pending
+        task could be garbage-collected before finishing, dropping the DB write.
+        """
+        task = asyncio.create_task(coro)
+        self._pending_tasks.add(task)
+        task.add_done_callback(self._pending_tasks.discard)
+        return task
+
     def _did_funding_payment(self, event_tag: int, market: ConnectorBase, event: FundingPaymentCompletedEvent):
         """Handle funding payment events - called by SourceInfoEventForwarder"""
         try:
-            asyncio.create_task(self._handle_funding_payment(event))
+            self._create_tracked_task(self._handle_funding_payment(event))
         except Exception as e:
             self.logger.error(f"Error in _did_funding_payment: {e}")
     

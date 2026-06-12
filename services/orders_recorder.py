@@ -28,6 +28,9 @@ class OrdersRecorder:
         self.connector_name = connector_name
         self._connector: Optional[ConnectorBase] = None
 
+        # Strong references to in-flight event handler tasks so they are not garbage-collected before completing
+        self._pending_tasks: set[asyncio.Task] = set()
+
         # Create event forwarders similar to MarketsRecorder
         self._create_order_forwarder = SourceInfoEventForwarder(self._did_create_order)
         self._fill_order_forwarder = SourceInfoEventForwarder(self._did_fill_order)
@@ -90,7 +93,22 @@ class OrdersRecorder:
             for event, forwarder in self._event_pairs:
                 self._connector.remove_listener(event, forwarder)
 
+        # Wait for in-flight write tasks so no order/trade records are lost
+        if self._pending_tasks:
+            await asyncio.gather(*self._pending_tasks, return_exceptions=True)
+
         logger.info(f"OrdersRecorder stopped for {self.account_name}/{self.connector_name}")
+
+    def _create_tracked_task(self, coro) -> asyncio.Task:
+        """Create a task and keep a strong reference to it until it completes.
+
+        The event loop only keeps weak references to tasks, so without this a pending
+        task could be garbage-collected before finishing, dropping the DB write.
+        """
+        task = asyncio.create_task(coro)
+        self._pending_tasks.add(task)
+        task.add_done_callback(self._pending_tasks.discard)
+        return task
 
     def _extract_error_message(self, event) -> str:
         """Extract error message from various possible event attributes."""
@@ -112,35 +130,35 @@ class OrdersRecorder:
             # Determine trade type from event
             trade_type = TradeType.BUY if isinstance(event, BuyOrderCreatedEvent) else TradeType.SELL
             logger.info(f"OrdersRecorder: Creating task to handle order created - {trade_type} order")
-            asyncio.create_task(self._handle_order_created(event, trade_type))
+            self._create_tracked_task(self._handle_order_created(event, trade_type))
         except Exception as e:
             logger.error(f"Error in _did_create_order: {e}")
 
     def _did_fill_order(self, event_tag: int, market: ConnectorBase, event: OrderFilledEvent):
         """Handle order fill events - called by SourceInfoEventForwarder"""
         try:
-            asyncio.create_task(self._handle_order_filled(event))
+            self._create_tracked_task(self._handle_order_filled(event))
         except Exception as e:
             logger.error(f"Error in _did_fill_order: {e}")
 
     def _did_cancel_order(self, event_tag: int, market: ConnectorBase, event: Any):
         """Handle order cancel events - called by SourceInfoEventForwarder"""
         try:
-            asyncio.create_task(self._handle_order_cancelled(event))
+            self._create_tracked_task(self._handle_order_cancelled(event))
         except Exception as e:
             logger.error(f"Error in _did_cancel_order: {e}")
 
     def _did_fail_order(self, event_tag: int, market: ConnectorBase, event: Any):
         """Handle order failure events - called by SourceInfoEventForwarder"""
         try:
-            asyncio.create_task(self._handle_order_failed(event))
+            self._create_tracked_task(self._handle_order_failed(event))
         except Exception as e:
             logger.error(f"Error in _did_fail_order: {e}")
 
     def _did_complete_order(self, event_tag: int, market: ConnectorBase, event: Any):
         """Handle order completion events - called by SourceInfoEventForwarder"""
         try:
-            asyncio.create_task(self._handle_order_completed(event))
+            self._create_tracked_task(self._handle_order_completed(event))
         except Exception as e:
             logger.error(f"Error in _did_complete_order: {e}")
 
