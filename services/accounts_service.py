@@ -49,9 +49,6 @@ class AccountsService:
         "kraken": "USD",
     }
     potential_wrapped_tokens = ["ETH", "SOL", "BNB", "POL", "AVAX"]
-    
-    # Cache for storing last successful prices by trading pair
-    _last_known_prices = {}
 
     def __init__(self,
                  account_update_interval: int = 5,
@@ -72,6 +69,9 @@ class AccountsService:
         self.default_quote = default_quote
         self._update_account_state_task: Optional[asyncio.Task] = None
         self._order_status_polling_task: Optional[asyncio.Task] = None
+
+        # Cache for storing last successful prices by trading pair (per-instance)
+        self._last_known_prices = {}
 
         # Database setup for account states and orders
         self.db_manager = AsyncDatabaseManager(settings.database.url)
