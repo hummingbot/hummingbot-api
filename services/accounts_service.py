@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Dict, List, Optional
@@ -16,6 +17,23 @@ from utils.file_system import fs_util
 
 # Create module-specific logger
 logger = logging.getLogger(__name__)
+
+# Safe single path component names: prevents path traversal via '/', '\' or '..'
+SAFE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def validate_safe_name(name: str, label: str = "name") -> str:
+    """
+    Validate that a name is safe to use as a single path component (no separators or traversal sequences).
+    :param name: The name to validate.
+    :param label: Human readable label used in the error message.
+    :return: The validated name.
+    :raises HTTPException: 400 if the name is invalid.
+    """
+    if not name or not SAFE_NAME_PATTERN.fullmatch(name):
+        raise HTTPException(status_code=400,
+                            detail=f"Invalid {label}: '{name}'. Only letters, numbers, underscores and hyphens are allowed.")
+    return name
 
 
 class AccountsService:
@@ -507,6 +525,8 @@ class AccountsService:
         :param credentials: Dictionary containing the connector credentials.
         :raises Exception: If credentials are invalid or connector cannot be initialized.
         """
+        validate_safe_name(account_name, "account name")
+        validate_safe_name(connector_name, "connector name")
         if not self._connector_service:
             raise HTTPException(status_code=500, detail="Connector service not initialized")
 
@@ -535,6 +555,7 @@ class AccountsService:
         :param account_name: The name of the account.
         :return: List of credentials.
         """
+        validate_safe_name(account_name, "account name")
         try:
             return [file for file in fs_util.list_files(f'credentials/{account_name}/connectors') if
                     file.endswith('.yml')]
@@ -548,6 +569,8 @@ class AccountsService:
         :param connector_name:
         :return:
         """
+        validate_safe_name(account_name, "account name")
+        validate_safe_name(connector_name, "connector name")
         # Delete credentials file if it exists
         if fs_util.path_exists(f"credentials/{account_name}/connectors/{connector_name}.yml"):
             fs_util.delete_file(directory=f"credentials/{account_name}/connectors", file_name=f"{connector_name}.yml")
@@ -569,6 +592,7 @@ class AccountsService:
         :param account_name:
         :return:
         """
+        validate_safe_name(account_name, "account name")
         # Check if account already exists by looking at folders
         if account_name in self.list_accounts():
             raise HTTPException(status_code=400, detail="Account already exists.")
@@ -588,6 +612,7 @@ class AccountsService:
         :param account_name:
         :return:
         """
+        validate_safe_name(account_name, "account name")
         # Stop all connectors for this account
         if self._connector_service:
             for connector_name in self._connector_service.list_account_connectors(account_name):

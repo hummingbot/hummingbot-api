@@ -5,7 +5,7 @@ from starlette import status
 
 from deps import get_accounts_service
 from models import GatewayWalletCredential, SetDefaultWalletRequest
-from services.accounts_service import AccountsService
+from services.accounts_service import AccountsService, validate_safe_name
 
 router = APIRouter(tags=["Accounts"], prefix="/accounts")
 
@@ -58,8 +58,9 @@ async def add_account(account_name: str, accounts_service: AccountsService = Dep
         Success message when account is created
 
     Raises:
-        HTTPException: 400 if account already exists
+        HTTPException: 400 if account already exists or the account name is invalid
     """
+    validate_safe_name(account_name, "account name")
     try:
         accounts_service.add_account(account_name)
         return {"message": "Account added successfully."}
@@ -79,8 +80,9 @@ async def delete_account(account_name: str, accounts_service: AccountsService = 
         Success message when account is deleted
 
     Raises:
-        HTTPException: 400 if trying to delete master account, 404 if account not found
+        HTTPException: 400 if trying to delete master account or the account name is invalid, 404 if account not found
     """
+    validate_safe_name(account_name, "account name")
     try:
         if account_name == "master_account":
             raise HTTPException(status_code=400, detail="Cannot delete master account.")

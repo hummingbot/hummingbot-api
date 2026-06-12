@@ -56,9 +56,12 @@ class FileSystemUtil:
         Lists all files in a given directory.
         :param directory: The directory to list files from.
         :return: List of file names in the directory.
+        :raises ValueError: If the directory contains '..' path components.
         :raises FileNotFoundError: If the directory does not exist.
         :raises PermissionError: If access is denied to the directory.
         """
+        if any(part == ".." for part in directory.replace("\\", "/").split("/")):
+            raise ValueError(f"Invalid directory: '{directory}'")
         excluded_files = ["__init__.py", "__pycache__", ".DS_Store", ".dockerignore", ".gitignore"]
         dir_path = self._get_full_path(directory)
         if not os.path.exists(dir_path):
@@ -140,9 +143,12 @@ class FileSystemUtil:
         Deletes a folder in a specified directory.
         :param directory: The directory to delete the folder from.
         :param folder_name: The name of the folder to be deleted.
+        :raises ValueError: If folder_name is empty, contains path separators or is a '.'/'..' component.
         :raises FileNotFoundError: If folder doesn't exist.
         :raises PermissionError: If permission is denied.
         """
+        if not folder_name or folder_name in (".", "..") or '/' in folder_name or '\\' in folder_name:
+            raise ValueError(f"Invalid folder name: '{folder_name}'")
         folder_path = self._get_full_path(os.path.join(directory, folder_name))
         if not os.path.exists(folder_path):
             raise FileNotFoundError(f"Folder '{folder_name}' not found in '{directory}'")
