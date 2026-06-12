@@ -484,14 +484,8 @@ class AccountsService:
             last_traded[pair] = price
 
         # Fill in fallbacks for any pairs that failed
-        for pair in trading_pairs:
-            if pair not in last_traded:
-                if pair in self._last_known_prices:
-                    last_traded[pair] = self._last_known_prices[pair]
-                    logger.info(f"Using cached price {self._last_known_prices[pair]} for {pair}")
-                else:
-                    last_traded[pair] = Decimal("0")
-                    logger.warning(f"No cached price available for {pair}, using 0")
+        missing_pairs = [pair for pair in trading_pairs if pair not in last_traded]
+        last_traded.update(self._get_fallback_prices(missing_pairs))
 
         return last_traded
     
