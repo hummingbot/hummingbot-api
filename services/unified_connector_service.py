@@ -886,30 +886,37 @@ class UnifiedConnectorService:
         if not self.db_manager:
             return
 
+        from database import OrderRepository
+
         terminal_states = [
             OrderState.FILLED, OrderState.CANCELED,
             OrderState.FAILED, OrderState.COMPLETED
         ]
         orders_to_remove = []
 
-        for client_order_id, order in list(connector.in_flight_orders.items()):
-            try:
-                from database import OrderRepository
+        try:
+            # Single session/transaction per connector: one SELECT per order and one commit on context exit.
+            async with self.db_manager.get_session_context() as session:
+                order_repo = OrderRepository(session)
 
-                async with self.db_manager.get_session_context() as session:
-                    order_repo = OrderRepository(session)
-                    db_order = await order_repo.get_order_by_client_id(client_order_id)
+                for client_order_id, order in list(connector.in_flight_orders.items()):
+                    try:
+                        db_order = await order_repo.get_order_by_client_id(client_order_id)
 
-                    if db_order:
-                        new_status = self._map_order_state_to_status(order.current_state)
-                        if db_order.status != new_status:
-                            await order_repo.update_order_status(client_order_id, new_status)
+                        if db_order:
+                            new_status = self._map_order_state_to_status(order.current_state)
+                            if db_order.status != new_status:
+                                db_order.status = new_status
+                                await session.flush()
 
-                    if order.current_state in terminal_states:
-                        orders_to_remove.append(client_order_id)
+                        if order.current_state in terminal_states:
+                            orders_to_remove.append(client_order_id)
 
-            except Exception as e:
-                logger.error(f"Error syncing order {client_order_id}: {e}")
+                    except Exception as e:
+                        logger.error(f"Error syncing order {client_order_id}: {e}")
+
+        except Exception as e:
+            logger.error(f"Error syncing orders for {account_name}/{connector_name}: {e}")
 
         for order_id in orders_to_remove:
             connector.in_flight_orders.pop(order_id, None)

@@ -26,13 +26,10 @@ class OrderRepository:
         )
         return result.scalar_one_or_none()
 
-    async def update_order_status(self, client_order_id: str, status: str, 
-                                error_message: Optional[str] = None) -> Optional[Order]:
+    async def update_order_status(self, client_order_id: str, status: str,
+                                  error_message: Optional[str] = None) -> Optional[Order]:
         """Update order status and optional error message."""
-        result = await self.session.execute(
-            select(Order).where(Order.client_order_id == client_order_id)
-        )
-        order = result.scalar_one_or_none()
+        order = await self.get_order_by_client_id(client_order_id)
         if order:
             order.status = status
             if error_message:
