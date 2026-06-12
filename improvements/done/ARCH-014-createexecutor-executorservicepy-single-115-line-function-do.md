@@ -7,8 +7,9 @@ effort: M
 risk: low
 files:
   - services/executor_service.py
-commits: []
-status: todo
+commits:
+  - "f3fb6a6 (refactor) ARCH-014: split create_executor into focused helpers"
+status: done
 created: 2026-06-11
 ---
 
@@ -19,10 +20,12 @@ create_executor (executor_service.py:286-401) does too much in one body: validat
 Decompose into focused private helpers: _validate_executor_config(executor_config) -> (executor_class, config_class, typed_config), _prepare_market(account, connector_name, trading_pair), _instantiate_and_register(typed_config, trading_interface, metadata). create_executor then reads as a short orchestration sequence. No behavior change.
 
 ## Criterio de aceptación
-- [ ] create_executor body is reduced to a short orchestration calling named helpers
-- [ ] config/type validation is isolated in a helper that can be unit-tested without starting an executor or touching the DB
-- [ ] creating valid and invalid executors returns the same status codes and payloads as before
-- [ ] No se rompe ningún test existente en test/ (se añade test si aplica)
+- [x] create_executor body is reduced to a short orchestration calling named helpers
+- [x] config/type validation is isolated in a helper that can be unit-tested without starting an executor or touching the DB
+- [x] creating valid and invalid executors returns the same status codes and payloads as before
+- [x] No se rompe ningún test existente en test/ (se añade test si aplica)
 
 ## Notas
 Hallazgo confirmado por verificación adversarial. Veredicto: Verified against the actual code at /Users/dman/Documents/work/hummingbot-api/services/executor_service.py:286-401. The finding is accurate. create_executor is a single ~115-line async method that genuinely mixes multiple concerns, and every cited line range checks out: type validation against EXECUTOR_REGISTRY (305-317), trading-interface resolution and connector/market readiness via add_market/ensure_connector (320-331), timestamp defaulting (334-335), typed config construction (338-345), executor instantiation (348-359), mutation of _active_executors and _executor_metadata (364-373), Contex
+
+Desvío: la validación de config ahora corre antes de preparar el conector (fail-fast); códigos y payloads idénticos.
