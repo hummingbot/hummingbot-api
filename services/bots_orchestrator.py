@@ -87,18 +87,26 @@ class BotsOrchestrator:
         # Then start the update loop
         await self.update_active_bots()
 
-    def stop(self):
+    async def stop(self):
         """Stop the active bots monitoring loop."""
         if self._update_bots_task:
             self._update_bots_task.cancel()
+            try:
+                await self._update_bots_task
+            except asyncio.CancelledError:
+                pass
         self._update_bots_task = None
 
         if self._performance_dump_task:
             self._performance_dump_task.cancel()
+            try:
+                await self._performance_dump_task
+            except asyncio.CancelledError:
+                pass
         self._performance_dump_task = None
 
-        # Stop MQTT manager asynchronously
-        asyncio.create_task(self.mqtt_manager.stop())
+        # Stop MQTT manager
+        await self.mqtt_manager.stop()
 
     async def update_active_bots(self, sleep_time=1.0):
         """Monitor and update active bots list using both Docker and MQTT discovery."""

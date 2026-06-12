@@ -296,7 +296,7 @@ async def lifespan(app: FastAPI):
 
     websocket_manager.shutdown()
     await executor_ws_manager.shutdown()
-    bots_orchestrator.stop()
+    await bots_orchestrator.stop()
     await accounts_service.stop()
     await executor_service.stop()
     market_data_service.stop()
