@@ -415,6 +415,27 @@ class FileSystemUtil:
         except Exception:
             return []
 
+    def get_archived_db_path(self, db_path: str) -> str:
+        """
+        Resolves a database path and validates that it is contained within the archived bots directory.
+        :param db_path: Path to a database file (as returned by list_databases, e.g. bots/archived/{instance}/data/file.sqlite)
+        :return: The resolved absolute path to the database file.
+        :raises ValueError: If the resolved path escapes the archived bots directory.
+        :raises FileNotFoundError: If the database file does not exist.
+        """
+        # list_databases returns paths that already include base_path prefix (e.g. bots/archived/...)
+        # Strip it to avoid double-prefixing when _get_full_path adds it again
+        prefix = self.base_path + os.sep
+        normalized = db_path[len(prefix):] if db_path.startswith(prefix) else db_path
+        full_path = normalized if os.path.isabs(normalized) else self._get_full_path(normalized)
+        archived_root = os.path.realpath(self._get_full_path("archived"))
+        resolved_path = os.path.realpath(full_path)
+        if os.path.commonpath([archived_root, resolved_path]) != archived_root:
+            raise ValueError(f"Path '{db_path}' is outside the archived bots directory")
+        if not os.path.isfile(resolved_path):
+            raise FileNotFoundError(f"Database path '{db_path}' not found")
+        return resolved_path
+
     def delete_archived_bot(self, db_path: str) -> str:
         """
         Deletes an archived bot directory given a database file path.
@@ -423,13 +444,7 @@ class FileSystemUtil:
         :raises FileNotFoundError: If the path or archived directory doesn't exist.
         :raises ValueError: If the path doesn't point to a valid archived bot.
         """
-        # list_databases returns paths that already include base_path prefix (e.g. bots/archived/...)
-        # Strip it to avoid double-prefixing when _get_full_path adds it again
-        prefix = self.base_path + os.sep
-        normalized = db_path[len(prefix):] if db_path.startswith(prefix) else db_path
-        full_path = normalized if os.path.isabs(normalized) else self._get_full_path(normalized)
-        if not os.path.exists(full_path):
-            raise FileNotFoundError(f"Database path '{db_path}' not found")
+        full_path = self.get_archived_db_path(db_path)
 
         # Navigate up from .../archived/{instance}/data/file.sqlite to .../archived/{instance}
         archived_bot_dir = os.path.dirname(os.path.dirname(full_path))
