@@ -10,7 +10,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Dict, List, Optional, Set
 
 from hummingbot.connector.connector_base import ConnectorBase
-from hummingbot.core.data_type.common import OrderType, PositionAction, TradeType
+from hummingbot.core.data_type.common import OrderType, PositionAction
 
 if TYPE_CHECKING:
     from services.market_data_service import MarketDataService
@@ -395,10 +395,7 @@ class TradingService:
     """
     Centralized trading service using UnifiedConnectorService.
 
-    This service manages:
-    - Trading interfaces for each account (executor-compatible)
-    - Order placement and cancellation
-    - Position management for perpetuals
+    This service manages trading interfaces for each account (executor-compatible).
     """
 
     def __init__(
@@ -447,165 +444,6 @@ class TradingService:
     def get_all_trading_interfaces(self) -> Dict[str, AccountTradingInterface]:
         """Get all active trading interfaces."""
         return self._trading_interfaces.copy()
-
-    # ==================== Direct Trading Operations ====================
-
-    async def place_order(
-        self,
-        account_name: str,
-        connector_name: str,
-        trading_pair: str,
-        trade_type: TradeType,
-        amount: Decimal,
-        order_type: OrderType,
-        price: Optional[Decimal] = None,
-        position_action: PositionAction = PositionAction.NIL
-    ) -> str:
-        """
-        Place an order on an exchange.
-
-        Args:
-            account_name: Account to use
-            connector_name: Exchange connector name
-            trading_pair: Trading pair
-            trade_type: BUY or SELL
-            amount: Order amount
-            order_type: LIMIT, MARKET, etc.
-            price: Order price (required for LIMIT orders)
-            position_action: Position action for perpetuals
-
-        Returns:
-            Client order ID
-        """
-        interface = self.get_trading_interface(account_name)
-        await interface.ensure_connector(connector_name)
-
-        if trade_type == TradeType.BUY:
-            return interface.buy(
-                connector_name=connector_name,
-                trading_pair=trading_pair,
-                amount=amount,
-                order_type=order_type,
-                price=price if price else Decimal("NaN"),
-                position_action=position_action
-            )
-        else:
-            return interface.sell(
-                connector_name=connector_name,
-                trading_pair=trading_pair,
-                amount=amount,
-                order_type=order_type,
-                price=price if price else Decimal("NaN"),
-                position_action=position_action
-            )
-
-    async def cancel_order(
-        self,
-        account_name: str,
-        connector_name: str,
-        trading_pair: str,
-        order_id: str
-    ) -> str:
-        """
-        Cancel an order.
-
-        Args:
-            account_name: Account name
-            connector_name: Exchange connector name
-            trading_pair: Trading pair
-            order_id: Client order ID to cancel
-
-        Returns:
-            Client order ID that was cancelled
-        """
-        interface = self.get_trading_interface(account_name)
-        return interface.cancel(connector_name, trading_pair, order_id)
-
-    def get_active_orders(
-        self,
-        account_name: str,
-        connector_name: str
-    ) -> List:
-        """
-        Get active orders for an account/connector.
-
-        Args:
-            account_name: Account name
-            connector_name: Exchange connector name
-
-        Returns:
-            List of active orders
-        """
-        interface = self.get_trading_interface(account_name)
-        return interface.get_active_orders(connector_name)
-
-    # ==================== Position Management ====================
-
-    async def get_positions(
-        self,
-        account_name: str,
-        connector_name: str
-    ) -> Dict:
-        """
-        Get positions for a perpetual connector.
-
-        Args:
-            account_name: Account name
-            connector_name: Exchange connector name
-
-        Returns:
-            Dictionary of positions
-        """
-        connector = await self._connector_service.get_trading_connector(
-            account_name, connector_name
-        )
-
-        if hasattr(connector, 'account_positions'):
-            return {
-                str(pos.trading_pair): {
-                    "trading_pair": pos.trading_pair,
-                    "position_side": pos.position_side.name,
-                    "unrealized_pnl": float(pos.unrealized_pnl),
-                    "entry_price": float(pos.entry_price),
-                    "amount": float(pos.amount),
-                    "leverage": pos.leverage
-                }
-                for pos in connector.account_positions.values()
-            }
-        return {}
-
-    async def set_leverage(
-        self,
-        account_name: str,
-        connector_name: str,
-        trading_pair: str,
-        leverage: int
-    ) -> bool:
-        """
-        Set leverage for a trading pair on a perpetual connector.
-
-        Args:
-            account_name: Account name
-            connector_name: Exchange connector name
-            trading_pair: Trading pair
-            leverage: Leverage value
-
-        Returns:
-            True if successful
-        """
-        connector = await self._connector_service.get_trading_connector(
-            account_name, connector_name
-        )
-
-        if hasattr(connector, 'set_leverage'):
-            try:
-                await connector.set_leverage(trading_pair, leverage)
-                logger.info(f"Set leverage to {leverage}x for {trading_pair} on {connector_name}")
-                return True
-            except Exception as e:
-                logger.error(f"Error setting leverage: {e}")
-                return False
-        return False
 
     # ==================== Lifecycle ====================
 
