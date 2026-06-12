@@ -137,6 +137,33 @@ class GatewaySettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="GATEWAY_", extra="ignore")
 
 
+class CORSSettings(BaseSettings):
+    """CORS configuration for the API (SEC-019).
+
+    A wildcard origin ("*") must never be combined with allow_credentials=True: browsers reject that
+    combination per the CORS spec, and Starlette works around it by reflecting any Origin, which lets
+    arbitrary third-party pages call the API from an authenticated operator's browser. Origins are
+    therefore restricted by default and configurable via environment variables:
+    - CORS_ALLOW_ORIGINS: JSON list of explicit trusted origins, e.g. '["https://dashboard.example.com"]'
+    - CORS_ALLOW_ORIGIN_REGEX: regex for trusted origins (defaults to localhost-only for local development;
+      set to an empty string to disable regex matching entirely)
+    """
+
+    allow_origins: List[str] = Field(
+        default=[],
+        description='Explicit list of trusted CORS origins, e.g. CORS_ALLOW_ORIGINS=\'["https://dashboard.example.com"]\''
+    )
+    allow_origin_regex: str = Field(
+        default=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
+        description="Regex matching trusted CORS origins; defaults to localhost-only. Empty string disables regex matching."
+    )
+    allow_credentials: bool = Field(default=True, description="Allow credentialed (cookies/auth) cross-origin requests")
+    allow_methods: List[str] = Field(default=["*"], description="HTTP methods allowed for cross-origin requests")
+    allow_headers: List[str] = Field(default=["*"], description="HTTP headers allowed for cross-origin requests")
+
+    model_config = SettingsConfigDict(env_prefix="CORS_", extra="ignore")
+
+
 class AppSettings(BaseSettings):
     """Main application settings."""
 
@@ -174,6 +201,7 @@ class Settings(BaseSettings):
     security: SecuritySettings = Field(default_factory=SecuritySettings)
     aws: AWSSettings = Field(default_factory=AWSSettings)
     gateway: GatewaySettings = Field(default_factory=GatewaySettings)
+    cors: CORSSettings = Field(default_factory=CORSSettings)
     app: AppSettings = Field(default_factory=AppSettings)
 
     # Direct banned_tokens field to handle env parsing

@@ -318,13 +318,16 @@ app = FastAPI(
     redirect_slashes=False,
 )
 
-# Add CORS middleware
+# Add CORS middleware (SEC-019). Origins are restricted by default: a wildcard origin must not be
+# combined with allow_credentials=True. Trusted origins are configured via CORS_ALLOW_ORIGINS /
+# CORS_ALLOW_ORIGIN_REGEX (see config.CORSSettings); the default only allows localhost origins.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Modify in production to specific origins
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=settings.cors.allow_origins,
+    allow_origin_regex=settings.cors.allow_origin_regex or None,
+    allow_credentials=settings.cors.allow_credentials,
+    allow_methods=settings.cors.allow_methods,
+    allow_headers=settings.cors.allow_headers,
 )
 
 
