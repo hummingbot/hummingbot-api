@@ -26,7 +26,8 @@ def _authenticate_websocket(websocket: WebSocket) -> bool:
 
     Returns True if authenticated (or debug mode), False otherwise.
     """
-    if settings.security.debug_mode:
+    # SEC-020: DEBUG_MODE only bypasses auth outside the configured production environment
+    if settings.auth_disabled_by_debug_mode():
         return True
 
     # Try Authorization header first

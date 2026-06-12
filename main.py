@@ -38,7 +38,7 @@ from hummingbot.client.config.config_crypt import ETHKeyFileSecretManger  # noqa
 from hummingbot.core.gateway.gateway_http_client import GatewayHttpClient  # noqa: E402
 from hummingbot.core.rate_oracle.rate_oracle import RATE_ORACLE_SOURCES, RateOracle  # noqa: E402
 
-from config import settings, warn_if_insecure_security_defaults  # noqa: E402
+from config import settings, warn_if_debug_mode_enabled, warn_if_insecure_security_defaults  # noqa: E402
 from database import AsyncDatabaseManager  # noqa: E402
 from routers import (  # noqa: E402
     accounts,
@@ -86,7 +86,8 @@ logging.getLogger('services.mqtt_manager').setLevel(logging.INFO)
 # Get settings from Pydantic Settings
 username = settings.security.username
 password = settings.security.password
-debug_mode = settings.security.debug_mode
+# SEC-020: DEBUG_MODE only disables auth outside the configured production environment
+debug_mode = settings.auth_disabled_by_debug_mode()
 
 # Security setup
 security = HTTPBasic()
@@ -100,6 +101,8 @@ async def lifespan(app: FastAPI):
     """
     # SEC-018: warn loudly if USERNAME/PASSWORD/CONFIG_PASSWORD are still the insecure defaults
     warn_if_insecure_security_defaults(settings.security)
+    # SEC-020: warn loudly if DEBUG_MODE disables auth (or is being ignored because the environment is production)
+    warn_if_debug_mode_enabled(settings)
 
     # Ensure password verification file exists
     if BackendAPISecurity.new_password_required():
