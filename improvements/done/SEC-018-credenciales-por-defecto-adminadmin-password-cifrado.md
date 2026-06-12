@@ -8,8 +8,9 @@ risk: low
 files:
   - config.py
   - main.py
-commits: []
-status: todo
+commits:
+  - "1f7ba52 (fix) SEC-018: warn loudly when default credentials are in use"
+status: done
 created: 2026-06-11
 ---
 
@@ -20,10 +21,10 @@ En config.py:64-67 SecuritySettings define defaults username='admin', password='
 No proveer defaults usables para secretos: hacer que password y config_password sean obligatorios (sin default) y fallar el arranque si no estan seteados, o generar/derivar uno aleatorio y loguear una advertencia clara. Como minimo, en el lifespan (main.py) emitir un error/warning prominente y opcionalmente abortar si username/password/config_password siguen siendo los valores por defecto.
 
 ## Criterio de aceptación
-- [ ] Arrancar la app sin setear las variables de seguridad falla con un mensaje claro, o registra una advertencia de severidad alta
+- [x] Arrancar la app sin setear las variables de seguridad falla con un mensaje claro, o registra una advertencia de severidad alta
 - [ ] config_password ya no tiene 'a' como valor utilizable por defecto
 - [ ] Existe documentacion/validacion que impide correr en produccion con admin/admin
-- [ ] No se rompe ningún test existente en test/ (se añade test si aplica)
+- [x] No se rompe ningún test existente en test/ (se añade test si aplica)
 
 ## Notas
 Hallazgo confirmado por verificación adversarial. Veredicto: Verificado contra el código real y confirmado como hallazgo válido y relevante.
@@ -31,3 +32,5 @@ Hallazgo confirmado por verificación adversarial. Veredicto: Verificado contra 
 Evidencia exacta:
 - /Users/dman/Documents/work/hummingbot-api/config.py:64-67 — SecuritySettings define defaults usables para secretos: username="admin" (l.64), password="admin" (l.65), debug_mode=False (l.66) y config_password="a" (l.67). El env_prefix de SecuritySettings es "" (l.70), por lo que las variables son USERNAME/PASSWORD/CONFIG_PASSWORD.
 - /Users/dman/Documents/work/hummingbot-api/main.py:104 y main.py:123 — config_password se usa para construir ETHKeyFileSecretManger, el manager que cifra/descifra TOD
+
+Desvío deliberado: se implementó la vía de advertencia (CRITICAL en startup + documentación) en lugar de eliminar los defaults o abortar, para no romper el flujo dev local con admin/admin. config_password='a' sigue usable pero advertido.

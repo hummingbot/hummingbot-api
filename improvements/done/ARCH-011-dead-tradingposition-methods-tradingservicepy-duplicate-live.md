@@ -19,8 +19,9 @@ files:
   - routers/trading.py:108
   - routers/trading.py:159
   - routers/trading.py:599
-commits: []
-status: todo
+commits:
+  - "54ab032 (refactor) ARCH-011: remove dead trading methods from TradingService"
+status: done
 created: 2026-06-11
 ---
 
@@ -31,10 +32,12 @@ TradingService exposes place_order (trading_service.py:453), cancel_order (tradi
 Remove the unused place_order/cancel_order/get_active_orders/get_positions/set_leverage methods from TradingService (they have no callers), keeping TradingService focused on its real responsibility: owning trading interfaces for executors. If a service-layer trading API is desired long-term, consolidate the AccountsService.place_trade validation logic there instead of leaving two copies.
 
 ## Criterio de aceptación
-- [ ] TradingService no longer defines the 5 unused trading/position methods
-- [ ] grep confirms no caller breaks
-- [ ] routers/trading.py still places/cancels orders and reads positions via accounts_service unchanged
-- [ ] No se rompe ningún test existente en test/ (se añade test si aplica)
+- [x] TradingService no longer defines the 5 unused trading/position methods
+- [x] grep confirms no caller breaks
+- [x] routers/trading.py still places/cancels orders and reads positions via accounts_service unchanged
+- [x] No se rompe ningún test existente en test/ (se añade test si aplica)
 
 ## Notas
 Hallazgo confirmado por verificación adversarial. Veredicto: Verified against real code. All cited line numbers in trading_service.py are exact: place_order (453), cancel_order (502), get_active_orders (524), get_positions (544), set_leverage (577). Grep across routers/, services/, main.py confirms ZERO callers for these five TradingService methods: no router uses deps.get_trading_service at all, and the only consumers of TradingService (executor_service.py, internal update loops) call only get_trading_interface/get_all_trading_interfaces/update_all_timestamps. Meanwhile routers/trading.py wires the live operations to AccountsService: place_trade (accou
+
+Solo requirió editar services/trading_service.py; accounts_service.py y routers/trading.py no necesitaron cambios (el criterio exigía routers intacto).

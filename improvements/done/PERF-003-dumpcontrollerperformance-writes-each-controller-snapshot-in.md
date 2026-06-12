@@ -8,8 +8,9 @@ risk: low
 files:
   - services/bots_orchestrator.py
   - database/repositories/controller_performance_repository.py
-commits: []
-status: todo
+commits:
+  - "0d459f4 (perf) PERF-003: batch controller performance snapshots"
+status: done
 created: 2026-06-11
 ---
 
@@ -20,10 +21,10 @@ dump_controller_performance (bots_orchestrator.py:405-414) calls repo.save_contr
 Add a bulk path: build all ControllerPerformanceSnapshot objects first and use session.add_all(...) with a single flush/commit, or accumulate them and flush once after the loops. Avoid the per-row flush; the snapshot rows do not need their generated ids during the loop.
 
 ## Criterio de aceptación
-- [ ] All controller snapshots for one dump are persisted with a single add_all/flush rather than one flush per controller
-- [ ] Saved row count and content are unchanged vs the per-row implementation
-- [ ] saved_count logging still reflects the number of rows written
-- [ ] No se rompe ningún test existente en test/ (se añade test si aplica)
+- [x] All controller snapshots for one dump are persisted with a single add_all/flush rather than one flush per controller
+- [x] Saved row count and content are unchanged vs the per-row implementation
+- [x] saved_count logging still reflects the number of rows written
+- [x] No se rompe ningún test existente en test/ (se añade test si aplica)
 
 ## Notas
 Hallazgo confirmado por verificación adversarial. Veredicto: Verified against the real code. The finding is accurate and file:line references are correct.
