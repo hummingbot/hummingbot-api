@@ -253,17 +253,21 @@ class AccountsService:
         All account/connector combinations from the same snapshot will use the same timestamp.
         :return:
         """
+        # Snapshot the live dict synchronously (no awaits) so concurrent mutations of
+        # accounts_state cannot raise "dictionary changed size during iteration"
+        accounts_state_snapshot = {account: dict(connectors) for account, connectors in self.accounts_state.items()}
+
         await self.ensure_db_initialized()
-        
+
         try:
             # Generate a single timestamp for this entire snapshot
             snapshot_timestamp = datetime.now(timezone.utc)
-            
+
             async with self.db_manager.get_session_context() as session:
                 repository = AccountRepository(session)
-                
+
                 # Save each account-connector combination with the same timestamp
-                for account_name, connectors in self.accounts_state.items():
+                for account_name, connectors in accounts_state_snapshot.items():
                     for connector_name, tokens_info in connectors.items():
                         if tokens_info:  # Only save if there's token data
                             await repository.save_account_state(account_name, connector_name, tokens_info, snapshot_timestamp)
@@ -800,16 +804,19 @@ class AccountsService:
         Get portfolio distribution by tokens with percentages.
         """
         try:
+            # Snapshot the live dict so concurrent mutations cannot affect the iteration
+            accounts_state_snapshot = {account: dict(connectors) for account, connectors in self.accounts_state.items()}
+
             # Get accounts to process
-            accounts_to_process = [account_name] if account_name else list(self.accounts_state.keys())
-            
+            accounts_to_process = [account_name] if account_name else list(accounts_state_snapshot.keys())
+
             # Aggregate all tokens across accounts and connectors
             token_values = {}
             total_value = 0
-            
+
             for acc_name in accounts_to_process:
-                if acc_name in self.accounts_state:
-                    for connector_name, connector_data in self.accounts_state[acc_name].items():
+                if acc_name in accounts_state_snapshot:
+                    for connector_name, connector_data in accounts_state_snapshot[acc_name].items():
                         for token_info in connector_data:
                             token = token_info.get("token", "")
                             value = token_info.get("value", 0)
@@ -904,10 +911,13 @@ class AccountsService:
         Get portfolio distribution by accounts with percentages.
         """
         try:
+            # Snapshot the live dict so concurrent mutations cannot affect the iteration
+            accounts_state_snapshot = {account: dict(connectors) for account, connectors in self.accounts_state.items()}
+
             account_values = {}
             total_value = 0
-            
-            for acc_name, account_data in self.accounts_state.items():
+
+            for acc_name, account_data in accounts_state_snapshot.items():
                 account_value = 0
                 connector_values = {}
                 
