@@ -7,8 +7,9 @@ effort: M
 risk: medium
 files:
   - services/accounts_service.py
-commits: []
-status: todo
+commits:
+  - "585a804 (fix) CORR-007: snapshot accounts_state before iterating"
+status: done
 created: 2026-06-11
 ---
 
@@ -19,10 +20,10 @@ created: 2026-06-11
 Snapshot the structure before iterating so the dump operates on a stable copy: e.g. `snapshot = {acc: dict(conns) for acc, conns in self.accounts_state.items()}` taken synchronously (no awaits) at the top of dump_account_state, then iterate `snapshot`. Alternatively, guard all reads/writes of `accounts_state` with the existing asyncio.Lock pattern used elsewhere. Apply the same defensive copy in the in-memory aggregation paths that iterate accounts_state.
 
 ## Criterio de aceptación
-- [ ] dump_account_state iterates over a local copy of accounts_state, not the live dict
-- [ ] No `RuntimeError: dictionary changed size during iteration` occurs when a balance update, gateway stale-key removal, or credential deletion runs concurrently with a dump
-- [ ] get_portfolio_distribution and get_account_distribution also iterate snapshots or are lock-protected
-- [ ] No se rompe ningún test existente en test/ (se añade test si aplica)
+- [x] dump_account_state iterates over a local copy of accounts_state, not the live dict
+- [x] No `RuntimeError: dictionary changed size during iteration` occurs when a balance update, gateway stale-key removal, or credential deletion runs concurrently with a dump
+- [x] get_portfolio_distribution and get_account_distribution also iterate snapshots or are lock-protected
+- [x] No se rompe ningún test existente en test/ (se añade test si aplica)
 
 ## Notas
 Hallazgo confirmado por verificación adversarial. Veredicto: REAL y vale la pena. Verifiqué el código real en /Users/dman/Documents/work/hummingbot-api/services/accounts_service.py.
@@ -30,3 +31,5 @@ Hallazgo confirmado por verificación adversarial. Veredicto: REAL y vale la pen
 dump_account_state (lineas 674-698) itera self.accounts_state.items() (linea 690) y connectors.items() (linea 691), y dentro del bucle hace `await repository.save_account_state(...)` (linea 693). Ese await es un punto de suspension de I/O real (escritura a DB) que cede el control al event loop MIENTRAS se itera el dict vivo.
 
 Concurrencia confirmada: los endpoints REST en routers/portfolio.py:34 (update_account_state) y routers/accounts.py:87/109/135 (delete_account/delete_
+
+El mismo patrón de snapshot se aplicó a get_portfolio_distribution y get_account_distribution.
