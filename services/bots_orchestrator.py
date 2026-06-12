@@ -403,6 +403,7 @@ class BotsOrchestrator:
             async with self.db_manager.get_session_context() as session:
                 repo = ControllerPerformanceRepository(session)
 
+                snapshots = []
                 for bot_name in list(self.active_bots):
                     if self.is_bot_stopping(bot_name):
                         continue
@@ -411,15 +412,17 @@ class BotsOrchestrator:
                     performance_data = self.determine_controller_performance(controller_reports)
 
                     for controller_id, data in performance_data.items():
-                        await repo.save_controller_performance(
-                            bot_name=bot_name,
-                            controller_id=controller_id,
-                            status=data.get("status", "unknown"),
-                            performance=data.get("performance", {}),
-                            custom_info=data.get("custom_info", {}),
-                            snapshot_timestamp=snapshot_timestamp,
-                        )
-                        saved_count += 1
+                        snapshots.append({
+                            "bot_name": bot_name,
+                            "controller_id": controller_id,
+                            "status": data.get("status", "unknown"),
+                            "performance": data.get("performance", {}),
+                            "custom_info": data.get("custom_info", {}),
+                            "snapshot_timestamp": snapshot_timestamp,
+                        })
+
+                saved_rows = await repo.save_controller_performances(snapshots)
+                saved_count = len(saved_rows)
 
             if saved_count > 0:
                 logger.info(f"Dumped {saved_count} controller performance snapshots")
