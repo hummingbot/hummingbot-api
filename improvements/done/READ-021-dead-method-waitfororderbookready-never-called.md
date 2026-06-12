@@ -7,8 +7,9 @@ effort: S
 risk: low
 files:
   - services/accounts_service.py:180-213
-commits: []
-status: todo
+commits:
+  - "ba05ab7 (refactor) ARCH-010: remove dead AccountTradingInterface from accounts_service (subsume este item)"
+status: done
 created: 2026-06-11
 ---
 
@@ -19,10 +20,12 @@ services/accounts_service.py:180 defines async method `_wait_for_order_book_read
 Delete the entire `_wait_for_order_book_ready` method (services/accounts_service.py:180-213). If a future caller needs order-book readiness it should use the market_data_service path already used in `add_market`.
 
 ## Criterio de aceptación
-- [ ] Method `_wait_for_order_book_ready` is removed
-- [ ] grep -rn "_wait_for_order_book_ready" returns no matches
-- [ ] Test suite / app startup unaffected
-- [ ] No se rompe ningún test existente en test/ (se añade test si aplica)
+- [x] Method `_wait_for_order_book_ready` is removed
+- [x] grep -rn "_wait_for_order_book_ready" returns no matches
+- [x] Test suite / app startup unaffected
+- [x] No se rompe ningún test existente en test/ (se añade test si aplica)
 
 ## Notas
 Hallazgo confirmado por verificación adversarial. Veredicto: Verified against the real code. The async method `_wait_for_order_book_ready` is defined at services/accounts_service.py lines 180-213 with a full docstring and polling logic, exactly as described. A grep for `_wait_for_order_book_ready` across all .py files returns only the definition line — zero call sites. It is genuinely dead code. Its functionality (waiting for an order book to become ready) is already covered in `add_market` (lines 159-175), which calls `market_data_service.initialize_order_book(...)` with a timeout. The method is a private helper that overrides nothing in any base class
+
+No-op al implementarse: _wait_for_order_book_ready era un helper privado de la clase muerta AccountTradingInterface, eliminada completa por ARCH-010 (ba05ab7). grep repo-wide confirma 0 referencias.
