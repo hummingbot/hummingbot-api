@@ -283,6 +283,109 @@ class ExecutorService:
             self._trading_interfaces[account_name] = self._trading_service.get_trading_interface(account_name)
         return self._trading_interfaces[account_name]
 
+    def _validate_executor_config(
+        self,
+        executor_config: Dict[str, Any],
+        default_timestamp: Optional[float] = None
+    ) -> tuple[Type[ExecutorBase], Type[ExecutorConfigBase], ExecutorConfigBase]:
+        """
+        Validate the executor type and build the typed executor config.
+
+        Pure validation step: no IO, no executor started, no DB access.
+
+        Args:
+            executor_config: Executor configuration dictionary (must include 'type')
+            default_timestamp: Timestamp to set on the config if not provided
+                (required for time-based features like time_limit)
+
+        Returns:
+            Tuple of (executor_class, config_class, typed_config)
+
+        Raises:
+            HTTPException: 400 if the type is missing/invalid or the config is invalid
+        """
+        executor_type = executor_config.get("type")
+        if not executor_type:
+            raise HTTPException(
+                status_code=400,
+                detail="executor_config must include 'type' field"
+            )
+
+        if executor_type not in self.EXECUTOR_REGISTRY:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid executor type '{executor_type}'. Valid types: {list(self.EXECUTOR_REGISTRY.keys())}"
+            )
+
+        if "timestamp" not in executor_config or executor_config["timestamp"] is None:
+            executor_config["timestamp"] = default_timestamp
+
+        executor_class, config_class = self.EXECUTOR_REGISTRY[executor_type]
+        try:
+            typed_config = config_class(**executor_config)
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid executor config: {str(e)}"
+            )
+
+        return executor_class, config_class, typed_config
+
+    async def _prepare_market(self, account: str, connector_name: Optional[str], trading_pair: Optional[str]):
+        """Ensure the connector and market for the executor are ready on the account's trading interface."""
+        trading_interface = self._get_trading_interface(account)
+        if connector_name:
+            if trading_pair:
+                await trading_interface.add_market(connector_name, trading_pair)
+            else:
+                await trading_interface.ensure_connector(connector_name)
+
+    def _instantiate_and_register(
+        self,
+        executor_class: Type[ExecutorBase],
+        typed_config: ExecutorConfigBase,
+        trading_interface: AccountTradingInterface,
+        metadata: Dict[str, Any]
+    ) -> tuple[str, ExecutorBase]:
+        """
+        Instantiate the executor, register it in memory and start it.
+
+        Args:
+            executor_class: Executor class to instantiate
+            typed_config: Validated typed executor config
+            trading_interface: Trading interface acting as the executor's strategy
+            metadata: Metadata dict to register for the executor
+
+        Returns:
+            Tuple of (executor_id, executor)
+
+        Raises:
+            HTTPException: 400 if the executor fails to instantiate
+        """
+        try:
+            executor = executor_class(
+                strategy=trading_interface,
+                config=typed_config,
+                update_interval=self.update_interval,
+                max_retries=self.max_retries
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to create executor: {str(e)}"
+            )
+
+        executor_id = typed_config.id
+        self._active_executors[executor_id] = executor
+        self._executor_metadata[executor_id] = metadata
+
+        # Set ContextVar so the asyncio Task created by start() inherits it
+        token = current_executor_id.set(executor_id)
+        executor.start()
+        current_executor_id.reset(token)
+
+        return executor_id, executor
+
     async def create_executor(
         self,
         executor_config: Dict[str, Any],
@@ -300,69 +403,22 @@ class ExecutorService:
             Dictionary with executor_id and initial status
         """
         account = account_name or self.default_account
-
-        # Get executor type from config
-        executor_type = executor_config.get("type")
-        if not executor_type:
-            raise HTTPException(
-                status_code=400,
-                detail="executor_config must include 'type' field"
-            )
-
-        # Validate executor type
-        if executor_type not in self.EXECUTOR_REGISTRY:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid executor type '{executor_type}'. Valid types: {list(self.EXECUTOR_REGISTRY.keys())}"
-            )
-
-        # Get trading interface for this account
         trading_interface = self._get_trading_interface(account)
 
-        # Extract connector and trading pair from config
-        connector_name = executor_config.get("connector_name")
-        trading_pair = executor_config.get("trading_pair")
+        # Validate executor type and build the typed config
+        executor_class, _config_class, typed_config = self._validate_executor_config(
+            executor_config, default_timestamp=trading_interface.current_timestamp
+        )
+        executor_type = executor_config["type"]
 
         # Ensure connector and market are ready
-        if connector_name:
-            if trading_pair:
-                await trading_interface.add_market(connector_name, trading_pair)
-            else:
-                await trading_interface.ensure_connector(connector_name)
+        connector_name = executor_config.get("connector_name")
+        trading_pair = executor_config.get("trading_pair")
+        await self._prepare_market(account, connector_name, trading_pair)
 
-        # Set timestamp if not provided (required for time-based features like time_limit)
-        if "timestamp" not in executor_config or executor_config["timestamp"] is None:
-            executor_config["timestamp"] = trading_interface.current_timestamp
-
-        # Create typed executor config
-        executor_class, config_class = self.EXECUTOR_REGISTRY[executor_type]
-        try:
-            typed_config = config_class(**executor_config)
-        except Exception as e:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid executor config: {str(e)}"
-            )
-
-        # Create the executor instance
-        try:
-            executor = executor_class(
-                strategy=trading_interface,
-                config=typed_config,
-                update_interval=self.update_interval,
-                max_retries=self.max_retries
-            )
-        except Exception as e:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Failed to create executor: {str(e)}"
-            )
-
-        # Store executor and metadata
-        executor_id = typed_config.id
+        # Instantiate the executor, register it in memory and start it
         controller_id = controller_id or getattr(typed_config, "controller_id", "main") or "main"
-        self._active_executors[executor_id] = executor
-        self._executor_metadata[executor_id] = {
+        metadata = {
             "account_name": account,
             "connector_name": connector_name,
             "trading_pair": trading_pair,
@@ -371,17 +427,13 @@ class ExecutorService:
             "created_at": datetime.now(timezone.utc),
             "config": executor_config
         }
-
-        # Set ContextVar so the asyncio Task created by start() inherits it
-        token = current_executor_id.set(executor_id)
-        executor.start()
-        current_executor_id.reset(token)
+        executor_id, executor = self._instantiate_and_register(executor_class, typed_config, trading_interface, metadata)
 
         # Persist to database
         await self._persist_executor_created(executor_id, executor)
 
         # Capture created_at before potential cleanup
-        created_at = self._executor_metadata[executor_id]["created_at"].isoformat()
+        created_at = metadata["created_at"].isoformat()
 
         # Check if executor terminated immediately (e.g., insufficient balance)
         # If so, handle completion now rather than waiting for control loop
