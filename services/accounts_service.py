@@ -442,6 +442,18 @@ class AccountsService:
         "hyperliquid_perpetual": "USD",
         "xrpl": "RLUSD",
         "kraken": "USD",
+        "backpack": "USDC",
+        "backpack_perpetual": "USDC",
+        "cube": "USDC",
+        "derive": "USDC",
+        "derive_perpetual": "USDC",
+        "dexalot": "USDC",
+        "vertex": "USDC",
+        "aevo_perpetual": "USDC",
+        "pacifica_perpetual": "USDC",
+        "dydx_v4_perpetual": "USD",
+        "decibel_perpetual": "USD",
+        "architect_perpetual": "USD",
     }
     potential_wrapped_tokens = ["ETH", "SOL", "BNB", "POL", "AVAX"]
     
