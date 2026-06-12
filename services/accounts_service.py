@@ -3,7 +3,7 @@ import logging
 import re
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException
 from hummingbot.client.config.config_crypt import ETHKeyFileSecretManger
@@ -771,7 +771,7 @@ class AccountsService:
             logger.error(f"Error getting token current state: {e}")
             return []
     
-    async def get_portfolio_value(self, account_name: Optional[str] = None) -> Dict[str, any]:
+    async def get_portfolio_value(self, account_name: Optional[str] = None) -> Dict[str, Any]:
         """
         Get total portfolio value, optionally filtered by account.
         """
@@ -799,7 +799,7 @@ class AccountsService:
             
             return portfolio
     
-    def get_portfolio_distribution(self, account_name: Optional[str] = None) -> Dict[str, any]:
+    def get_portfolio_distribution(self, account_name: Optional[str] = None) -> Dict[str, Any]:
         """
         Get portfolio distribution by tokens with percentages.
         """
@@ -906,7 +906,7 @@ class AccountsService:
                 "error": str(e)
             }
     
-    def get_account_distribution(self) -> Dict[str, any]:
+    def get_account_distribution(self) -> Dict[str, Any]:
         """
         Get portfolio distribution by accounts with percentages.
         """
@@ -1137,7 +1137,7 @@ class AccountsService:
             raise HTTPException(status_code=400, detail=f"Connector '{connector_name}' is not a perpetual connector")
         return await self.get_connector_instance(account_name, connector_name)
 
-    async def get_active_orders(self, account_name: str, connector_name: str) -> Dict[str, any]:
+    async def get_active_orders(self, account_name: str, connector_name: str) -> Dict[str, Any]:
         """
         Get active orders for a specific connector.
         

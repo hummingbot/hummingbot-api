@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import aiohttp
 
@@ -266,7 +266,7 @@ class GatewayClient:
         """Get configuration for a specific namespace (connector or chain-network)"""
         return await self._request("GET", "config", params={"namespace": namespace})
 
-    async def update_config(self, namespace: str, path: str, value: any) -> Dict:
+    async def update_config(self, namespace: str, path: str, value: Any) -> Dict:
         """Update a configuration value for a namespace"""
         return await self._request("POST", "config/update", json={
             "namespace": namespace,

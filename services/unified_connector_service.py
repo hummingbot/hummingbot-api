@@ -14,7 +14,7 @@ import asyncio
 import logging
 import time
 from decimal import Decimal
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from hummingbot.client.config.config_crypt import ETHKeyFileSecretManger
 from hummingbot.client.config.config_helpers import ClientConfigAdapter, api_keys_from_connector_config_map, get_connector_class
@@ -64,8 +64,8 @@ class UnifiedConnectorService:
         self._data_connectors_started: Dict[str, bool] = {}
 
         # Order and funding recorders (for trading connectors)
-        self._orders_recorders: Dict[str, any] = {}
-        self._funding_recorders: Dict[str, any] = {}
+        self._orders_recorders: Dict[str, Any] = {}
+        self._funding_recorders: Dict[str, Any] = {}
         self._metrics_collectors: Dict[str, TradeVolumeMetricCollector] = {}
 
         # Locks to prevent race conditions in connector creation
