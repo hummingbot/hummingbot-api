@@ -23,6 +23,7 @@ from models import (
     TradeResponse,
 )
 from models.accounts import LeverageRequest, PositionModeRequest
+from models.pagination import paginate_by_cursor
 from services.accounts_service import AccountsService
 
 router = APIRouter(tags=["Trading"], prefix="/trading")
@@ -167,39 +168,8 @@ async def get_positions(
 
                             logger.warning(f"Failed to get positions for {account_name}/{connector_name}: {e}")
 
-        # Sort by cursor_id for consistent pagination
-        all_positions.sort(key=lambda x: x.get("_cursor_id", ""))
-
-        # Apply cursor-based pagination
-        start_index = 0
-        if filter_request.cursor:
-            # Find the position after the cursor
-            for i, position in enumerate(all_positions):
-                if position.get("_cursor_id") == filter_request.cursor:
-                    start_index = i + 1
-                    break
-
-        # Get page of results
-        end_index = start_index + filter_request.limit
-        page_positions = all_positions[start_index:end_index]
-
-        # Determine next cursor and has_more
-        has_more = end_index < len(all_positions)
-        next_cursor = page_positions[-1].get("_cursor_id") if page_positions and has_more else None
-
-        # Clean up cursor_id from response data
-        for position in page_positions:
-            position.pop("_cursor_id", None)
-
-        return PaginatedResponse(
-            data=page_positions,
-            pagination={
-                "limit": filter_request.limit,
-                "has_more": has_more,
-                "next_cursor": next_cursor,
-                "total_count": len(all_positions),
-            },
-        )
+        # Sort by cursor_id and apply cursor-based pagination
+        return paginate_by_cursor(all_positions, filter_request.cursor, filter_request.limit)
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching positions: {str(e)}")
@@ -265,39 +235,8 @@ async def get_active_orders(
 
                             logger.warning(f"Failed to get active orders for {account_name}/{connector_name}: {e}")
 
-        # Sort by cursor_id for consistent pagination
-        all_active_orders.sort(key=lambda x: x.get("_cursor_id", ""))
-
-        # Apply cursor-based pagination
-        start_index = 0
-        if filter_request.cursor:
-            # Find the order after the cursor
-            for i, order in enumerate(all_active_orders):
-                if order.get("_cursor_id") == filter_request.cursor:
-                    start_index = i + 1
-                    break
-
-        # Get page of results
-        end_index = start_index + filter_request.limit
-        page_orders = all_active_orders[start_index:end_index]
-
-        # Determine next cursor and has_more
-        has_more = end_index < len(all_active_orders)
-        next_cursor = page_orders[-1].get("_cursor_id") if page_orders and has_more else None
-
-        # Clean up cursor_id from response data
-        for order in page_orders:
-            order.pop("_cursor_id", None)
-
-        return PaginatedResponse(
-            data=page_orders,
-            pagination={
-                "limit": filter_request.limit,
-                "has_more": has_more,
-                "next_cursor": next_cursor,
-                "total_count": len(all_active_orders),
-            },
-        )
+        # Sort by cursor_id and apply cursor-based pagination
+        return paginate_by_cursor(all_active_orders, filter_request.cursor, filter_request.limit)
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching active orders: {str(e)}")
@@ -367,38 +306,13 @@ async def get_orders(
         if filter_request.trading_pairs and len(filter_request.trading_pairs) > 1:
             all_orders = [order for order in all_orders if order.get("trading_pair") in filter_request.trading_pairs]
 
-        # Sort by timestamp (most recent first) and then by cursor_id for consistency
-        all_orders.sort(key=lambda x: (x.get("timestamp", 0), x.get("_cursor_id", "")), reverse=True)
-
-        # Apply cursor-based pagination
-        start_index = 0
-        if filter_request.cursor:
-            # Find the order after the cursor
-            for i, order in enumerate(all_orders):
-                if order.get("_cursor_id") == filter_request.cursor:
-                    start_index = i + 1
-                    break
-
-        # Get page of results
-        end_index = start_index + filter_request.limit
-        page_orders = all_orders[start_index:end_index]
-
-        # Determine next cursor and has_more
-        has_more = end_index < len(all_orders)
-        next_cursor = page_orders[-1].get("_cursor_id") if page_orders and has_more else None
-
-        # Clean up cursor_id from response data
-        for order in page_orders:
-            order.pop("_cursor_id", None)
-
-        return PaginatedResponse(
-            data=page_orders,
-            pagination={
-                "limit": filter_request.limit,
-                "has_more": has_more,
-                "next_cursor": next_cursor,
-                "total_count": len(all_orders),
-            },
+        # Sort by timestamp (most recent first) then cursor_id, and apply cursor-based pagination
+        return paginate_by_cursor(
+            all_orders,
+            filter_request.cursor,
+            filter_request.limit,
+            sort_key=lambda x: (x.get("timestamp", 0), x.get("_cursor_id", "")),
+            reverse=True,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching orders: {str(e)}")
@@ -474,38 +388,13 @@ async def get_trades(
         if filter_request.trade_types and len(filter_request.trade_types) > 1:
             all_trades = [trade for trade in all_trades if trade.get("trade_type") in filter_request.trade_types]
 
-        # Sort by timestamp (most recent first) and then by cursor_id for consistency
-        all_trades.sort(key=lambda x: (x.get("timestamp", 0), x.get("_cursor_id", "")), reverse=True)
-
-        # Apply cursor-based pagination
-        start_index = 0
-        if filter_request.cursor:
-            # Find the trade after the cursor
-            for i, trade in enumerate(all_trades):
-                if trade.get("_cursor_id") == filter_request.cursor:
-                    start_index = i + 1
-                    break
-
-        # Get page of results
-        end_index = start_index + filter_request.limit
-        page_trades = all_trades[start_index:end_index]
-
-        # Determine next cursor and has_more
-        has_more = end_index < len(all_trades)
-        next_cursor = page_trades[-1].get("_cursor_id") if page_trades and has_more else None
-
-        # Clean up cursor_id from response data
-        for trade in page_trades:
-            trade.pop("_cursor_id", None)
-
-        return PaginatedResponse(
-            data=page_trades,
-            pagination={
-                "limit": filter_request.limit,
-                "has_more": has_more,
-                "next_cursor": next_cursor,
-                "total_count": len(all_trades),
-            },
+        # Sort by timestamp (most recent first) then cursor_id, and apply cursor-based pagination
+        return paginate_by_cursor(
+            all_trades,
+            filter_request.cursor,
+            filter_request.limit,
+            sort_key=lambda x: (x.get("timestamp", 0), x.get("_cursor_id", "")),
+            reverse=True,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching trades: {str(e)}")
@@ -665,38 +554,13 @@ async def get_funding_payments(
 
                             logger.warning(f"Failed to get funding payments for {account_name}/{connector_name}: {e}")
 
-        # Sort by timestamp (most recent first) and then by cursor_id for consistency
-        all_funding_payments.sort(key=lambda x: (x.get("timestamp", ""), x.get("_cursor_id", "")), reverse=True)
-
-        # Apply cursor-based pagination
-        start_index = 0
-        if filter_request.cursor:
-            # Find the payment after the cursor
-            for i, payment in enumerate(all_funding_payments):
-                if payment.get("_cursor_id") == filter_request.cursor:
-                    start_index = i + 1
-                    break
-
-        # Get page of results
-        end_index = start_index + filter_request.limit
-        page_payments = all_funding_payments[start_index:end_index]
-
-        # Determine next cursor and has_more
-        has_more = end_index < len(all_funding_payments)
-        next_cursor = page_payments[-1].get("_cursor_id") if page_payments and has_more else None
-
-        # Clean up cursor_id from response data
-        for payment in page_payments:
-            payment.pop("_cursor_id", None)
-
-        return PaginatedResponse(
-            data=page_payments,
-            pagination={
-                "limit": filter_request.limit,
-                "has_more": has_more,
-                "next_cursor": next_cursor,
-                "total_count": len(all_funding_payments),
-            },
+        # Sort by timestamp (most recent first) then cursor_id, and apply cursor-based pagination
+        return paginate_by_cursor(
+            all_funding_payments,
+            filter_request.cursor,
+            filter_request.limit,
+            sort_key=lambda x: (x.get("timestamp", ""), x.get("_cursor_id", "")),
+            reverse=True,
         )
 
     except Exception as e:
