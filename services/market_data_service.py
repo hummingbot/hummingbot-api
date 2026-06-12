@@ -388,7 +388,6 @@ class MarketDataService:
         Raises:
             ValueError: If the trading pair does not exist or the exchange returns an error.
         """
-        import time as _time
         feed = CandlesFactory.get_candle(CandlesConfig(
             connector=connector_name,
             trading_pair=trading_pair,
@@ -396,7 +395,7 @@ class MarketDataService:
             max_records=10,
         ))
         try:
-            end_time = int(_time.time())
+            end_time = int(time.time())
             candles = await feed.fetch_candles(end_time=end_time, limit=1)
             if candles is None or len(candles) == 0:
                 raise ValueError(
