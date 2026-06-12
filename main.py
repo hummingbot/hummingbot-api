@@ -38,7 +38,7 @@ from hummingbot.client.config.config_crypt import ETHKeyFileSecretManger  # noqa
 from hummingbot.core.gateway.gateway_http_client import GatewayHttpClient  # noqa: E402
 from hummingbot.core.rate_oracle.rate_oracle import RATE_ORACLE_SOURCES, RateOracle  # noqa: E402
 
-from config import settings  # noqa: E402
+from config import settings, warn_if_insecure_security_defaults  # noqa: E402
 from database import AsyncDatabaseManager  # noqa: E402
 from routers import (  # noqa: E402
     accounts,
@@ -98,6 +98,9 @@ async def lifespan(app: FastAPI):
     Lifespan context manager for the FastAPI application.
     Handles startup and shutdown events.
     """
+    # SEC-018: warn loudly if USERNAME/PASSWORD/CONFIG_PASSWORD are still the insecure defaults
+    warn_if_insecure_security_defaults(settings.security)
+
     # Ensure password verification file exists
     if BackendAPISecurity.new_password_required():
         # Create secrets manager with CONFIG_PASSWORD

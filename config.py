@@ -1,3 +1,4 @@
+import logging
 from typing import List
 
 from pydantic import Field
@@ -58,18 +59,61 @@ class MarketDataSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="MARKET_DATA_", extra="ignore")
 
 
-class SecuritySettings(BaseSettings):
-    """Security and authentication configuration."""
+# Insecure default credential values (SEC-018), mapped to the environment variables that override them.
+# They are kept only for local development convenience and MUST be overridden in production deployments.
+_INSECURE_SECURITY_DEFAULTS = {
+    "USERNAME": "admin",
+    "PASSWORD": "admin",
+    "CONFIG_PASSWORD": "a",
+}
 
-    username: str = Field(default="admin", description="API basic auth username")
-    password: str = Field(default="admin", description="API basic auth password")
+
+class SecuritySettings(BaseSettings):
+    """Security and authentication configuration.
+
+    All fields are read from environment variables without a prefix (or from .env):
+    - USERNAME: API basic auth username (default "admin" — local development only, never use in production)
+    - PASSWORD: API basic auth password (default "admin" — local development only, never use in production)
+    - CONFIG_PASSWORD: password used to encrypt ALL connector credentials (default "a" — local development only,
+      never use in production)
+    - DEBUG_MODE: disables basic auth entirely when true (never enable in production)
+    """
+
+    username: str = Field(default="admin", description="API basic auth username (override via USERNAME in production)")
+    password: str = Field(default="admin", description="API basic auth password (override via PASSWORD in production)")
     debug_mode: bool = Field(default=False, description="Enable debug mode (disables auth)")
-    config_password: str = Field(default="a", description="Bot configuration encryption password")
+    config_password: str = Field(
+        default="a",
+        description="Bot configuration encryption password (override via CONFIG_PASSWORD in production)"
+    )
 
     model_config = SettingsConfigDict(
         env_prefix="",
         extra="ignore"  # Ignore extra environment variables
     )
+
+    def insecure_defaults_in_use(self) -> List[str]:
+        """Return the env var names of security settings still set to their insecure default values."""
+        current_values = {"USERNAME": self.username, "PASSWORD": self.password, "CONFIG_PASSWORD": self.config_password}
+        return [name for name, default in _INSECURE_SECURITY_DEFAULTS.items() if current_values[name] == default]
+
+
+def warn_if_insecure_security_defaults(security: SecuritySettings) -> List[str]:
+    """Emit a high-severity log if any security setting still uses its insecure default value (SEC-018).
+
+    Returns the list of env var names that are still at their defaults (empty list when fully configured).
+    """
+    insecure = security.insecure_defaults_in_use()
+    if insecure:
+        logging.critical(
+            "SECURITY WARNING: insecure default credentials in use for: %s. "
+            "Anyone who can reach this API can authenticate with the default basic auth credentials, and all "
+            "connector credentials are encrypted with a trivially guessable password. "
+            "Set the USERNAME, PASSWORD and CONFIG_PASSWORD environment variables (e.g. in .env) before deploying "
+            "to production. Do NOT run a production deployment with these defaults.",
+            ", ".join(insecure),
+        )
+    return insecure
 
 
 class AWSSettings(BaseSettings):
