@@ -135,7 +135,7 @@ async def lifespan(app: FastAPI):
 
         # Get rate_oracle_source configuration
         rate_oracle_source_data = config_data.get("rate_oracle_source", {})
-        source_name = rate_oracle_source_data.get("name", "binance")
+        source_name = rate_oracle_source_data.get("name", "gate_io")
 
         # Get global_token configuration
         global_token_data = config_data.get("global_token", {})
@@ -147,9 +147,9 @@ async def lifespan(app: FastAPI):
             rate_source = create_rate_source(source_name)
             logging.info(f"Configured RateOracle with source: {source_name}, quote_token: {quote_token}")
         else:
-            logging.warning(f"Unknown rate oracle source '{source_name}', defaulting to binance")
-            rate_source = create_rate_source("binance")
-            source_name = "binance"
+            logging.warning(f"Unknown rate oracle source '{source_name}', defaulting to gate_io")
+            rate_source = create_rate_source("gate_io")
+            source_name = "gate_io"
 
         # Initialize RateOracle with configured source and quote token
         rate_oracle = RateOracle.get_instance()
@@ -157,11 +157,15 @@ async def lifespan(app: FastAPI):
         rate_oracle.quote_token = quote_token
 
     except FileNotFoundError:
-        logging.warning("conf_client.yml not found, using default RateOracle configuration (binance, USDT)")
+        logging.warning("conf_client.yml not found, using default RateOracle configuration (gate_io, USDT)")
+        from routers.rate_oracle import create_rate_source
         rate_oracle = RateOracle.get_instance()
+        rate_oracle.source = create_rate_source("gate_io")
     except Exception as e:
-        logging.warning(f"Error reading conf_client.yml: {e}, using default RateOracle configuration")
+        logging.warning(f"Error reading conf_client.yml: {e}, using default RateOracle configuration (gate_io)")
+        from routers.rate_oracle import create_rate_source
         rate_oracle = RateOracle.get_instance()
+        rate_oracle.source = create_rate_source("gate_io")
 
     # =========================================================================
     # 2. UnifiedConnectorService - Single source of truth for all connectors
