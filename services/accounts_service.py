@@ -395,6 +395,27 @@ class AccountsService:
             else:
                 self.accounts_state[account_name][connector_name] = result
 
+    @staticmethod
+    def _balance_entry(token: str, units: Decimal, price: Optional[Decimal],
+                       available_units: Optional[Decimal] = None) -> Dict:
+        """Build the standard token balance entry dict shared across balance endpoints.
+
+        Args:
+            token: Token symbol
+            units: Token balance
+            price: Token price (None means unknown -> price/value reported as 0.0)
+            available_units: Available balance (defaults to units when not provided)
+        """
+        if available_units is None:
+            available_units = units
+        return {
+            "token": token,
+            "units": float(units),
+            "price": float(price) if price is not None else 0.0,
+            "value": float(price * units) if price is not None else 0.0,
+            "available_units": float(available_units),
+        }
+
     async def _get_connector_tokens_info(self, connector, connector_name: str, skip_balance_refresh: bool = False) -> List[Dict]:
         """Get token info from a connector instance using RateOracle cached prices.
 
@@ -438,13 +459,12 @@ class AccountsService:
                     missing_indices.append(len(tokens_info))
                     price = None  # resolved below
 
-            tokens_info.append({
-                "token": token,
-                "units": float(balance["units"]),
-                "price": float(price) if price is not None else 0.0,
-                "value": float(price * balance["units"]) if price is not None else 0.0,
-                "available_units": float(connector.get_available_balance(token))
-            })
+            tokens_info.append(self._balance_entry(
+                token,
+                balance["units"],
+                price,
+                available_units=connector.get_available_balance(token),
+            ))
 
         # Batch-fetch only the missing prices from the exchange
         if missing_pairs:
@@ -1590,6 +1610,11 @@ class AccountsService:
         except Exception as e:
             logger.error(f"Error updating Gateway balances: {e}")
 
+    async def _require_gateway(self) -> None:
+        """Raise a 503 HTTPException if the Gateway service is not reachable."""
+        if not await self.gateway_client.ping():
+            raise HTTPException(status_code=503, detail="Gateway service is not available")
+
     async def get_gateway_wallets(self) -> List[Dict]:
         """
         Get all wallets from Gateway. Gateway manages its own encrypted wallets.
@@ -1597,8 +1622,7 @@ class AccountsService:
         Returns:
             List of wallet information from Gateway, with default_address included for each chain
         """
-        if not await self.gateway_client.ping():
-            raise HTTPException(status_code=503, detail="Gateway service is not available")
+        await self._require_gateway()
 
         try:
             wallets = await self.gateway_client.get_wallets()
@@ -1627,8 +1651,7 @@ class AccountsService:
         Returns:
             Dictionary with wallet information from Gateway
         """
-        if not await self.gateway_client.ping():
-            raise HTTPException(status_code=503, detail="Gateway service is not available")
+        await self._require_gateway()
 
         try:
             result = await self.gateway_client.add_wallet(chain, private_key, set_default=set_default)
@@ -1656,8 +1679,7 @@ class AccountsService:
         Returns:
             Success message
         """
-        if not await self.gateway_client.ping():
-            raise HTTPException(status_code=503, detail="Gateway service is not available")
+        await self._require_gateway()
 
         try:
             result = await self.gateway_client.remove_wallet(chain, address)
@@ -1687,8 +1709,7 @@ class AccountsService:
         Returns:
             List of token balance dictionaries with prices from rate sources
         """
-        if not await self.gateway_client.ping():
-            raise HTTPException(status_code=503, detail="Gateway service is not available")
+        await self._require_gateway()
 
         try:
             # Get default network for chain if not provided
@@ -1740,13 +1761,7 @@ class AccountsService:
                     # all_prices is now keyed by token name directly
                     price = Decimal(str(all_prices.get(token, 0)))
 
-                formatted_balances.append({
-                    "token": token,
-                    "units": float(balance["units"]),
-                    "price": float(price),
-                    "value": float(price * balance["units"]),
-                    "available_units": float(balance["units"])
-                })
+                formatted_balances.append(self._balance_entry(token, balance["units"], price))
 
             return formatted_balances
 
