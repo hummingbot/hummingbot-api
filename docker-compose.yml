@@ -7,6 +7,13 @@ services:
     volumes:
       - ./bots:/hummingbot-api/bots
       - /var/run/docker.sock:/var/run/docker.sock
+      # Host metrics: mount the host's /proc read-only so the /system/resources
+      # route reports HOST CPU/RAM/load instead of the container's.
+      - /proc:/host/proc:ro
+      # Disk usage probe: psutil.disk_usage() only stats the filesystem CONTAINING
+      # this path, so a single non-sensitive host file on the root partition yields
+      # the host root disk totals without exposing the host filesystem tree.
+      - /etc/hostname:/host/disk-probe:ro
     logging:
       driver: json-file
       options:
@@ -19,6 +26,9 @@ services:
       - BROKER_HOST=emqx
       - DATABASE_URL=postgresql+asyncpg://hbot:hummingbot-api@postgres:5432/hummingbot_api
       - GATEWAY_URL=http://host.docker.internal:15888
+      # Point psutil at the mounted host paths (see volumes above)
+      - HOST_PROC=/host/proc
+      - HOST_DISK_PATH=/host/disk-probe
     extra_hosts:
       # Map host.docker.internal to host gateway for Linux compatibility
       # On macOS/Windows, Docker Desktop provides this automatically
