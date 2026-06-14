@@ -57,7 +57,9 @@ async def get_system_resources():
             "percent": vm.percent,
         },
         "disk": {
-            "path": HOST_DISK_PATH,
+            # Display label only; the stats are for the filesystem containing
+            # HOST_DISK_PATH (the host root partition).
+            "mountpoint": "host root",
             "total": disk.total,
             "used": disk.used,
             "free": disk.free,
