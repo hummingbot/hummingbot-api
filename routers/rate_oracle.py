@@ -98,7 +98,7 @@ async def get_rate_oracle_config(request: Request):
 
         # Extract rate_oracle_source
         rate_oracle_source_data = config_data.get("rate_oracle_source", {})
-        source_name = rate_oracle_source_data.get("name", "binance")
+        source_name = rate_oracle_source_data.get("name", "gate_io")
 
         # Extract global_token
         global_token_data = config_data.get("global_token", {})
@@ -196,7 +196,7 @@ async def update_rate_oracle_config(
             fs_util.dump_dict_to_yaml(CONF_CLIENT_PATH, config_data)
 
         # Build response
-        current_source = config_data.get("rate_oracle_source", {}).get("name", "binance")
+        current_source = config_data.get("rate_oracle_source", {}).get("name", "gate_io")
         current_global_token = config_data.get("global_token", {})
 
         return RateOracleConfigUpdateResponse(

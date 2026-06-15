@@ -24,7 +24,7 @@ class GlobalTokenConfig(BaseModel):
 class RateOracleSourceConfig(BaseModel):
     """Rate oracle source configuration."""
     name: str = Field(
-        default="binance",
+        default="gate_io",
         description="The rate oracle source to use for price data"
     )
 
