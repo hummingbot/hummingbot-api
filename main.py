@@ -57,6 +57,7 @@ from routers import (  # noqa: E402
     rate_oracle,
     scripts,
     storage,
+    system,
     trading,
     websocket,
 )
@@ -398,6 +399,7 @@ app.include_router(rate_oracle.router, dependencies=[Depends(auth_user)])
 app.include_router(backtesting.router, dependencies=[Depends(auth_user)])
 app.include_router(archived_bots.router, dependencies=[Depends(auth_user)])
 app.include_router(storage.router, dependencies=[Depends(auth_user)])
+app.include_router(system.router, dependencies=[Depends(auth_user)])
 
 app.include_router(executors.router, dependencies=[Depends(auth_user)])
 
