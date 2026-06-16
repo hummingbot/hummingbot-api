@@ -381,23 +381,28 @@ class MarketDataService:
             raise UnsupportedConnectorException(connector_name)
 
     @staticmethod
-    async def validate_trading_pair(connector_name: str, trading_pair: str, interval: str = "1m") -> None:
+    async def _validate_pair(feed, connector_name: str, trading_pair: str) -> None:
         """
-        Validate that a trading pair exists on the exchange by attempting a small REST candle fetch.
+        Validate that a trading pair exists on the exchange by loading the feed's exchange
+        data and probing a single REST candle.
+
+        Called once per feed, at creation time, so the cost is not paid on every request.
 
         Raises:
             ValueError: If the trading pair does not exist or the exchange returns an error.
         """
-        feed = CandlesFactory.get_candle(CandlesConfig(
-            connector=connector_name,
-            trading_pair=trading_pair,
-            interval=interval,
-            max_records=10,
-        ))
         try:
-            end_time = int(time.time())
-            candles = await feed.fetch_candles(end_time=end_time, limit=1)
-            if candles is None or len(candles) == 0:
+            # Some feeds (e.g. hyperliquid spot) need exchange data (symbol maps,
+            # quanto multipliers, etc.) loaded before a REST candle fetch can build
+            # its payload. start_network() does this internally, but fetch_candles()
+            # does not, so initialize explicitly here. No-op on feeds that don't need it.
+            await feed.initialize_exchange_data()
+            # Probe a generous window: a 1-candle probe spans only the current (often
+            # incomplete) interval, which is empty for illiquid pairs. fetch_candles
+            # returns a 0-d numpy array (np.array(None)) when no candles come back, so
+            # check ndim before len() to stay numpy-safe.
+            candles = await feed.fetch_candles(end_time=int(time.time()), limit=50)
+            if candles is None or getattr(candles, "ndim", 0) < 2 or len(candles) == 0:
                 raise ValueError(
                     f"Trading pair '{trading_pair}' not found on '{connector_name}'. "
                     f"No candle data returned."
@@ -409,33 +414,40 @@ class MarketDataService:
                 f"Trading pair '{trading_pair}' appears to be invalid on '{connector_name}': {e}"
             )
 
-    def get_candles_feed(self, config: CandlesConfig):
+    async def get_candles_feed(self, config: CandlesConfig):
         """
         Get or create a candles feed.
+
+        On first creation the trading pair is validated (exchange data load + a one-candle
+        REST probe). Cached feeds are returned directly, so repeated requests for the same
+        feed pay no extra REST cost and never re-initialize exchange data.
 
         Args:
             config: CandlesConfig for the desired feed
 
         Returns:
             Candle feed instance
+
+        Raises:
+            ValueError: If the trading pair does not exist on the exchange.
         """
         feed_key = self._generate_feed_key(
             FeedType.CANDLES, config.connector, config.trading_pair, config.interval
         )
 
-        self._last_access_times[feed_key] = time.time()
-        self._feed_configs[feed_key] = (FeedType.CANDLES, config)
-
         if feed_key not in self._candle_feeds:
             self.validate_connector(config.connector)
             feed = CandlesFactory.get_candle(config)
+            await self._validate_pair(feed, config.connector, config.trading_pair)
             feed.start()
             self._candle_feeds[feed_key] = feed
+            self._feed_configs[feed_key] = (FeedType.CANDLES, config)
             logger.info(f"Created candle feed: {feed_key}")
 
+        self._last_access_times[feed_key] = time.time()
         return self._candle_feeds[feed_key]
 
-    def get_candles_df(
+    async def get_candles_df(
             self,
             connector_name: str,
             trading_pair: str,
@@ -461,7 +473,7 @@ class MarketDataService:
             max_records=max_records
         )
 
-        feed = self.get_candles_feed(config)
+        feed = await self.get_candles_feed(config)
         return feed.candles_df
 
     def stop_candle_feed(self, config: CandlesConfig):
