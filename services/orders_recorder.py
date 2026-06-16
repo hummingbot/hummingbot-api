@@ -485,7 +485,9 @@ class OrdersRecorder:
                 order = await order_repo.get_order_by_client_id(event.order_id)
                 if order:
                     order.status = "FILLED"
-                    order.exchange_order_id = getattr(event, 'exchange_order_id', None)
+                    eoid = getattr(event, 'exchange_order_id', None)
+                    if eoid:
+                        order.exchange_order_id = eoid
 
             logger.debug(f"Recorded order completed: {event.order_id}")
         except Exception as e:
