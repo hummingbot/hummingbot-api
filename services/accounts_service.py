@@ -55,6 +55,9 @@ class AccountsService:
 
     def __init__(self,
                  db_manager: AsyncDatabaseManager,
+                 connector_service,
+                 market_data_service,
+                 trading_service,
                  account_update_interval: int = 5,
                  default_quote: str = "USDT",
                  gateway_url: str = "http://localhost:15888"):
@@ -63,6 +66,9 @@ class AccountsService:
 
         Args:
             db_manager: AsyncDatabaseManager for persistence (shared, created once at startup)
+            connector_service: UnifiedConnectorService (required, injected from main.py)
+            market_data_service: MarketDataService (required, injected from main.py)
+            trading_service: TradingService (required, injected from main.py)
             account_update_interval: How often to update account states in minutes (default: 5)
             default_quote: Default quote currency for trading pairs (default: "USDT")
             gateway_url: URL for Gateway service (default: "http://localhost:15888")
@@ -82,10 +88,12 @@ class AccountsService:
         # tables are created once at startup so no per-service bootstrap is needed)
         self.db_manager = db_manager
 
-        # Services injected from main.py
-        self._connector_service = None  # UnifiedConnectorService
-        self._market_data_service = None  # MarketDataService
-        self._trading_service = None  # TradingService
+        # Services injected from main.py (required). Set BEFORE any composed service below
+        # uses them: perpetual_trading_service binds self.get_connector_instance, which relies
+        # on _connector_service being available.
+        self._connector_service = connector_service  # UnifiedConnectorService
+        self._market_data_service = market_data_service  # MarketDataService
+        self._trading_service = trading_service  # TradingService
 
         # Initialize Gateway client
         self.gateway_base_url = gateway_url
@@ -172,8 +180,7 @@ class AccountsService:
                 logger.error(f"Error stopping Gateway transaction poller: {e}", exc_info=True)
 
         # Stop all connectors through the connector service
-        if self._connector_service:
-            await self._connector_service.stop_all()
+        await self._connector_service.stop_all()
 
         logger.info("AccountsService stopped successfully")
 
@@ -183,11 +190,10 @@ class AccountsService:
         Combines the connector state refresh and token info retrieval into a
         single awaitable so both can run in parallel across all connectors.
         """
-        if self._connector_service:
-            try:
-                await self._connector_service.refresh_connector_state(connector, connector_name, account_name)
-            except Exception as e:
-                logger.error(f"Error refreshing {connector_name}, using stale data: {e}")
+        try:
+            await self._connector_service.refresh_connector_state(connector, connector_name, account_name)
+        except Exception as e:
+            logger.error(f"Error refreshing {connector_name}, using stale data: {e}")
         # skip_balance_refresh=True since refresh_connector_state already called _update_balances
         return await self._get_connector_tokens_info(connector, connector_name, skip_balance_refresh=True)
 
@@ -201,7 +207,7 @@ class AccountsService:
                 await self.check_all_connectors()
 
                 # Single parallel pass: refresh connector state + get token info + gateway
-                all_connectors = self._connector_service.get_all_trading_connectors() if self._connector_service else {}
+                all_connectors = self._connector_service.get_all_trading_connectors()
                 tasks = []
                 task_meta = []  # (account_name, connector_name)
 
@@ -244,8 +250,7 @@ class AccountsService:
         """
         while True:
             try:
-                if self._connector_service:
-                    await self._connector_service.sync_all_orders_to_database()
+                await self._connector_service.sync_all_orders_to_database()
             except Exception as e:
                 logger.error(f"Error syncing order state to database: {e}")
             finally:
@@ -334,9 +339,6 @@ class AccountsService:
 
         :param account_name: The name of the account to initialize connectors for.
         """
-        if not self._connector_service:
-            return
-
         # Initialize missing connectors
         for connector_name in self._connector_service.list_available_credentials(account_name):
             try:
@@ -361,7 +363,7 @@ class AccountsService:
             connector_names: If provided, only update these connectors. If None, update all connectors.
                             For Gateway, this filters by chain-network (e.g., 'solana-mainnet-beta').
         """
-        all_connectors = self._connector_service.get_all_trading_connectors() if self._connector_service else {}
+        all_connectors = self._connector_service.get_all_trading_connectors()
 
         # Prepare parallel tasks
         tasks = []
@@ -434,9 +436,7 @@ class AccountsService:
                 price = Decimal("1")
             else:
                 # Try RateOracle first (instant, cached)
-                rate = None
-                if self._market_data_service:
-                    rate = self._market_data_service.get_rate(token, "USDT")
+                rate = self._market_data_service.get_rate(token, "USDT")
                 if rate and rate > 0:
                     price = rate
                 else:
@@ -528,8 +528,6 @@ class AccountsService:
         """
         validate_safe_name(account_name, "account name")
         validate_safe_name(connector_name, "connector name")
-        if not self._connector_service:
-            raise HTTPException(status_code=500, detail="Connector service not initialized")
 
         # Capture the original credential file BEFORE the in-place overwrite performed by
         # update_connector_keys. This determines whether a failure is a brand-new CREATE
@@ -590,11 +588,10 @@ class AccountsService:
             fs_util.delete_file(directory=f"credentials/{account_name}/connectors", file_name=f"{connector_name}.yml")
 
         # Always perform cleanup regardless of file existence
-        if self._connector_service:
-            # Stop the connector if it's running
-            await self._connector_service.stop_trading_connector(account_name, connector_name)
-            # Clear the connector from cache
-            self._connector_service.clear_trading_connector(account_name, connector_name)
+        # Stop the connector if it's running
+        await self._connector_service.stop_trading_connector(account_name, connector_name)
+        # Clear the connector from cache
+        self._connector_service.clear_trading_connector(account_name, connector_name)
 
         # Remove from account state
         if account_name in self.accounts_state and connector_name in self.accounts_state[account_name]:
@@ -628,11 +625,10 @@ class AccountsService:
         """
         validate_safe_name(account_name, "account name")
         # Stop all connectors for this account
-        if self._connector_service:
-            for connector_name in self._connector_service.list_account_connectors(account_name):
-                await self._connector_service.stop_trading_connector(account_name, connector_name)
-            # Clear all connectors for this account from cache
-            self._connector_service.clear_trading_connector(account_name)
+        for connector_name in self._connector_service.list_account_connectors(account_name):
+            await self._connector_service.stop_trading_connector(account_name, connector_name)
+        # Clear all connectors for this account from cache
+        self._connector_service.clear_trading_connector(account_name)
 
         # Delete account folder
         fs_util.delete_folder('credentials', account_name)
@@ -821,11 +817,8 @@ class AccountsService:
         if account_name not in self.list_accounts():
             raise HTTPException(status_code=404, detail=f"Account '{account_name}' not found")
 
-        if not self._connector_service:
-            raise HTTPException(status_code=500, detail="Connector service not initialized")
-
         connector = await self._connector_service.get_trading_connector(account_name, connector_name)
-        
+
         # Validate price for limit orders
         if order_type in [OrderType.LIMIT, OrderType.LIMIT_MAKER] and price is None:
             raise HTTPException(status_code=400, detail="Price is required for LIMIT and LIMIT_MAKER orders")
@@ -870,13 +863,12 @@ class AccountsService:
             notional_size = quantized_price * quantized_amount
         else:
             # For market orders without price, get current market price for validation
-            if self._market_data_service:
-                try:
-                    prices = await self._market_data_service.get_prices(connector_name, [trading_pair])
-                    if trading_pair in prices and "error" not in prices:
-                        price = Decimal(str(prices[trading_pair]))
-                except Exception as e:
-                    logger.error(f"Error getting market price for {trading_pair}: {e}")
+            try:
+                prices = await self._market_data_service.get_prices(connector_name, [trading_pair])
+                if trading_pair in prices and "error" not in prices:
+                    price = Decimal(str(prices[trading_pair]))
+            except Exception as e:
+                logger.error(f"Error getting market price for {trading_pair}: {e}")
             notional_size = price * quantized_amount if price else Decimal("0")
             
         if notional_size < trading_rule.min_notional_size:
@@ -934,9 +926,6 @@ class AccountsService:
         """
         if account_name not in self.list_accounts():
             raise HTTPException(status_code=404, detail=f"Account '{account_name}' not found")
-
-        if not self._connector_service:
-            raise HTTPException(status_code=500, detail="Connector service not initialized")
 
         return await self._connector_service.get_trading_connector(account_name, connector_name)
 

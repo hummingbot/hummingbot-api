@@ -202,13 +202,12 @@ async def lifespan(app: FastAPI):
     # AccountsService - account management, balances, portfolio (simplified)
     accounts_service = AccountsService(
         db_manager=db_manager,
+        connector_service=connector_service,
+        market_data_service=market_data_service,
+        trading_service=trading_service,
         account_update_interval=settings.app.account_update_interval,
         gateway_url=settings.gateway.url
     )
-    # Inject services into AccountsService
-    accounts_service._connector_service = connector_service
-    accounts_service._market_data_service = market_data_service
-    accounts_service._trading_service = trading_service
     logging.info("AccountsService initialized")
 
     # =========================================================================
