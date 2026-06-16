@@ -17,6 +17,7 @@ from .repositories import (
     AccountRepository,
     BotRunRepository,
     ControllerPerformanceRepository,
+    ExecutorRepository,
     FundingRepository,
     GatewayCLMMRepository,
     GatewaySwapRepository,
@@ -30,6 +31,7 @@ __all__ = [
     "ControllerPerformanceSnapshot",
     "Base", "AsyncDatabaseManager",
     "AccountRepository", "BotRunRepository", "ControllerPerformanceRepository",
+    "ExecutorRepository",
     "OrderRepository", "TradeRepository", "FundingRepository",
     "GatewaySwapRepository", "GatewayCLMMRepository"
 ]

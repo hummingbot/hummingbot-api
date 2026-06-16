@@ -32,7 +32,7 @@ from hummingbot.strategy_v2.executors.xemm_executor.data_types import XEMMExecut
 from hummingbot.strategy_v2.executors.xemm_executor.xemm_executor import XEMMExecutor
 from hummingbot.strategy_v2.models.executors import CloseType, TrackedOrder
 
-from database import AsyncDatabaseManager
+from database import AsyncDatabaseManager, ExecutorRepository
 from models.executors import PositionHold
 from services.trading_service import AccountTradingInterface, TradingService
 from utils.executor_log_capture import ExecutorLogCapture, current_executor_id
@@ -145,7 +145,6 @@ class ExecutorService:
 
         try:
             async with self.db_manager.get_session_context() as session:
-                from database.repositories.executor_repository import ExecutorRepository
                 repo = ExecutorRepository(session)
 
                 records = await repo.get_active_position_holds()
@@ -206,7 +205,6 @@ class ExecutorService:
             active_executor_ids = list(self._active_executors.keys())
 
             async with self.db_manager.get_session_context() as session:
-                from database.repositories.executor_repository import ExecutorRepository
                 repo = ExecutorRepository(session)
 
                 # Clean up orphaned executors
@@ -504,7 +502,6 @@ class ExecutorService:
         if self.db_manager:
             try:
                 async with self.db_manager.get_session_context() as session:
-                    from database.repositories.executor_repository import ExecutorRepository
                     repo = ExecutorRepository(session)
 
                     db_executors = await repo.get_executors(
@@ -547,7 +544,6 @@ class ExecutorService:
         if self.db_manager:
             try:
                 async with self.db_manager.get_session_context() as session:
-                    from database.repositories.executor_repository import ExecutorRepository
                     repo = ExecutorRepository(session)
 
                     record = await repo.get_executor_by_id(executor_id)
@@ -822,7 +818,6 @@ class ExecutorService:
         if self.db_manager:
             try:
                 async with self.db_manager.get_session_context() as session:
-                    from database.repositories.executor_repository import ExecutorRepository
                     repo = ExecutorRepository(session)
                     db_data = await repo.get_performance_report(controller_id=controller_id)
 
@@ -917,7 +912,6 @@ class ExecutorService:
             metadata = self._executor_metadata.get(executor_id, {})
 
             async with self.db_manager.get_session_context() as session:
-                from database.repositories.executor_repository import ExecutorRepository
                 repo = ExecutorRepository(session)
 
                 await repo.create_executor(
@@ -1006,7 +1000,6 @@ class ExecutorService:
                     logger.debug(f"Failed to serialize error logs for {executor_id}: {e}")
 
             async with self.db_manager.get_session_context() as session:
-                from database.repositories.executor_repository import ExecutorRepository
                 repo = ExecutorRepository(session)
 
                 await repo.update_executor(
@@ -1175,7 +1168,6 @@ class ExecutorService:
             return
         try:
             async with self.db_manager.get_session_context() as session:
-                from database.repositories.executor_repository import ExecutorRepository
                 repo = ExecutorRepository(session)
                 await repo.upsert_position_hold(
                     account_name=position.account_name,
@@ -1279,7 +1271,6 @@ class ExecutorService:
             if self.db_manager:
                 try:
                     async with self.db_manager.get_session_context() as session:
-                        from database.repositories.executor_repository import ExecutorRepository
                         repo = ExecutorRepository(session)
                         cleared = await repo.clear_position_hold(
                             account_name=account_name,
