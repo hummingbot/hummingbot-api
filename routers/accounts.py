@@ -134,7 +134,8 @@ async def add_credential(account_name: str, connector_name: str, credentials: Di
         await accounts_service.add_credentials(account_name, connector_name, credentials)
         return {"message": "Connector credentials added successfully."}
     except Exception as e:
-        await accounts_service.delete_credentials(account_name, connector_name)
+        # Rollback is handled inside add_credentials, which only deletes the file for a
+        # brand-new creation and preserves pre-existing credentials on a failed update.
         raise HTTPException(status_code=400, detail=str(e))
 
 

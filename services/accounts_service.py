@@ -539,6 +539,13 @@ class AccountsService:
         if not self._connector_service:
             raise HTTPException(status_code=500, detail="Connector service not initialized")
 
+        # Capture the original credential file BEFORE the in-place overwrite performed by
+        # update_connector_keys. This determines whether a failure is a brand-new CREATE
+        # (rollback the partial file) or an UPDATE (restore the previous file byte-for-byte).
+        credentials_path = f"credentials/{account_name}/connectors/{connector_name}.yml"
+        credentials_existed = fs_util.path_exists(credentials_path)
+        original_content = fs_util.read_file(credentials_path) if credentials_existed else None
+
         try:
             # Update the connector keys (this saves the credentials to file and validates them)
             connector = await self._connector_service.update_connector_keys(account_name, connector_name, credentials)
@@ -546,7 +553,13 @@ class AccountsService:
             await self.update_account_state()
         except Exception as e:
             logger.error(f"Error adding connector credentials for account {account_name}: {e}")
-            await self.delete_credentials(account_name, connector_name)
+            # Roll back the file write. For a brand-new creation, delete the partial file. For an
+            # update, update_connector_keys overwrote the previous (valid) credentials in-place, so
+            # we restore the captured original content to keep the file byte-for-byte intact.
+            if not credentials_existed:
+                await self.delete_credentials(account_name, connector_name)
+            elif original_content is not None:
+                fs_util.ensure_file_and_dump_text(credentials_path, original_content)
             raise e
 
     @staticmethod
