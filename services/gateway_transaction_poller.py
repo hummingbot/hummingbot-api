@@ -8,12 +8,12 @@ Additionally polls CLMM position state to keep database in sync with on-chain st
 """
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 from database import AsyncDatabaseManager
-from database.models import GatewayCLMMEvent, GatewayCLMMPosition
+from database.models import GatewayCLMMPosition
 from database.repositories import GatewayCLMMRepository, GatewaySwapRepository
 from services.gateway_client import GatewayClient
 

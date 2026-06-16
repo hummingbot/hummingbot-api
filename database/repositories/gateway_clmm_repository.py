@@ -1,8 +1,8 @@
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set
 
-from sqlalchemy import desc, distinct, select
+from sqlalchemy import distinct, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import GatewayCLMMEvent, GatewayCLMMPosition
