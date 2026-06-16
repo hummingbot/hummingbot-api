@@ -1025,15 +1025,21 @@ class UnifiedConnectorService:
         The connector's built-in polling already updates in_flight_orders from the exchange.
         This method syncs that state to our database and cleans up closed orders.
         """
+        tasks = []
+        task_keys = []
         for account_name, connectors in self._trading_connectors.items():
             for connector_name, connector in connectors.items():
-                try:
-                    if not connector.in_flight_orders:
-                        continue
-                    await self._sync_orders_to_database(connector, account_name, connector_name)
-                    logger.debug(f"Synced order state to DB for {account_name}/{connector_name}")
-                except Exception as e:
-                    logger.error(f"Error syncing order state for {account_name}/{connector_name}: {e}")
+                if not connector.in_flight_orders:
+                    continue
+                tasks.append(self._sync_orders_to_database(connector, account_name, connector_name))
+                task_keys.append(f"{account_name}/{connector_name}")
+        if tasks:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for key, result in zip(task_keys, results):
+                if isinstance(result, Exception):
+                    logger.error(f"Error syncing order state for {key}: {result}")
+                else:
+                    logger.debug(f"Synced order state to DB for {key}")
 
     def _convert_db_order_to_in_flight(self, order_record) -> InFlightOrder:
         """Convert database order to InFlightOrder."""
