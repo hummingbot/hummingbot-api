@@ -1,11 +1,11 @@
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Set, Tuple
 from decimal import Decimal
+from typing import Dict, List, Optional, Set, Tuple
 
-from sqlalchemy import desc, select, distinct
+from sqlalchemy import desc, distinct, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.models import GatewayCLMMPosition, GatewayCLMMEvent
+from database.models import GatewayCLMMEvent, GatewayCLMMPosition
 
 
 class GatewayCLMMRepository:
@@ -27,6 +27,13 @@ class GatewayCLMMRepository:
         """Get a position by its address."""
         result = await self.session.execute(
             select(GatewayCLMMPosition).where(GatewayCLMMPosition.position_address == position_address)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_position_by_id(self, position_id: int) -> Optional[GatewayCLMMPosition]:
+        """Get a position by its primary key id."""
+        result = await self.session.execute(
+            select(GatewayCLMMPosition).where(GatewayCLMMPosition.id == position_id)
         )
         return result.scalar_one_or_none()
 

@@ -12,9 +12,6 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Dict, List, Optional
 
-from sqlalchemy import select
-from sqlalchemy.orm import selectinload
-
 from database import AsyncDatabaseManager
 from database.models import GatewayCLMMEvent, GatewayCLMMPosition
 from database.repositories import GatewayCLMMRepository, GatewaySwapRepository
@@ -194,10 +191,7 @@ class GatewayTransactionPoller:
         """Poll a specific CLMM event transaction status."""
         try:
             # Get the position by ID from the event's position_id foreign key
-            result = await clmm_repo.session.execute(
-                select(GatewayCLMMPosition).where(GatewayCLMMPosition.id == event.position_id)
-            )
-            position = result.scalar_one_or_none()
+            position = await clmm_repo.get_position_by_id(event.position_id)
 
             if not position:
                 logger.error(f"Position not found for CLMM event {event.transaction_hash}")
@@ -245,11 +239,8 @@ class GatewayTransactionPoller:
     async def _update_position_from_event(self, event, clmm_repo: GatewayCLMMRepository):
         """Update CLMM position state based on confirmed event."""
         try:
-            # Get position by ID using the existing clmm_repo session
-            result = await clmm_repo.session.execute(
-                select(GatewayCLMMPosition).where(GatewayCLMMPosition.id == event.position_id)
-            )
-            position = result.scalar_one_or_none()
+            # Get position by ID using the repository
+            position = await clmm_repo.get_position_by_id(event.position_id)
 
             if not position:
                 logger.error(f"Position not found for event {event.id}")
