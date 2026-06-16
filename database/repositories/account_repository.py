@@ -180,41 +180,62 @@ class AccountRepository:
             Tuple of (data, next_cursor, has_more)
         """
         interval_minutes = self._interval_to_minutes(interval)
-        query = (
-            select(AccountState)
-            .options(joinedload(AccountState.token_states))
-            .order_by(desc(AccountState.timestamp))
-        )
 
-        # Apply filters
-        if account_name:
-            query = query.filter(AccountState.account_name == account_name)
-        if account_names:
-            query = query.filter(AccountState.account_name.in_(account_names))
-        if connector_name:
-            query = query.filter(AccountState.connector_name == connector_name)
-        if start_time:
-            query = query.filter(AccountState.timestamp >= start_time)
-        if end_time:
-            query = query.filter(AccountState.timestamp <= end_time)
-            
-        # Handle cursor-based pagination
-        if cursor:
-            try:
-                cursor_time = datetime.fromisoformat(cursor.replace('Z', '+00:00'))
-                query = query.filter(AccountState.timestamp < cursor_time)
-            except (ValueError, TypeError):
-                # Invalid cursor, ignore it
-                pass
+        # Minute bucket expression: a single logical snapshot fans out into one row per
+        # (account_name, connector_name) but all share the same minute. Paginate by these
+        # distinct minute buckets so the limit/cursor are independent of the account/connector
+        # fan-out (a row-based limit would collapse N*M rows into far fewer buckets than `limit`).
+        minute_bucket = func.date_trunc("minute", AccountState.timestamp)
 
-        # Fetch more records than requested to ensure we have enough after sampling
-        # For intervals > 5m, we need to fetch more data to get enough sampled points
+        def _apply_filters(stmt):
+            if account_name:
+                stmt = stmt.filter(AccountState.account_name == account_name)
+            if account_names:
+                stmt = stmt.filter(AccountState.account_name.in_(account_names))
+            if connector_name:
+                stmt = stmt.filter(AccountState.connector_name == connector_name)
+            if start_time:
+                stmt = stmt.filter(AccountState.timestamp >= start_time)
+            if end_time:
+                stmt = stmt.filter(AccountState.timestamp <= end_time)
+            # Handle cursor-based pagination: the cursor is a minute-bucket timestamp, so
+            # everything strictly before it excludes all already-returned buckets.
+            if cursor:
+                try:
+                    cursor_time = datetime.fromisoformat(cursor.replace('Z', '+00:00'))
+                    stmt = stmt.filter(AccountState.timestamp < cursor_time)
+                except (ValueError, TypeError):
+                    # Invalid cursor, ignore it
+                    pass
+            return stmt
+
+        # Step 1: select the distinct minute buckets that match the filters, most recent first.
+        # For intervals > 5m we widen the window so sampling still has enough buckets to pick from.
         sampling_multiplier = max(1, interval_minutes // 5)  # How many 5m intervals per sample
         fetch_limit = (limit * sampling_multiplier + 1) if limit else (100 * sampling_multiplier + 1)
-        query = query.limit(fetch_limit)
-            
-        result = await self.session.execute(query)
-        account_states = result.unique().scalars().all()
+        timestamps_query = (
+            select(minute_bucket.label("minute"))
+            .distinct()
+            .order_by(desc(minute_bucket))
+            .limit(fetch_limit)
+        )
+        timestamps_query = _apply_filters(timestamps_query)
+        timestamps_result = await self.session.execute(timestamps_query)
+        selected_minutes = [row.minute for row in timestamps_result.all()]
+
+        # Step 2: fetch the AccountState (+token) rows only for the selected minute buckets.
+        if selected_minutes:
+            query = (
+                select(AccountState)
+                .options(joinedload(AccountState.token_states))
+                .filter(minute_bucket.in_(selected_minutes))
+                .order_by(desc(AccountState.timestamp))
+            )
+            query = _apply_filters(query)
+            result = await self.session.execute(query)
+            account_states = result.unique().scalars().all()
+        else:
+            account_states = []
 
         # Format response - Group by minute to aggregate account/connector states
         minute_groups = {}
@@ -238,9 +259,9 @@ class AccountRepository:
 
             minute_groups[minute_key]["state"][account_state.account_name][account_state.connector_name] = token_info
 
-        # Convert to list and maintain chronological order (most recent first)
+        # Already ordered most-recent-first: Step 2 fetched rows ordered by descending
+        # timestamp and minute truncation is monotonic, so dict insertion order is descending.
         history = list(minute_groups.values())
-        history.sort(key=lambda x: x["timestamp"], reverse=True)
 
         # Apply interval sampling
         sampled_history = self._sample_history_by_interval(history, interval_minutes)
