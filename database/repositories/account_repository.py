@@ -1,10 +1,10 @@
+import base64
+import json
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Dict, List, Optional, Tuple
-import base64
-import json
 
-from sqlalchemy import desc, select, func
+from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
@@ -14,6 +14,17 @@ from database import AccountState, TokenState
 class AccountRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
+
+    @staticmethod
+    def _token_state_to_dict(token_state: TokenState) -> Dict:
+        """Serialize a TokenState into the standard token info dict with float casts."""
+        return {
+            "token": token_state.token,
+            "units": float(token_state.units),
+            "price": float(token_state.price),
+            "value": float(token_state.value),
+            "available_units": float(token_state.available_units)
+        }
 
     @staticmethod
     def _interval_to_minutes(interval: str) -> int:
@@ -137,16 +148,8 @@ class AccountRepository:
             if account_state.account_name not in accounts_state:
                 accounts_state[account_state.account_name] = {}
                 
-            token_info = []
-            for token_state in account_state.token_states:
-                token_info.append({
-                    "token": token_state.token,
-                    "units": float(token_state.units),
-                    "price": float(token_state.price),
-                    "value": float(token_state.value),
-                    "available_units": float(token_state.available_units)
-                })
-            
+            token_info = [self._token_state_to_dict(token_state) for token_state in account_state.token_states]
+
             accounts_state[account_state.account_name][account_state.connector_name] = token_info
         
         return accounts_state
@@ -216,15 +219,7 @@ class AccountRepository:
         # Format response - Group by minute to aggregate account/connector states
         minute_groups = {}
         for account_state in account_states:
-            token_info = []
-            for token_state in account_state.token_states:
-                token_info.append({
-                    "token": token_state.token,
-                    "units": float(token_state.units),
-                    "price": float(token_state.price),
-                    "value": float(token_state.value),
-                    "available_units": float(token_state.available_units)
-                })
+            token_info = [self._token_state_to_dict(token_state) for token_state in account_state.token_states]
 
             # Round timestamp to the nearest minute for grouping
             minute_timestamp = account_state.timestamp.replace(second=0, microsecond=0)
@@ -292,15 +287,7 @@ class AccountRepository:
         
         state = {}
         for account_state in account_states:
-            token_info = []
-            for token_state in account_state.token_states:
-                token_info.append({
-                    "token": token_state.token,
-                    "units": float(token_state.units),
-                    "price": float(token_state.price),
-                    "value": float(token_state.value),
-                    "available_units": float(token_state.available_units)
-                })
+            token_info = [self._token_state_to_dict(token_state) for token_state in account_state.token_states]
             state[account_state.connector_name] = token_info
         
         return state
@@ -326,16 +313,8 @@ class AccountRepository:
         if not account_state:
             return []
         
-        token_info = []
-        for token_state in account_state.token_states:
-            token_info.append({
-                "token": token_state.token,
-                "units": float(token_state.units),
-                "price": float(token_state.price),
-                "value": float(token_state.value),
-                "available_units": float(token_state.available_units)
-            })
-        
+        token_info = [self._token_state_to_dict(token_state) for token_state in account_state.token_states]
+
         return token_info
     
     async def get_all_unique_tokens(self) -> List[str]:
