@@ -61,6 +61,43 @@ def _json_default(obj):
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 
+def _coerce_json_compatible(obj):
+    """Recursively coerce a value into JSON-compatible primitives.
+
+    Mirrors the result of ``json.loads(json.dumps(obj, default=_json_default))``
+    without the string round-trip: containers are walked recursively and any
+    object handled by ``_json_default`` is coerced to the same output type.
+    """
+    # JSON-native primitives are returned as-is.
+    if obj is None or isinstance(obj, (str, bool, int, float)):
+        return obj
+    if isinstance(obj, dict):
+        # json.dumps coerces non-string scalar keys (int/float/bool/None) to
+        # strings; replicate that so the output shape is identical.
+        coerced = {}
+        for key, value in obj.items():
+            if isinstance(key, str):
+                str_key = key
+            elif isinstance(key, bool):
+                str_key = "true" if key else "false"
+            elif key is None:
+                str_key = "null"
+            elif isinstance(key, (int, float)):
+                str_key = json.dumps(key)
+            else:
+                raise TypeError(
+                    f"keys must be str, int, float, bool or None, not {type(key).__name__}"
+                )
+            coerced[str_key] = _coerce_json_compatible(value)
+        return coerced
+    if isinstance(obj, (list, tuple)):
+        # json.dumps serializes tuples as JSON arrays (-> lists on decode).
+        return [_coerce_json_compatible(item) for item in obj]
+    # Non-native types: route through the same coercion as the JSON encoder,
+    # then recurse into the (possibly nested) replacement value.
+    return _coerce_json_compatible(_json_default(obj))
+
+
 class ExecutorService:
     """
     Service for managing trading executors without Docker containers.
@@ -651,9 +688,14 @@ class ExecutorService:
         metadata = self._executor_metadata.get(executor_id, {})
         executor_type = metadata.get("executor_type")
 
-        # Get executor_info and serialize
+        # Get executor_info as a dict and strip heavy custom_info fields BEFORE
+        # serialization so they never get coerced (fill_events, grid
+        # levels_by_state, etc.); then coerce in-place to JSON-compatible
+        # primitives instead of doing a json.dumps/json.loads string round-trip.
         executor_info = executor.executor_info
-        result = json.loads(json.dumps(executor_info.model_dump(), default=_json_default))
+        dumped = executor_info.model_dump()
+        dumped["custom_info"] = self._strip_heavy_fields(dumped.get("custom_info"), executor_type)
+        result = _coerce_json_compatible(dumped)
 
         # Add metadata
         result["executor_id"] = executor_id
@@ -677,9 +719,6 @@ class ExecutorService:
         if side is not None:
             # Convert TradeType enum or int to string
             result["side"] = side.name if hasattr(side, 'name') else str(side)
-
-        # Filter out heavy fields from custom_info
-        result["custom_info"] = self._strip_heavy_fields(result.get("custom_info"), executor_type)
 
         # Add log capture info
         result["error_count"] = self._log_capture.get_error_count(executor_id)
