@@ -1215,22 +1215,33 @@ class AccountsService:
             balance_tasks = []
             task_metadata = []  # Store (chain, network, address) for each task
 
-            # For each chain, get its config with defaultWallet and defaultNetworks
+            # Fetch every chain's config concurrently first, instead of one HTTP round-trip
+            # per chain in serial. Each config is the merged chain-network namespace
+            # (e.g., solana-mainnet-beta), returning both chain-level fields
+            # (defaultWallet, defaultNetworks) and network fields.
+            chains_with_networks = [
+                chain_info for chain_info in chains_result["chains"] if chain_info.get("networks")
+            ]
             for chain_info in chains_result["chains"]:
+                if not chain_info.get("networks"):
+                    logger.debug(f"Chain '{chain_info['chain']}' has no networks configured, skipping")
+
+            config_results = await asyncio.gather(
+                *[
+                    self.gateway_client.get_config(f"{chain_info['chain']}-{chain_info['networks'][0]}")
+                    for chain_info in chains_with_networks
+                ],
+                return_exceptions=True,
+            )
+
+            # For each chain, build balance tasks from its resolved config
+            for chain_info, config in zip(chains_with_networks, config_results):
                 chain = chain_info["chain"]
-                networks = chain_info.get("networks", [])
+                first_network = chain_info["networks"][0]
 
-                if not networks:
-                    logger.debug(f"Chain '{chain}' has no networks configured, skipping")
-                    continue
-
-                # Get merged config using chain-network namespace (e.g., solana-mainnet-beta)
-                # This returns both chain-level fields (defaultWallet, defaultNetworks) and network fields
-                first_network = networks[0]
-                try:
-                    config = await self.gateway_client.get_config(f"{chain}-{first_network}")
-                except Exception as e:
-                    logger.warning(f"Could not get config for '{chain}-{first_network}': {e}")
+                # A chain whose get_config raised is skipped/logged, same as before
+                if isinstance(config, Exception):
+                    logger.warning(f"Could not get config for '{chain}-{first_network}': {config}")
                     continue
 
                 default_wallet = config.get("defaultWallet")
