@@ -1,13 +1,17 @@
 import asyncio
 import logging
+import os
 import re
+import shutil
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import docker
 
 from config import settings
-from database import AsyncDatabaseManager, ControllerPerformanceRepository
+from database import AsyncDatabaseManager, BotRunRepository, ControllerPerformanceRepository
+from services.docker_service import DockerService
+from utils.bot_archiver import BotArchiver
 from utils.mqtt_manager import MQTTManager
 
 logger = logging.getLogger(__name__)
@@ -468,3 +472,285 @@ class BotsOrchestrator:
         except Exception as e:
             logger.error(f"Error getting latest controller performance: {e}")
             return []
+
+    # ============================================
+    # Bot Run persistence
+    # ============================================
+
+    async def mark_bot_run_stopped(self, bot_name: str, final_status: Optional[Dict] = None):
+        """Update a bot run status to STOPPED, capturing the final status snapshot."""
+        await self._ensure_db_initialized()
+        async with self.db_manager.get_session_context() as session:
+            bot_run_repo = BotRunRepository(session)
+            await bot_run_repo.update_bot_run_stopped(bot_name, final_status=final_status)
+            logger.info(f"Updated bot run status to STOPPED for {bot_name}")
+
+    async def get_bot_runs(
+        self,
+        bot_name: Optional[str] = None,
+        account_name: Optional[str] = None,
+        strategy_type: Optional[str] = None,
+        strategy_name: Optional[str] = None,
+        run_status: Optional[str] = None,
+        deployment_status: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Dict]:
+        """Get bot runs with optional filtering, serialized as dictionaries."""
+        await self._ensure_db_initialized()
+        async with self.db_manager.get_session_context() as session:
+            bot_run_repo = BotRunRepository(session)
+            bot_runs = await bot_run_repo.get_bot_runs(
+                bot_name=bot_name,
+                account_name=account_name,
+                strategy_type=strategy_type,
+                strategy_name=strategy_name,
+                run_status=run_status,
+                deployment_status=deployment_status,
+                limit=limit,
+                offset=offset,
+            )
+            return [self._serialize_bot_run(run) for run in bot_runs]
+
+    async def get_bot_run_stats(self) -> Dict[str, Any]:
+        """Get statistics about bot runs."""
+        await self._ensure_db_initialized()
+        async with self.db_manager.get_session_context() as session:
+            bot_run_repo = BotRunRepository(session)
+            return await bot_run_repo.get_bot_run_stats()
+
+    async def get_bot_run_by_id(self, bot_run_id: int) -> Optional[Dict]:
+        """Get a specific bot run by ID, serialized as a dictionary (None if not found)."""
+        await self._ensure_db_initialized()
+        async with self.db_manager.get_session_context() as session:
+            bot_run_repo = BotRunRepository(session)
+            bot_run = await bot_run_repo.get_bot_run_by_id(bot_run_id)
+            if not bot_run:
+                return None
+            return self._serialize_bot_run(bot_run)
+
+    async def delete_bot_run(self, bot_run_id: int) -> Optional[Dict]:
+        """Delete a bot run record and its archived folder.
+
+        Returns a dict with ``bot_name`` and ``archived_folder_deleted`` keys,
+        or None if the bot run does not exist.
+        """
+        await self._ensure_db_initialized()
+        async with self.db_manager.get_session_context() as session:
+            bot_run_repo = BotRunRepository(session)
+            bot_run = await bot_run_repo.delete_bot_run(bot_run_id)
+
+            if not bot_run:
+                return None
+
+            # Also delete the archived bot folder if it exists
+            archived_dir = os.path.join('bots', 'archived', bot_run.instance_name)
+            archived_deleted = False
+            if os.path.isdir(archived_dir):
+                try:
+                    import platform
+                    import subprocess
+                    if platform.system() == 'Darwin':
+                        # Strip macOS ACLs (Docker adds "deny delete" ACLs)
+                        subprocess.run(['chmod', '-R', '-N', archived_dir], check=False)
+                    shutil.rmtree(archived_dir)
+                    archived_deleted = True
+                    logger.info(f"Deleted archived folder: {archived_dir}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete archived folder {archived_dir}: {e}")
+
+            return {
+                "bot_name": bot_run.bot_name,
+                "archived_folder_deleted": archived_deleted,
+            }
+
+    async def create_bot_run(self, **kwargs):
+        """Create a bot run record. Errors are logged and swallowed so that a
+        failed tracking write never fails the caller's deployment."""
+        try:
+            await self._ensure_db_initialized()
+            async with self.db_manager.get_session_context() as session:
+                bot_run_repo = BotRunRepository(session)
+                await bot_run_repo.create_bot_run(**kwargs)
+                logger.info(f"Created bot run record for deployment {kwargs.get('instance_name')}")
+        except Exception as e:
+            logger.error(f"Failed to create bot run record: {e}")
+            # Don't fail the deployment if bot run creation fails
+
+    @staticmethod
+    def _serialize_bot_run(run) -> Dict:
+        """Serialize a BotRun ORM object into a JSON-friendly dictionary."""
+        return {
+            "id": run.id,
+            "bot_name": run.bot_name,
+            "instance_name": run.instance_name,
+            "deployed_at": run.deployed_at.isoformat() if run.deployed_at else None,
+            "stopped_at": run.stopped_at.isoformat() if run.stopped_at else None,
+            "strategy_type": run.strategy_type,
+            "strategy_name": run.strategy_name,
+            "config_name": run.config_name,
+            "account_name": run.account_name,
+            "image_version": run.image_version,
+            "deployment_status": run.deployment_status,
+            "run_status": run.run_status,
+            "deployment_config": run.deployment_config,
+            "final_status": run.final_status,
+            "error_message": run.error_message,
+        }
+
+    # ============================================
+    # Stop & Archive orchestration
+    # ============================================
+
+    async def stop_and_archive_bot(
+        self,
+        bot_name: str,
+        container_name: str,
+        bot_name_for_orchestrator: str,
+        skip_order_cancellation: bool,
+        archive_locally: bool,
+        s3_bucket: Optional[str],
+        docker_manager: DockerService,
+        bot_archiver: BotArchiver,
+    ):
+        """Stop a bot and archive its data (8-step workflow).
+
+        This is the background-task body for ``stop-and-archive-bot``. It is
+        FastAPI-agnostic and can be invoked/tested directly.
+        """
+        try:
+            logger.info(f"Starting background stop-and-archive for {bot_name}")
+
+            # Step 1: Capture bot final status before stopping (while bot is still running)
+            logger.info(f"Capturing final status for {bot_name_for_orchestrator}")
+            final_status = None
+            try:
+                final_status = self.get_bot_status(bot_name_for_orchestrator)
+                logger.info(f"Captured final status for {bot_name_for_orchestrator}: {final_status}")
+            except Exception as e:
+                logger.warning(f"Failed to capture final status for {bot_name_for_orchestrator}: {e}")
+
+            # Step 2: Update bot run with stopped_at timestamp and final status before stopping
+            try:
+                await self.mark_bot_run_stopped(bot_name, final_status=final_status)
+                logger.info(f"Updated bot run with stopped_at timestamp and final status for {bot_name}")
+            except Exception as e:
+                logger.error(f"Failed to update bot run with stopped status: {e}")
+                # Continue with stop process even if database update fails
+
+            # Step 3: Mark the bot as stopping, and stop the bot trading process
+            self.set_bot_stopping(bot_name_for_orchestrator)
+            logger.info(f"Stopping bot trading process for {bot_name_for_orchestrator}")
+            stop_response = await self.stop_bot(
+                bot_name_for_orchestrator,
+                skip_order_cancellation=skip_order_cancellation,
+                async_backend=True  # Always use async for background tasks
+            )
+
+            if not stop_response or not stop_response.get("success", False):
+                error_msg = stop_response.get('error', 'Unknown error') if stop_response else 'No response from bot orchestrator'
+                logger.error(f"Failed to stop bot process: {error_msg}")
+                return
+
+            # Step 4: Wait for graceful shutdown (15 seconds as requested)
+            logger.info(f"Waiting 15 seconds for bot {bot_name} to gracefully shutdown")
+            await asyncio.sleep(15)
+
+            # Step 5: Stop the container with monitoring
+            max_retries = 10
+            retry_interval = 2
+            container_stopped = False
+
+            for i in range(max_retries):
+                logger.info(f"Attempting to stop container {container_name} (attempt {i+1}/{max_retries})")
+                docker_manager.stop_container(container_name)
+
+                # Check if container is already stopped
+                container_status = docker_manager.get_container_status(container_name)
+                if container_status.get("state", {}).get("status") == "exited":
+                    container_stopped = True
+                    logger.info(f"Container {container_name} is already stopped")
+                    break
+
+                await asyncio.sleep(retry_interval)
+
+            if not container_stopped:
+                logger.error(f"Failed to stop container {container_name} after {max_retries} attempts")
+                return
+
+            # Step 6: Archive the bot data
+            instance_dir = os.path.join('bots', 'instances', container_name)
+            logger.info(f"Archiving bot data from {instance_dir}")
+
+            try:
+                if archive_locally:
+                    bot_archiver.archive_locally(container_name, instance_dir)
+                else:
+                    bot_archiver.archive_and_upload(container_name, instance_dir, bucket_name=s3_bucket)
+                logger.info(f"Successfully archived bot data for {container_name}")
+            except Exception as e:
+                logger.error(f"Archive failed: {str(e)}")
+                # Continue with removal even if archive fails
+
+            # Step 7: Remove the container
+            logging.info(f"Removing container {container_name}")
+            remove_response = docker_manager.remove_container(container_name, force=False)
+
+            if not remove_response.get("success"):
+                # If graceful remove fails, try force remove
+                logging.warning("Graceful container removal failed, attempting force removal")
+                remove_response = docker_manager.remove_container(container_name, force=True)
+
+            if remove_response.get("success"):
+                logging.info(f"Successfully completed stop-and-archive for bot {bot_name}")
+
+                # Step 8: Update bot run deployment status to ARCHIVED
+                try:
+                    await self._ensure_db_initialized()
+                    async with self.db_manager.get_session_context() as session:
+                        bot_run_repo = BotRunRepository(session)
+                        await bot_run_repo.update_bot_run_archived(bot_name)
+                        logger.info(f"Updated bot run deployment status to ARCHIVED for {bot_name}")
+                except Exception as e:
+                    logger.error(f"Failed to update bot run to archived: {e}")
+            else:
+                logging.error(f"Failed to remove container {container_name}")
+
+                # Update bot run with error status (but keep stopped_at timestamp from earlier)
+                try:
+                    await self._ensure_db_initialized()
+                    async with self.db_manager.get_session_context() as session:
+                        bot_run_repo = BotRunRepository(session)
+                        await bot_run_repo.update_bot_run_stopped(
+                            bot_name,
+                            error_message="Failed to remove container during archive process"
+                        )
+                        logger.info(f"Updated bot run with error status for {bot_name}")
+                except Exception as e:
+                    logger.error(f"Failed to update bot run with error: {e}")
+
+        except Exception as e:
+            logging.error(f"Error in background stop-and-archive for {bot_name}: {str(e)}")
+
+            # Update bot run with error status
+            try:
+                await self._ensure_db_initialized()
+                async with self.db_manager.get_session_context() as session:
+                    bot_run_repo = BotRunRepository(session)
+                    await bot_run_repo.update_bot_run_stopped(
+                        bot_name,
+                        error_message=str(e)
+                    )
+                    logger.info(f"Updated bot run with error status for {bot_name}")
+            except Exception as db_error:
+                logger.error(f"Failed to update bot run with error: {db_error}")
+        finally:
+            # Always clear the stopping status when the background task completes
+            self.clear_bot_stopping(bot_name_for_orchestrator)
+            logger.info(f"Cleared stopping status for bot {bot_name}")
+
+            # Remove bot from active_bots and clear all MQTT data
+            if bot_name_for_orchestrator in self.active_bots:
+                self.mqtt_manager.clear_bot_data(bot_name_for_orchestrator)
+                del self.active_bots[bot_name_for_orchestrator]
+                logger.info(f"Removed bot {bot_name_for_orchestrator} from active_bots and cleared MQTT data")

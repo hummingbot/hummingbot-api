@@ -1,13 +1,10 @@
-import asyncio
 import logging
 import os
-import shutil
-from datetime import datetime, timezone
+from datetime import datetime
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 
-from database import AsyncDatabaseManager, BotRunRepository
-from deps import get_bot_archiver, get_bots_orchestrator, get_database_manager, get_docker_service
+from deps import get_bot_archiver, get_bots_orchestrator, get_docker_service
 from models import StartBotAction, StopBotAction, V2ControllerDeployment, V2ScriptDeployment
 from services.bots_orchestrator import BotsOrchestrator
 from services.docker_service import DockerService
@@ -188,8 +185,7 @@ async def get_bot_history(
 @router.post("/start-bot")
 async def start_bot(
     action: StartBotAction,
-    bots_manager: BotsOrchestrator = Depends(get_bots_orchestrator),
-    db_manager: AsyncDatabaseManager = Depends(get_database_manager)
+    bots_manager: BotsOrchestrator = Depends(get_bots_orchestrator)
 ):
     """
     Start a bot with the specified configuration.
@@ -197,7 +193,6 @@ async def start_bot(
     Args:
         action: StartBotAction containing bot configuration parameters
         bots_manager: Bot orchestrator service dependency
-        db_manager: Database manager dependency
 
     Returns:
         Dictionary with status and response from bot start operation
@@ -215,8 +210,7 @@ async def start_bot(
 @router.post("/stop-bot")
 async def stop_bot(
     action: StopBotAction,
-    bots_manager: BotsOrchestrator = Depends(get_bots_orchestrator),
-    db_manager: AsyncDatabaseManager = Depends(get_database_manager)
+    bots_manager: BotsOrchestrator = Depends(get_bots_orchestrator)
 ):
     """
     Stop a bot with the specified configuration.
@@ -224,7 +218,6 @@ async def stop_bot(
     Args:
         action: StopBotAction containing bot stop parameters
         bots_manager: Bot orchestrator service dependency
-        db_manager: Database manager dependency
 
     Returns:
         Dictionary with status and response from bot stop operation
@@ -245,13 +238,7 @@ async def stop_bot(
     # Update bot run status to STOPPED if stop was successful
     if response.get("success"):
         try:
-            async with db_manager.get_session_context() as session:
-                bot_run_repo = BotRunRepository(session)
-                await bot_run_repo.update_bot_run_stopped(
-                    action.bot_name,
-                    final_status=final_status
-                )
-                logger.info(f"Updated bot run status to STOPPED for {action.bot_name}")
+            await bots_manager.mark_bot_run_stopped(action.bot_name, final_status=final_status)
         except Exception as e:
             logger.error(f"Failed to update bot run status: {e}")
             # Don't fail the stop operation if bot run update fails
@@ -269,7 +256,7 @@ async def get_bot_runs(
     deployment_status: str = None,
     limit: int = 100,
     offset: int = 0,
-    db_manager: AsyncDatabaseManager = Depends(get_database_manager)
+    bots_manager: BotsOrchestrator = Depends(get_bots_orchestrator)
 ):
     """
     Get bot runs with optional filtering.
@@ -283,54 +270,30 @@ async def get_bot_runs(
         deployment_status: Filter by deployment status (DEPLOYED, FAILED, ARCHIVED)
         limit: Maximum number of results to return
         offset: Number of results to skip
-        db_manager: Database manager dependency
+        bots_manager: Bot orchestrator service dependency
 
     Returns:
         List of bot runs with their details
     """
     try:
-        async with db_manager.get_session_context() as session:
-            bot_run_repo = BotRunRepository(session)
-            bot_runs = await bot_run_repo.get_bot_runs(
-                bot_name=bot_name,
-                account_name=account_name,
-                strategy_type=strategy_type,
-                strategy_name=strategy_name,
-                run_status=run_status,
-                deployment_status=deployment_status,
-                limit=limit,
-                offset=offset
-            )
+        runs_data = await bots_manager.get_bot_runs(
+            bot_name=bot_name,
+            account_name=account_name,
+            strategy_type=strategy_type,
+            strategy_name=strategy_name,
+            run_status=run_status,
+            deployment_status=deployment_status,
+            limit=limit,
+            offset=offset
+        )
 
-            # Convert bot runs to dictionaries for JSON serialization
-            runs_data = []
-            for run in bot_runs:
-                run_dict = {
-                    "id": run.id,
-                    "bot_name": run.bot_name,
-                    "instance_name": run.instance_name,
-                    "deployed_at": run.deployed_at.isoformat() if run.deployed_at else None,
-                    "stopped_at": run.stopped_at.isoformat() if run.stopped_at else None,
-                    "strategy_type": run.strategy_type,
-                    "strategy_name": run.strategy_name,
-                    "config_name": run.config_name,
-                    "account_name": run.account_name,
-                    "image_version": run.image_version,
-                    "deployment_status": run.deployment_status,
-                    "run_status": run.run_status,
-                    "deployment_config": run.deployment_config,
-                    "final_status": run.final_status,
-                    "error_message": run.error_message
-                }
-                runs_data.append(run_dict)
-
-            return {
-                "status": "success",
-                "data": runs_data,
-                "total": len(runs_data),
-                "limit": limit,
-                "offset": offset
-            }
+        return {
+            "status": "success",
+            "data": runs_data,
+            "total": len(runs_data),
+            "limit": limit,
+            "offset": offset
+        }
     except Exception as e:
         logger.error(f"Failed to get bot runs: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -338,23 +301,20 @@ async def get_bot_runs(
 
 @router.get("/bot-runs/stats")
 async def get_bot_run_stats(
-    db_manager: AsyncDatabaseManager = Depends(get_database_manager)
+    bots_manager: BotsOrchestrator = Depends(get_bots_orchestrator)
 ):
     """
     Get statistics about bot runs.
 
     Args:
-        db_manager: Database manager dependency
+        bots_manager: Bot orchestrator service dependency
 
     Returns:
         Bot run statistics
     """
     try:
-        async with db_manager.get_session_context() as session:
-            bot_run_repo = BotRunRepository(session)
-            stats = await bot_run_repo.get_bot_run_stats()
-
-            return {"status": "success", "data": stats}
+        stats = await bots_manager.get_bot_run_stats()
+        return {"status": "success", "data": stats}
     except Exception as e:
         logger.error(f"Failed to get bot run stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -363,14 +323,14 @@ async def get_bot_run_stats(
 @router.get("/bot-runs/{bot_run_id}")
 async def get_bot_run_by_id(
     bot_run_id: int,
-    db_manager: AsyncDatabaseManager = Depends(get_database_manager)
+    bots_manager: BotsOrchestrator = Depends(get_bots_orchestrator)
 ):
     """
     Get a specific bot run by ID.
 
     Args:
         bot_run_id: ID of the bot run
-        db_manager: Database manager dependency
+        bots_manager: Bot orchestrator service dependency
 
     Returns:
         Bot run details
@@ -379,32 +339,12 @@ async def get_bot_run_by_id(
         HTTPException: 404 if bot run not found
     """
     try:
-        async with db_manager.get_session_context() as session:
-            bot_run_repo = BotRunRepository(session)
-            bot_run = await bot_run_repo.get_bot_run_by_id(bot_run_id)
+        run_dict = await bots_manager.get_bot_run_by_id(bot_run_id)
 
-            if not bot_run:
-                raise HTTPException(status_code=404, detail=f"Bot run {bot_run_id} not found")
+        if not run_dict:
+            raise HTTPException(status_code=404, detail=f"Bot run {bot_run_id} not found")
 
-            run_dict = {
-                "id": bot_run.id,
-                "bot_name": bot_run.bot_name,
-                "instance_name": bot_run.instance_name,
-                "deployed_at": bot_run.deployed_at.isoformat() if bot_run.deployed_at else None,
-                "stopped_at": bot_run.stopped_at.isoformat() if bot_run.stopped_at else None,
-                "strategy_type": bot_run.strategy_type,
-                "strategy_name": bot_run.strategy_name,
-                "config_name": bot_run.config_name,
-                "account_name": bot_run.account_name,
-                "image_version": bot_run.image_version,
-                "deployment_status": bot_run.deployment_status,
-                "run_status": bot_run.run_status,
-                "deployment_config": bot_run.deployment_config,
-                "final_status": bot_run.final_status,
-                "error_message": bot_run.error_message
-            }
-
-            return {"status": "success", "data": run_dict}
+        return {"status": "success", "data": run_dict}
     except HTTPException:
         raise
     except Exception as e:
@@ -415,14 +355,14 @@ async def get_bot_run_by_id(
 @router.delete("/bot-runs/{bot_run_id}")
 async def delete_bot_run(
     bot_run_id: int,
-    db_manager: AsyncDatabaseManager = Depends(get_database_manager)
+    bots_manager: BotsOrchestrator = Depends(get_bots_orchestrator)
 ):
     """
     Delete a bot run record by ID.
 
     Args:
         bot_run_id: ID of the bot run to delete
-        db_manager: Database manager dependency
+        bots_manager: Bot orchestrator service dependency
 
     Returns:
         Confirmation of deletion
@@ -431,193 +371,22 @@ async def delete_bot_run(
         HTTPException: 404 if bot run not found
     """
     try:
-        async with db_manager.get_session_context() as session:
-            bot_run_repo = BotRunRepository(session)
-            bot_run = await bot_run_repo.delete_bot_run(bot_run_id)
+        result = await bots_manager.delete_bot_run(bot_run_id)
 
-            if not bot_run:
-                raise HTTPException(status_code=404, detail=f"Bot run {bot_run_id} not found")
+        if not result:
+            raise HTTPException(status_code=404, detail=f"Bot run {bot_run_id} not found")
 
-            # Also delete the archived bot folder if it exists
-            archived_dir = os.path.join('bots', 'archived', bot_run.instance_name)
-            archived_deleted = False
-            if os.path.isdir(archived_dir):
-                try:
-                    import platform
-                    import subprocess
-                    if platform.system() == 'Darwin':
-                        # Strip macOS ACLs (Docker adds "deny delete" ACLs)
-                        subprocess.run(['chmod', '-R', '-N', archived_dir], check=False)
-                    shutil.rmtree(archived_dir)
-                    archived_deleted = True
-                    logger.info(f"Deleted archived folder: {archived_dir}")
-                except Exception as e:
-                    logger.warning(f"Failed to delete archived folder {archived_dir}: {e}")
-
-            return {
-                "status": "success",
-                "message": f"Bot run {bot_run_id} deleted successfully",
-                "bot_name": bot_run.bot_name,
-                "archived_folder_deleted": archived_deleted
-            }
+        return {
+            "status": "success",
+            "message": f"Bot run {bot_run_id} deleted successfully",
+            "bot_name": result["bot_name"],
+            "archived_folder_deleted": result["archived_folder_deleted"]
+        }
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Failed to delete bot run {bot_run_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-
-async def _background_stop_and_archive(
-    bot_name: str,
-    container_name: str,
-    bot_name_for_orchestrator: str,
-    skip_order_cancellation: bool,
-    archive_locally: bool,
-    s3_bucket: str,
-    bots_manager: BotsOrchestrator,
-    docker_manager: DockerService,
-    bot_archiver: BotArchiver,
-    db_manager: AsyncDatabaseManager
-):
-    """Background task to handle the stop and archive process"""
-    try:
-        logger.info(f"Starting background stop-and-archive for {bot_name}")
-
-        # Step 1: Capture bot final status before stopping (while bot is still running)
-        logger.info(f"Capturing final status for {bot_name_for_orchestrator}")
-        final_status = None
-        try:
-            final_status = bots_manager.get_bot_status(bot_name_for_orchestrator)
-            logger.info(f"Captured final status for {bot_name_for_orchestrator}: {final_status}")
-        except Exception as e:
-            logger.warning(f"Failed to capture final status for {bot_name_for_orchestrator}: {e}")
-
-        # Step 2: Update bot run with stopped_at timestamp and final status before stopping
-        try:
-            async with db_manager.get_session_context() as session:
-                bot_run_repo = BotRunRepository(session)
-                await bot_run_repo.update_bot_run_stopped(
-                    bot_name,
-                    final_status=final_status
-                )
-                logger.info(f"Updated bot run with stopped_at timestamp and final status for {bot_name}")
-        except Exception as e:
-            logger.error(f"Failed to update bot run with stopped status: {e}")
-            # Continue with stop process even if database update fails
-
-        # Step 3: Mark the bot as stopping, and stop the bot trading process
-        bots_manager.set_bot_stopping(bot_name_for_orchestrator)
-        logger.info(f"Stopping bot trading process for {bot_name_for_orchestrator}")
-        stop_response = await bots_manager.stop_bot(
-            bot_name_for_orchestrator,
-            skip_order_cancellation=skip_order_cancellation,
-            async_backend=True  # Always use async for background tasks
-        )
-
-        if not stop_response or not stop_response.get("success", False):
-            error_msg = stop_response.get('error', 'Unknown error') if stop_response else 'No response from bot orchestrator'
-            logger.error(f"Failed to stop bot process: {error_msg}")
-            return
-
-        # Step 4: Wait for graceful shutdown (15 seconds as requested)
-        logger.info(f"Waiting 15 seconds for bot {bot_name} to gracefully shutdown")
-        await asyncio.sleep(15)
-
-        # Step 5: Stop the container with monitoring
-        max_retries = 10
-        retry_interval = 2
-        container_stopped = False
-
-        for i in range(max_retries):
-            logger.info(f"Attempting to stop container {container_name} (attempt {i+1}/{max_retries})")
-            docker_manager.stop_container(container_name)
-
-            # Check if container is already stopped
-            container_status = docker_manager.get_container_status(container_name)
-            if container_status.get("state", {}).get("status") == "exited":
-                container_stopped = True
-                logger.info(f"Container {container_name} is already stopped")
-                break
-
-            await asyncio.sleep(retry_interval)
-
-        if not container_stopped:
-            logger.error(f"Failed to stop container {container_name} after {max_retries} attempts")
-            return
-
-        # Step 6: Archive the bot data
-        instance_dir = os.path.join('bots', 'instances', container_name)
-        logger.info(f"Archiving bot data from {instance_dir}")
-
-        try:
-            if archive_locally:
-                bot_archiver.archive_locally(container_name, instance_dir)
-            else:
-                bot_archiver.archive_and_upload(container_name, instance_dir, bucket_name=s3_bucket)
-            logger.info(f"Successfully archived bot data for {container_name}")
-        except Exception as e:
-            logger.error(f"Archive failed: {str(e)}")
-            # Continue with removal even if archive fails
-
-        # Step 7: Remove the container
-        logging.info(f"Removing container {container_name}")
-        remove_response = docker_manager.remove_container(container_name, force=False)
-
-        if not remove_response.get("success"):
-            # If graceful remove fails, try force remove
-            logging.warning("Graceful container removal failed, attempting force removal")
-            remove_response = docker_manager.remove_container(container_name, force=True)
-
-        if remove_response.get("success"):
-            logging.info(f"Successfully completed stop-and-archive for bot {bot_name}")
-
-            # Step 8: Update bot run deployment status to ARCHIVED
-            try:
-                async with db_manager.get_session_context() as session:
-                    bot_run_repo = BotRunRepository(session)
-                    await bot_run_repo.update_bot_run_archived(bot_name)
-                    logger.info(f"Updated bot run deployment status to ARCHIVED for {bot_name}")
-            except Exception as e:
-                logger.error(f"Failed to update bot run to archived: {e}")
-        else:
-            logging.error(f"Failed to remove container {container_name}")
-
-            # Update bot run with error status (but keep stopped_at timestamp from earlier)
-            try:
-                async with db_manager.get_session_context() as session:
-                    bot_run_repo = BotRunRepository(session)
-                    await bot_run_repo.update_bot_run_stopped(
-                        bot_name,
-                        error_message="Failed to remove container during archive process"
-                    )
-                    logger.info(f"Updated bot run with error status for {bot_name}")
-            except Exception as e:
-                logger.error(f"Failed to update bot run with error: {e}")
-
-    except Exception as e:
-        logging.error(f"Error in background stop-and-archive for {bot_name}: {str(e)}")
-
-        # Update bot run with error status
-        try:
-            async with db_manager.get_session_context() as session:
-                bot_run_repo = BotRunRepository(session)
-                await bot_run_repo.update_bot_run_stopped(
-                    bot_name,
-                    error_message=str(e)
-                )
-                logger.info(f"Updated bot run with error status for {bot_name}")
-        except Exception as db_error:
-            logger.error(f"Failed to update bot run with error: {db_error}")
-    finally:
-        # Always clear the stopping status when the background task completes
-        bots_manager.clear_bot_stopping(bot_name_for_orchestrator)
-        logger.info(f"Cleared stopping status for bot {bot_name}")
-
-        # Remove bot from active_bots and clear all MQTT data
-        if bot_name_for_orchestrator in bots_manager.active_bots:
-            bots_manager.mqtt_manager.clear_bot_data(bot_name_for_orchestrator)
-            del bots_manager.active_bots[bot_name_for_orchestrator]
-            logger.info(f"Removed bot {bot_name_for_orchestrator} from active_bots and cleared MQTT data")
 
 
 @router.post("/stop-and-archive-bot/{bot_name}")
@@ -629,8 +398,7 @@ async def stop_and_archive_bot(
     s3_bucket: str = None,
     bots_manager: BotsOrchestrator = Depends(get_bots_orchestrator),
     docker_manager: DockerService = Depends(get_docker_service),
-    bot_archiver: BotArchiver = Depends(get_bot_archiver),
-    db_manager: AsyncDatabaseManager = Depends(get_database_manager)
+    bot_archiver: BotArchiver = Depends(get_bot_archiver)
 ):
     """
     Gracefully stop a bot and archive its data in the background.
@@ -678,17 +446,15 @@ async def stop_and_archive_bot(
 
         # Add the background task
         background_tasks.add_task(
-            _background_stop_and_archive,
+            bots_manager.stop_and_archive_bot,
             bot_name=actual_bot_name,
             container_name=container_name,
             bot_name_for_orchestrator=bot_name_for_orchestrator,
             skip_order_cancellation=skip_order_cancellation,
             archive_locally=archive_locally,
             s3_bucket=s3_bucket,
-            bots_manager=bots_manager,
             docker_manager=docker_manager,
-            bot_archiver=bot_archiver,
-            db_manager=db_manager
+            bot_archiver=bot_archiver
         )
 
         return {
@@ -714,7 +480,7 @@ async def stop_and_archive_bot(
 async def deploy_v2_controllers(
     deployment: V2ControllerDeployment,
     docker_manager: DockerService = Depends(get_docker_service),
-    db_manager: AsyncDatabaseManager = Depends(get_database_manager)
+    bots_manager: BotsOrchestrator = Depends(get_bots_orchestrator)
 ):
     """
     Deploy a V2 strategy with controllers by generating the script config and creating the instance.
@@ -778,23 +544,16 @@ async def deploy_v2_controllers(
             response["unique_instance_name"] = unique_instance_name
 
             # Track bot run if deployment was successful
-            try:
-                async with db_manager.get_session_context() as session:
-                    bot_run_repo = BotRunRepository(session)
-                    await bot_run_repo.create_bot_run(
-                        bot_name=unique_instance_name,
-                        instance_name=unique_instance_name,
-                        strategy_type="controller",
-                        strategy_name="v2_with_controllers",
-                        account_name=deployment.credentials_profile,
-                        config_name=script_config_filename,
-                        image_version=deployment.image,
-                        deployment_config=deployment.dict()
-                    )
-                    logger.info(f"Created bot run record for controller deployment {unique_instance_name}")
-            except Exception as e:
-                logger.error(f"Failed to create bot run record: {e}")
-                # Don't fail the deployment if bot run creation fails
+            await bots_manager.create_bot_run(
+                bot_name=unique_instance_name,
+                instance_name=unique_instance_name,
+                strategy_type="controller",
+                strategy_name="v2_with_controllers",
+                account_name=deployment.credentials_profile,
+                config_name=script_config_filename,
+                image_version=deployment.image,
+                deployment_config=deployment.dict()
+            )
 
         return response
 
@@ -807,7 +566,7 @@ async def deploy_v2_controllers(
 async def deploy_v2_script(
     deployment: V2ScriptDeployment,
     docker_manager: DockerService = Depends(get_docker_service),
-    db_manager: AsyncDatabaseManager = Depends(get_database_manager)
+    bots_manager: BotsOrchestrator = Depends(get_bots_orchestrator)
 ):
     """
     Deploy a V2 script bot with optional script configuration.
@@ -840,23 +599,16 @@ async def deploy_v2_script(
             response["unique_instance_name"] = unique_instance_name
 
             # Track bot run if deployment was successful
-            try:
-                async with db_manager.get_session_context() as session:
-                    bot_run_repo = BotRunRepository(session)
-                    await bot_run_repo.create_bot_run(
-                        bot_name=unique_instance_name,
-                        instance_name=unique_instance_name,
-                        strategy_type="script",
-                        strategy_name=deployment.script or "default",
-                        account_name=deployment.credentials_profile,
-                        config_name=deployment.script_config,
-                        image_version=deployment.image,
-                        deployment_config=deployment.dict()
-                    )
-                    logger.info(f"Created bot run record for script deployment {unique_instance_name}")
-            except Exception as e:
-                logger.error(f"Failed to create bot run record: {e}")
-                # Don't fail the deployment if bot run creation fails
+            await bots_manager.create_bot_run(
+                bot_name=unique_instance_name,
+                instance_name=unique_instance_name,
+                strategy_type="script",
+                strategy_name=deployment.script or "default",
+                account_name=deployment.credentials_profile,
+                config_name=deployment.script_config,
+                image_version=deployment.image,
+                deployment_config=deployment.dict()
+            )
 
         return response
 
