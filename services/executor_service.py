@@ -618,8 +618,11 @@ class ExecutorService:
 
     async def _handle_executor_completion(self, executor_id: str):
         """Handle cleanup when an executor completes."""
-        executor = self._active_executors.get(executor_id)
-        if not executor:
+        # Atomically claim the executor so a concurrent completion (e.g. the
+        # control loop racing with the synchronous call in create_executor)
+        # returns early instead of double-persisting / double-aggregating.
+        executor = self._active_executors.pop(executor_id, None)
+        if executor is None:
             return
 
         metadata = self._executor_metadata.get(executor_id, {})
@@ -631,8 +634,9 @@ class ExecutorService:
         # Persist final state to database
         await self._persist_executor_completed(executor_id, executor)
 
-        # Remove from active executors
-        del self._active_executors[executor_id]
+        # Active executor already claimed via pop above; drop its metadata last
+        # (metadata is read above and re-fetched inside the persist/aggregate
+        # helpers, so it must stay until after those awaits complete).
         if executor_id in self._executor_metadata:
             del self._executor_metadata[executor_id]
 
