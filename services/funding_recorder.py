@@ -6,7 +6,7 @@ from typing import Dict, Optional
 
 from hummingbot.connector.connector_base import ConnectorBase
 from hummingbot.core.event.event_forwarder import SourceInfoEventForwarder
-from hummingbot.core.event.events import MarketEvent, FundingPaymentCompletedEvent
+from hummingbot.core.event.events import FundingPaymentCompletedEvent, MarketEvent
 
 from database import AsyncDatabaseManager, FundingRepository
 
@@ -138,17 +138,16 @@ class FundingRecorder:
                 })
             
             # Save to database
-            async with self.db_manager.get_session() as session:
+            async with self.db_manager.get_session_context() as session:
                 funding_repo = FundingRepository(session)
-                
+
                 # Check if funding payment already exists
                 if await funding_repo.funding_payment_exists(funding_data["funding_payment_id"]):
                     self.logger.info(f"Funding payment {funding_data['funding_payment_id']} already exists, skipping")
                     return
-                
+
                 funding_payment = await funding_repo.create_funding_payment(funding_data)
-                await session.commit()
-                
+
                 self.logger.info(
                     f"Recorded funding payment for {account_name}/{connector_name}: "
                     f"{event.trading_pair} - Rate: {funding_rate}, Payment: {funding_payment} "
