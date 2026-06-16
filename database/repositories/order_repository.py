@@ -1,8 +1,8 @@
 from datetime import datetime
-from typing import Dict, List, Optional
 from decimal import Decimal
+from typing import Dict, List, Optional
 
-from sqlalchemy import desc, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import Order
@@ -129,20 +129,30 @@ class OrderRepository:
     async def get_orders_summary(self, account_name: Optional[str] = None,
                                start_time: Optional[int] = None,
                                end_time: Optional[int] = None) -> Dict:
-        """Get order summary statistics."""
-        orders = await self.get_orders(
-            account_name=account_name,
-            start_time=start_time,
-            end_time=end_time,
-            limit=10000  # Get all for summary
+        """Get order summary statistics using a single DB-level aggregate query."""
+        query = select(Order.status, func.count()).group_by(Order.status)
+
+        # Apply the same filters as get_orders
+        if account_name:
+            query = query.where(Order.account_name == account_name)
+        if start_time:
+            start_dt = datetime.fromtimestamp(start_time / 1000)
+            query = query.where(Order.created_at >= start_dt)
+        if end_time:
+            end_dt = datetime.fromtimestamp(end_time / 1000)
+            query = query.where(Order.created_at <= end_dt)
+
+        result = await self.session.execute(query)
+        counts = {status: count for status, count in result.all()}
+
+        total_orders = sum(counts.values())
+        filled_orders = counts.get("FILLED", 0)
+        cancelled_orders = counts.get("CANCELLED", 0)
+        failed_orders = counts.get("FAILED", 0)
+        active_orders = (
+            counts.get("SUBMITTED", 0) + counts.get("OPEN", 0) + counts.get("PARTIALLY_FILLED", 0)
         )
-        
-        total_orders = len(orders)
-        filled_orders = sum(1 for o in orders if o.status == "FILLED")
-        cancelled_orders = sum(1 for o in orders if o.status == "CANCELLED")
-        failed_orders = sum(1 for o in orders if o.status == "FAILED")
-        active_orders = sum(1 for o in orders if o.status in ["SUBMITTED", "OPEN", "PARTIALLY_FILLED"])
-        
+
         return {
             "total_orders": total_orders,
             "filled_orders": filled_orders,
