@@ -189,10 +189,10 @@ class AccountsService:
         """
         if self._connector_service:
             try:
-                await self._connector_service._update_connector_state(connector, connector_name, account_name)
+                await self._connector_service.refresh_connector_state(connector, connector_name, account_name)
             except Exception as e:
                 logger.error(f"Error refreshing {connector_name}, using stale data: {e}")
-        # skip_balance_refresh=True since _update_connector_state already called _update_balances
+        # skip_balance_refresh=True since refresh_connector_state already called _update_balances
         return await self._get_connector_tokens_info(connector, connector_name, skip_balance_refresh=True)
 
     async def update_account_state_loop(self):

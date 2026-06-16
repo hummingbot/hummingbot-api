@@ -768,6 +768,19 @@ class UnifiedConnectorService:
         if hasattr(connector, 'stop_network'):
             await connector.stop_network()
 
+    async def refresh_connector_state(
+        self,
+        connector: ConnectorBase,
+        connector_name: str,
+        account_name: str = None
+    ):
+        """Public API to refresh a single connector's state (balances, positions, orders).
+
+        Delegates to the internal _update_connector_state implementation so callers
+        in sibling services don't depend on the underscore-prefixed helper.
+        """
+        await self._update_connector_state(connector, connector_name, account_name)
+
     async def _update_connector_state(
         self,
         connector: ConnectorBase,
