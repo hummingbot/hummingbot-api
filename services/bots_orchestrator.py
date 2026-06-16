@@ -13,10 +13,6 @@ from utils.mqtt_manager import MQTTManager
 logger = logging.getLogger(__name__)
 
 
-# HummingbotPerformanceListener class is no longer needed
-# All functionality is now handled by MQTTManager
-
-
 class BotsOrchestrator:
     """Orchestrates Hummingbot instances using Docker and MQTT communication."""
 
@@ -302,7 +298,6 @@ class BotsOrchestrator:
         return cleaned_data
 
     def get_all_bots_status(self):
-        # TODO: improve logic of bots state management
         """Get status information for all active bots."""
         all_bots_status = {}
         for bot in [bot for bot in self.active_bots if not self.is_bot_stopping(bot)]:
