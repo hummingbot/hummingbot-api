@@ -2,15 +2,16 @@ from fastapi import Request
 
 from database import AsyncDatabaseManager
 from services.accounts_service import AccountsService
+from services.backtesting_service import BacktestingService
 from services.bots_orchestrator import BotsOrchestrator
 from services.docker_service import DockerService
 from services.executor_service import ExecutorService
 from services.executor_ws_manager import ExecutorWebSocketManager
 from services.gateway_service import GatewayService
 from services.market_data_service import MarketDataService
+from services.trading_history_service import TradingHistoryService
 from services.trading_service import TradingService
 from services.unified_connector_service import UnifiedConnectorService
-from services.backtesting_service import BacktestingService
 from services.websocket_manager import WebSocketManager
 from utils.bot_archiver import BotArchiver
 
@@ -48,6 +49,11 @@ def get_market_data_service(request: Request) -> MarketDataService:
 def get_trading_service(request: Request) -> TradingService:
     """Get TradingService from app state."""
     return request.app.state.trading_service
+
+
+def get_trading_history_service(request: Request) -> TradingHistoryService:
+    """Get TradingHistoryService from app state."""
+    return request.app.state.trading_history_service
 
 
 def get_executor_service(request: Request) -> ExecutorService:

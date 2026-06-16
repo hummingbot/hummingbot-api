@@ -10,7 +10,7 @@ from hummingbot.client.config.config_crypt import ETHKeyFileSecretManger
 from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, TradeType
 
 from config import settings
-from database import AccountRepository, AsyncDatabaseManager, FundingRepository, OrderRepository, TradeRepository
+from database import AccountRepository, AsyncDatabaseManager
 from services.gateway_client import GatewayClient
 from services.gateway_transaction_poller import GatewayTransactionPoller
 from services.gateway_wallet_service import GatewayWalletService, balance_entry
@@ -995,156 +995,12 @@ class AccountsService:
         """
         return await self.perpetual_trading_service.get_position_mode(account_name, connector_name)
 
-    async def get_orders(self, account_name: Optional[str] = None, connector_name: Optional[str] = None,
-                        trading_pair: Optional[str] = None, status: Optional[str] = None,
-                        start_time: Optional[int] = None, end_time: Optional[int] = None,
-                        limit: int = 100, offset: int = 0) -> List[Dict]:
-        """Get order history using OrderRepository."""
-        try:
-            async with self.db_manager.get_session_context() as session:
-                order_repo = OrderRepository(session)
-                orders = await order_repo.get_orders(
-                    account_name=account_name,
-                    connector_name=connector_name,
-                    trading_pair=trading_pair,
-                    status=status,
-                    start_time=start_time,
-                    end_time=end_time,
-                    limit=limit,
-                    offset=offset
-                )
-                return [order_repo.to_dict(order) for order in orders]
-        except Exception as e:
-            logger.error(f"Error getting orders: {e}")
-            return []
-
-    async def get_active_orders_history(self, account_name: Optional[str] = None, connector_name: Optional[str] = None,
-                                       trading_pair: Optional[str] = None) -> List[Dict]:
-        """Get active orders from database using OrderRepository."""
-        try:
-            async with self.db_manager.get_session_context() as session:
-                order_repo = OrderRepository(session)
-                orders = await order_repo.get_active_orders(
-                    account_name=account_name,
-                    connector_name=connector_name,
-                    trading_pair=trading_pair
-                )
-                return [order_repo.to_dict(order) for order in orders]
-        except Exception as e:
-            logger.error(f"Error getting active orders: {e}")
-            return []
-
-    async def get_orders_summary(self, account_name: Optional[str] = None, start_time: Optional[int] = None,
-                                end_time: Optional[int] = None) -> Dict:
-        """Get order summary statistics using OrderRepository."""
-        try:
-            async with self.db_manager.get_session_context() as session:
-                order_repo = OrderRepository(session)
-                return await order_repo.get_orders_summary(
-                    account_name=account_name,
-                    start_time=start_time,
-                    end_time=end_time
-                )
-        except Exception as e:
-            logger.error(f"Error getting orders summary: {e}")
-            return {
-                "total_orders": 0,
-                "filled_orders": 0,
-                "cancelled_orders": 0,
-                "failed_orders": 0,
-                "active_orders": 0,
-                "fill_rate": 0,
-            }
-
-    async def get_trades(self, account_name: Optional[str] = None, connector_name: Optional[str] = None,
-                        trading_pair: Optional[str] = None, trade_type: Optional[str] = None,
-                        start_time: Optional[int] = None, end_time: Optional[int] = None,
-                        limit: int = 100, offset: int = 0) -> List[Dict]:
-        """Get trade history using TradeRepository."""
-        try:
-            async with self.db_manager.get_session_context() as session:
-                trade_repo = TradeRepository(session)
-                trade_order_pairs = await trade_repo.get_trades_with_orders(
-                    account_name=account_name,
-                    connector_name=connector_name,
-                    trading_pair=trading_pair,
-                    trade_type=trade_type,
-                    start_time=start_time,
-                    end_time=end_time,
-                    limit=limit,
-                    offset=offset
-                )
-                return [trade_repo.to_dict(trade, order) for trade, order in trade_order_pairs]
-        except Exception as e:
-            logger.error(f"Error getting trades: {e}")
-            return []
-
     async def get_account_positions(self, account_name: str, connector_name: str) -> List[Dict]:
         """
         Get current positions for a specific perpetual connector.
         Delegates to PerpetualTradingService.
         """
         return await self.perpetual_trading_service.get_account_positions(account_name, connector_name)
-
-    async def get_funding_payments(self, account_name: str, connector_name: str = None, 
-                                  trading_pair: str = None, limit: int = 100) -> List[Dict]:
-        """
-        Get funding payment history for an account.
-        
-        Args:
-            account_name: Name of the account
-            connector_name: Optional connector name filter
-            trading_pair: Optional trading pair filter
-            limit: Maximum number of records to return
-            
-        Returns:
-            List of funding payment dictionaries
-        """
-        try:
-            async with self.db_manager.get_session_context() as session:
-                funding_repo = FundingRepository(session)
-                funding_payments = await funding_repo.get_funding_payments(
-                    account_name=account_name,
-                    connector_name=connector_name,
-                    trading_pair=trading_pair,
-                    limit=limit
-                )
-                return [funding_repo.to_dict(payment) for payment in funding_payments]
-                
-        except Exception as e:
-            logger.error(f"Error getting funding payments: {e}")
-            return []
-
-    async def get_total_funding_fees(self, account_name: str, connector_name: str,
-                                   trading_pair: str) -> Dict:
-        """
-        Get total funding fees for a specific trading pair.
-
-        Args:
-            account_name: Name of the account
-            connector_name: Name of the connector
-            trading_pair: Trading pair to get fees for
-
-        Returns:
-            Dictionary with total funding fees information
-        """
-        try:
-            async with self.db_manager.get_session_context() as session:
-                funding_repo = FundingRepository(session)
-                return await funding_repo.get_total_funding_fees(
-                    account_name=account_name,
-                    connector_name=connector_name,
-                    trading_pair=trading_pair
-                )
-
-        except Exception as e:
-            logger.error(f"Error getting total funding fees: {e}")
-            return {
-                "total_funding_fees": 0,
-                "payment_count": 0,
-                "fee_currency": None,
-                "error": str(e)
-            }
 
     # ============================================
     # Gateway Wallet Management Methods

@@ -1,17 +1,13 @@
 import logging
 import math
-
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-
-# Create module-specific logger
-logger = logging.getLogger(__name__)
 from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, TradeType
 from pydantic import BaseModel
 from starlette import status
 
-from deps import get_accounts_service, get_connector_service
+from deps import get_accounts_service, get_connector_service, get_trading_history_service
 from models import (
     ActiveOrderFilterRequest,
     FundingPaymentFilterRequest,
@@ -25,6 +21,10 @@ from models import (
 from models.accounts import LeverageRequest, PositionModeRequest
 from models.pagination import paginate_by_cursor
 from services.accounts_service import AccountsService
+from services.trading_history_service import TradingHistoryService
+
+# Create module-specific logger
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Trading"], prefix="/trading")
 
@@ -246,7 +246,7 @@ async def get_active_orders(
 @router.post("/orders/search", response_model=PaginatedResponse)
 async def get_orders(
     filter_request: OrderFilterRequest,
-    accounts_service: AccountsService = Depends(get_accounts_service),
+    trading_history_service: TradingHistoryService = Depends(get_trading_history_service),
     connector_service = Depends(get_connector_service)
 ):
     """
@@ -272,7 +272,7 @@ async def get_orders(
         # Collect orders from all specified accounts
         for account_name in accounts_to_check:
             try:
-                orders = await accounts_service.get_orders(
+                orders = await trading_history_service.get_orders(
                     account_name=account_name,
                     connector_name=(
                         filter_request.connector_names[0]
@@ -322,7 +322,7 @@ async def get_orders(
 @router.post("/trades", response_model=PaginatedResponse)
 async def get_trades(
     filter_request: TradeFilterRequest,
-    accounts_service: AccountsService = Depends(get_accounts_service),
+    trading_history_service: TradingHistoryService = Depends(get_trading_history_service),
     connector_service = Depends(get_connector_service)
 ):
     """
@@ -348,7 +348,7 @@ async def get_trades(
         # Collect trades from all specified accounts
         for account_name in accounts_to_check:
             try:
-                trades = await accounts_service.get_trades(
+                trades = await trading_history_service.get_trades(
                     account_name=account_name,
                     connector_name=(
                         filter_request.connector_names[0]
@@ -498,7 +498,7 @@ async def set_leverage(
 @router.post("/funding-payments", response_model=PaginatedResponse)
 async def get_funding_payments(
     filter_request: FundingPaymentFilterRequest,
-    accounts_service: AccountsService = Depends(get_accounts_service),
+    trading_history_service: TradingHistoryService = Depends(get_trading_history_service),
     connector_service = Depends(get_connector_service)
 ):
     """
@@ -536,7 +536,7 @@ async def get_funding_payments(
                     # Only fetch funding payments from perpetual connectors
                     if connector_name in all_connectors[account_name] and "_perpetual" in connector_name:
                         try:
-                            payments = await accounts_service.get_funding_payments(
+                            payments = await trading_history_service.get_funding_payments(
                                 account_name=account_name,
                                 connector_name=connector_name,
                                 trading_pair=filter_request.trading_pair,

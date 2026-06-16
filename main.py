@@ -68,6 +68,7 @@ from services.executor_service import ExecutorService  # noqa: E402
 from services.executor_ws_manager import ExecutorWebSocketManager  # noqa: E402
 from services.gateway_service import GatewayService  # noqa: E402
 from services.market_data_service import MarketDataService  # noqa: E402
+from services.trading_history_service import TradingHistoryService  # noqa: E402
 from services.trading_service import TradingService  # noqa: E402
 from services.unified_connector_service import UnifiedConnectorService  # noqa: E402
 from services.websocket_manager import WebSocketManager  # noqa: E402
@@ -210,6 +211,10 @@ async def lifespan(app: FastAPI):
     )
     logging.info("AccountsService initialized")
 
+    # TradingHistoryService - read-only persistence queries for orders/trades/funding
+    trading_history_service = TradingHistoryService(db_manager=db_manager)
+    logging.info("TradingHistoryService initialized")
+
     # =========================================================================
     # 4. ExecutorService - depends on TradingService (NO circular dependency)
     # =========================================================================
@@ -277,6 +282,7 @@ async def lifespan(app: FastAPI):
     app.state.market_data_service = market_data_service
     app.state.trading_service = trading_service
     app.state.accounts_service = accounts_service
+    app.state.trading_history_service = trading_history_service
     app.state.executor_service = executor_service
     websocket_manager = WebSocketManager(market_data_service)
     app.state.websocket_manager = websocket_manager
