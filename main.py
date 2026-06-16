@@ -201,6 +201,7 @@ async def lifespan(app: FastAPI):
 
     # AccountsService - account management, balances, portfolio (simplified)
     accounts_service = AccountsService(
+        db_manager=db_manager,
         account_update_interval=settings.app.account_update_interval,
         gateway_url=settings.gateway.url
     )
@@ -232,6 +233,7 @@ async def lifespan(app: FastAPI):
         broker_port=settings.broker.port,
         broker_username=settings.broker.username,
         broker_password=settings.broker.password,
+        db_manager=db_manager,
         performance_dump_interval=settings.broker.performance_dump_interval
     )
 

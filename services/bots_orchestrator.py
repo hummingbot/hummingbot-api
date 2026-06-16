@@ -8,7 +8,6 @@ from typing import Any, Dict, List, Optional
 
 import docker
 
-from config import settings
 from database import AsyncDatabaseManager, BotRunRepository, ControllerPerformanceRepository
 from services.docker_service import DockerService
 from utils.bot_archiver import BotArchiver
@@ -21,7 +20,7 @@ class BotsOrchestrator:
     """Orchestrates Hummingbot instances using Docker and MQTT communication."""
 
     def __init__(self, broker_host, broker_port, broker_username, broker_password,
-                 performance_dump_interval: int = 5):
+                 db_manager: AsyncDatabaseManager, performance_dump_interval: int = 5):
         self.broker_host = broker_host
         self.broker_port = broker_port
         self.broker_username = broker_username
@@ -43,8 +42,9 @@ class BotsOrchestrator:
         # Controller performance dump (similar to AccountsService.dump_account_state)
         self.performance_dump_interval = performance_dump_interval * 60  # Convert minutes to seconds
         self._performance_dump_task: Optional[asyncio.Task] = None
-        self.db_manager = AsyncDatabaseManager(settings.database.url)
-        self._db_initialized = False
+        # Shared manager injected from main.py; tables are created once at startup,
+        # so no per-service bootstrap is needed here.
+        self.db_manager = db_manager
 
         # MQTT manager will be started asynchronously later
 
@@ -375,12 +375,6 @@ class BotsOrchestrator:
     # Controller Performance Snapshots
     # ============================================
 
-    async def _ensure_db_initialized(self):
-        """Ensure database is initialized before using it."""
-        if not self._db_initialized:
-            await self.db_manager.create_tables()
-            self._db_initialized = True
-
     async def _performance_dump_loop(self):
         """Periodically dump controller performance to the database (default every 5 minutes)."""
         while True:
@@ -393,8 +387,6 @@ class BotsOrchestrator:
 
     async def dump_controller_performance(self):
         """Save current controller performance for all active bots to the database."""
-        await self._ensure_db_initialized()
-
         snapshot_timestamp = datetime.now(timezone.utc)
         saved_count = 0
 
@@ -440,8 +432,6 @@ class BotsOrchestrator:
         interval: str = "5m"
     ):
         """Get historical controller performance with pagination and interval sampling."""
-        await self._ensure_db_initialized()
-
         try:
             async with self.db_manager.get_session_context() as session:
                 repo = ControllerPerformanceRepository(session)
@@ -463,8 +453,6 @@ class BotsOrchestrator:
         bot_name: Optional[str] = None
     ) -> List[Dict]:
         """Get the most recent performance snapshot for each bot/controller."""
-        await self._ensure_db_initialized()
-
         try:
             async with self.db_manager.get_session_context() as session:
                 repo = ControllerPerformanceRepository(session)
@@ -479,7 +467,6 @@ class BotsOrchestrator:
 
     async def mark_bot_run_stopped(self, bot_name: str, final_status: Optional[Dict] = None):
         """Update a bot run status to STOPPED, capturing the final status snapshot."""
-        await self._ensure_db_initialized()
         async with self.db_manager.get_session_context() as session:
             bot_run_repo = BotRunRepository(session)
             await bot_run_repo.update_bot_run_stopped(bot_name, final_status=final_status)
@@ -497,7 +484,6 @@ class BotsOrchestrator:
         offset: int = 0,
     ) -> List[Dict]:
         """Get bot runs with optional filtering, serialized as dictionaries."""
-        await self._ensure_db_initialized()
         async with self.db_manager.get_session_context() as session:
             bot_run_repo = BotRunRepository(session)
             bot_runs = await bot_run_repo.get_bot_runs(
@@ -514,14 +500,12 @@ class BotsOrchestrator:
 
     async def get_bot_run_stats(self) -> Dict[str, Any]:
         """Get statistics about bot runs."""
-        await self._ensure_db_initialized()
         async with self.db_manager.get_session_context() as session:
             bot_run_repo = BotRunRepository(session)
             return await bot_run_repo.get_bot_run_stats()
 
     async def get_bot_run_by_id(self, bot_run_id: int) -> Optional[Dict]:
         """Get a specific bot run by ID, serialized as a dictionary (None if not found)."""
-        await self._ensure_db_initialized()
         async with self.db_manager.get_session_context() as session:
             bot_run_repo = BotRunRepository(session)
             bot_run = await bot_run_repo.get_bot_run_by_id(bot_run_id)
@@ -535,7 +519,6 @@ class BotsOrchestrator:
         Returns a dict with ``bot_name`` and ``archived_folder_deleted`` keys,
         or None if the bot run does not exist.
         """
-        await self._ensure_db_initialized()
         async with self.db_manager.get_session_context() as session:
             bot_run_repo = BotRunRepository(session)
             bot_run = await bot_run_repo.delete_bot_run(bot_run_id)
@@ -568,7 +551,6 @@ class BotsOrchestrator:
         """Create a bot run record. Errors are logged and swallowed so that a
         failed tracking write never fails the caller's deployment."""
         try:
-            await self._ensure_db_initialized()
             async with self.db_manager.get_session_context() as session:
                 bot_run_repo = BotRunRepository(session)
                 await bot_run_repo.create_bot_run(**kwargs)
@@ -706,7 +688,6 @@ class BotsOrchestrator:
 
                 # Step 8: Update bot run deployment status to ARCHIVED
                 try:
-                    await self._ensure_db_initialized()
                     async with self.db_manager.get_session_context() as session:
                         bot_run_repo = BotRunRepository(session)
                         await bot_run_repo.update_bot_run_archived(bot_name)
@@ -718,7 +699,6 @@ class BotsOrchestrator:
 
                 # Update bot run with error status (but keep stopped_at timestamp from earlier)
                 try:
-                    await self._ensure_db_initialized()
                     async with self.db_manager.get_session_context() as session:
                         bot_run_repo = BotRunRepository(session)
                         await bot_run_repo.update_bot_run_stopped(
@@ -734,7 +714,6 @@ class BotsOrchestrator:
 
             # Update bot run with error status
             try:
-                await self._ensure_db_initialized()
                 async with self.db_manager.get_session_context() as session:
                     bot_run_repo = BotRunRepository(session)
                     await bot_run_repo.update_bot_run_stopped(
