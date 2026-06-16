@@ -443,7 +443,8 @@ async def delete_bot_run(
             archived_deleted = False
             if os.path.isdir(archived_dir):
                 try:
-                    import subprocess, platform
+                    import platform
+                    import subprocess
                     if platform.system() == 'Darwin':
                         # Strip macOS ACLs (Docker adds "deny delete" ACLs)
                         subprocess.run(['chmod', '-R', '-N', archived_dir], check=False)
