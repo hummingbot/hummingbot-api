@@ -76,14 +76,10 @@ class SecuritySettings(BaseSettings):
     - PASSWORD: API basic auth password (default "admin" — local development only, never use in production)
     - CONFIG_PASSWORD: password used to encrypt ALL connector credentials (default "a" — local development only,
       never use in production)
-    - DEBUG_MODE: disables basic auth entirely when true (SEC-020). Local development convenience ONLY:
-      it is ignored (auth stays enforced) when LOGFIRE_ENVIRONMENT names a production environment, and it
-      must never be used on a deployment reachable over the network.
     """
 
     username: str = Field(default="admin", description="API basic auth username (override via USERNAME in production)")
     password: str = Field(default="admin", description="API basic auth password (override via PASSWORD in production)")
-    debug_mode: bool = Field(default=False, description="Enable debug mode (disables auth)")
     config_password: str = Field(
         default="a",
         description="Bot configuration encryption password (override via CONFIG_PASSWORD in production)"
@@ -116,37 +112,6 @@ def warn_if_insecure_security_defaults(security: SecuritySettings) -> List[str]:
             ", ".join(insecure),
         )
     return insecure
-
-
-# Environment names (LOGFIRE_ENVIRONMENT) treated as production for SEC-020: DEBUG_MODE never disables auth there.
-_PRODUCTION_ENVIRONMENT_NAMES = {"prod", "production"}
-
-
-def warn_if_debug_mode_enabled(app_settings: "Settings") -> bool:
-    """Emit a high-severity log describing the effect of DEBUG_MODE at startup (SEC-020).
-
-    Returns True if the auth bypass is actually active (debug mode on, non-production environment).
-    """
-    if not app_settings.security.debug_mode:
-        return False
-    environment = app_settings.app.logfire_environment
-    if app_settings.is_production_environment():
-        logging.critical(
-            "SECURITY: DEBUG_MODE=true was requested but the configured environment %r is production. "
-            "Refusing to disable authentication: HTTP Basic Auth remains ENFORCED for all API and WebSocket "
-            "endpoints. Unset DEBUG_MODE (or set LOGFIRE_ENVIRONMENT to a development environment) to remove "
-            "this warning.",
-            environment,
-        )
-        return False
-    logging.critical(
-        "SECURITY WARNING: DEBUG_MODE is enabled (environment %r): authentication is DISABLED for the ENTIRE "
-        "API and all WebSocket endpoints. Anyone who can reach this instance has full unauthenticated access, "
-        "including real trading, wallet management and account deletion. Use DEBUG_MODE only for local "
-        "development bound to localhost, and NEVER on a deployment reachable over the network.",
-        environment,
-    )
-    return True
 
 
 class AWSSettings(BaseSettings):
@@ -250,18 +215,4 @@ class Settings(BaseSettings):
         extra="ignore"
     )
 
-    def is_production_environment(self) -> bool:
-        """Whether the configured environment (LOGFIRE_ENVIRONMENT) names a production environment (SEC-020)."""
-        return self.app.logfire_environment.strip().lower() in _PRODUCTION_ENVIRONMENT_NAMES
-
-    def auth_disabled_by_debug_mode(self) -> bool:
-        """Whether DEBUG_MODE actually disables authentication (SEC-020).
-
-        DEBUG_MODE is a local development convenience only: it is ignored (auth stays enforced) when the
-        configured environment is production.
-        """
-        return self.security.debug_mode and not self.is_production_environment()
-
-
-# Create global settings instance
 settings = Settings()

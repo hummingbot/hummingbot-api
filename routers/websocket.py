@@ -24,12 +24,8 @@ def _authenticate_websocket(websocket: WebSocket) -> bool:
     """
     Authenticate a WebSocket connection using Basic Auth from headers or query params.
 
-    Returns True if authenticated (or debug mode), False otherwise.
+    Returns True if authenticated, False otherwise.
     """
-    # SEC-020: DEBUG_MODE only bypasses auth outside the configured production environment
-    if settings.auth_disabled_by_debug_mode():
-        return True
-
     # Try Authorization header first
     auth_header = websocket.headers.get("authorization", "")
     if auth_header.startswith("Basic "):
