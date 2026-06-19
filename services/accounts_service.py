@@ -48,6 +48,8 @@ class AccountsService:
     default_quotes = {
         "hyperliquid": "USDC",
         "hyperliquid_perpetual": "USD",
+        "lighter": "USDC",
+        "lighter_perpetual": "USDC",
         "xrpl": "RLUSD",
         "kraken": "USD",
     }
