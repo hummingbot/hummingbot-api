@@ -103,16 +103,20 @@ async def get_portfolio_history(
             account_names=filter_request.account_names
         )
 
-        # Apply connector filter to the data if specified
+        # Apply connector filter to the data if specified. Each history item is
+        # {"timestamp": ..., "state": {account_name: {connector_name: [tokens]}}},
+        # so connectors live directly under each account inside "state".
         if filter_request.connector_names:
             for item in data:
-                for account_name, account_data in item.items():
-                    if isinstance(account_data, dict) and "connectors" in account_data:
-                        filtered_connectors = {}
-                        for connector_name in filter_request.connector_names:
-                            if connector_name in account_data["connectors"]:
-                                filtered_connectors[connector_name] = account_data["connectors"][connector_name]
-                        account_data["connectors"] = filtered_connectors
+                state = item.get("state", {})
+                for account_name, account_data in state.items():
+                    if isinstance(account_data, dict):
+                        filtered_connectors = {
+                            connector_name: account_data[connector_name]
+                            for connector_name in filter_request.connector_names
+                            if connector_name in account_data
+                        }
+                        state[account_name] = filtered_connectors
         
         return PaginatedResponse(
             data=data,
