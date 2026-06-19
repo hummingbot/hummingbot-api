@@ -2,7 +2,7 @@ import logging
 import os
 import platform
 import shutil
-from typing import Optional, Dict
+from typing import Any, Dict, Optional
 
 import docker
 from docker.errors import DockerException
@@ -95,7 +95,7 @@ class GatewayService:
             port=port
         )
 
-    def start(self, config: GatewayConfig) -> Dict[str, any]:
+    def start(self, config: GatewayConfig) -> Dict[str, Any]:
         """
         Start the Gateway container.
         If a container already exists, it will be stopped and removed before creating a new one.
@@ -201,7 +201,7 @@ class GatewayService:
                 "message": f"Failed to start Gateway: {str(e)}"
             }
 
-    def stop(self) -> Dict[str, any]:
+    def stop(self) -> Dict[str, Any]:
         """Stop the Gateway container"""
         container = self._get_gateway_container()
 
@@ -226,7 +226,7 @@ class GatewayService:
                 "message": f"Failed to stop Gateway: {str(e)}"
             }
 
-    def restart(self, config: Optional[GatewayConfig] = None) -> Dict[str, any]:
+    def restart(self, config: Optional[GatewayConfig] = None) -> Dict[str, Any]:
         """
         Restart the Gateway container.
         If config is provided, the container will be recreated with the new configuration.
@@ -271,7 +271,7 @@ class GatewayService:
                     "message": f"Failed to restart Gateway: {str(e)}"
                 }
 
-    def remove(self, remove_data: bool = False) -> Dict[str, any]:
+    def remove(self, remove_data: bool = False) -> Dict[str, Any]:
         """
         Remove the Gateway container and optionally its data.
 
@@ -337,7 +337,7 @@ class GatewayService:
                 "message": f"Gateway container removed but failed to remove data: {str(e)}"
             }
 
-    def get_logs(self, tail: int = 100) -> Dict[str, any]:
+    def get_logs(self, tail: int = 100) -> Dict[str, Any]:
         """Get logs from the Gateway container"""
         container = self._get_gateway_container()
 

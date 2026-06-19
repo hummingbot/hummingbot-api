@@ -161,17 +161,33 @@ class DockerService:
         except DockerException as e:
             return {"success": False, "message": str(e)}
 
+    @staticmethod
+    def _ensure_contained(path: str, base_dir: str, label: str):
+        """
+        Defense in depth: verify that `path` stays inside `base_dir` after resolving symlinks and
+        traversal sequences. Raises ValueError if it escapes the allowed base directory.
+        """
+        resolved_base = os.path.realpath(base_dir)
+        resolved_path = os.path.realpath(path)
+        if os.path.commonpath([resolved_base, resolved_path]) != resolved_base:
+            raise ValueError(f"Invalid {label}: '{path}' resolves outside of '{base_dir}'.")
+        return resolved_path
+
     def create_hummingbot_instance(self, config: V2ControllerDeployment):
         bots_path = os.environ.get('BOTS_PATH', self.SOURCE_PATH)  # Default to 'SOURCE_PATH' if BOTS_PATH is not set
         instance_name = config.instance_name
         instance_dir = os.path.join("bots", 'instances', instance_name)
+        # Defense in depth: ensure the resolved paths stay within their allowed base directories
+        # before any filesystem mutation (makedirs/copytree) takes place.
+        self._ensure_contained(instance_dir, os.path.join("bots", "instances"), "instance_name")
+        source_credentials_dir = os.path.join("bots", 'credentials', config.credentials_profile)
+        self._ensure_contained(source_credentials_dir, os.path.join("bots", "credentials"), "credentials_profile")
         if not os.path.exists(instance_dir):
             os.makedirs(instance_dir)
             os.makedirs(os.path.join(instance_dir, 'data'))
             os.makedirs(os.path.join(instance_dir, 'logs'))
 
         # Copy credentials to instance directory
-        source_credentials_dir = os.path.join("bots", 'credentials', config.credentials_profile)
         destination_credentials_dir = os.path.join(instance_dir, 'conf')
 
         # Remove the destination directory if it already exists

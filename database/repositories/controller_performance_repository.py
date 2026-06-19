@@ -66,6 +66,32 @@ class ControllerPerformanceRepository:
         await self.session.flush()
         return snapshot
 
+    async def save_controller_performances(self, snapshots: List[Dict]) -> List[ControllerPerformanceSnapshot]:
+        """Save multiple controller performance snapshots with a single add_all/flush.
+
+        Each item in `snapshots` is a dict with keys: bot_name, controller_id, status,
+        performance, custom_info and optionally snapshot_timestamp.
+        """
+        if not snapshots:
+            return []
+
+        rows = []
+        for item in snapshots:
+            data = {
+                "bot_name": item["bot_name"],
+                "controller_id": item["controller_id"],
+                "status": item["status"],
+                "performance": json.dumps(item["performance"]) if item.get("performance") else None,
+                "custom_info": json.dumps(item["custom_info"]) if item.get("custom_info") else None,
+            }
+            if item.get("snapshot_timestamp"):
+                data["timestamp"] = item["snapshot_timestamp"]
+            rows.append(ControllerPerformanceSnapshot(**data))
+
+        self.session.add_all(rows)
+        await self.session.flush()
+        return rows
+
     async def get_latest_performance(
         self,
         bot_name: Optional[str] = None

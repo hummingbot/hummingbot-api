@@ -68,18 +68,16 @@ async def get_candles(request: Request, candles_config: CandlesConfigRequest):
     try:
         market_data_service: MarketDataService = request.app.state.market_data_service
 
-        # Validate trading pair exists on the exchange before starting a feed
-        try:
-            await market_data_service.validate_trading_pair(
-                candles_config.connector_name, candles_config.trading_pair, candles_config.interval
-            )
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-
         candles_cfg = CandlesConfig(
             connector=candles_config.connector_name, trading_pair=candles_config.trading_pair,
             interval=candles_config.interval, max_records=candles_config.max_records)
-        candles_feed = market_data_service.get_candles_feed(candles_cfg)
+
+        # Creating the feed validates the trading pair on first use (cache hit afterwards);
+        # an invalid pair raises ValueError.
+        try:
+            candles_feed = await market_data_service.get_candles_feed(candles_cfg)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
         # Wait for the candles feed to be ready with a timeout
         timeout = settings.market_data.candles_ready_timeout
@@ -143,21 +141,18 @@ async def get_historical_candles(request: Request, config: HistoricalCandlesConf
     try:
         market_data_service: MarketDataService = request.app.state.market_data_service
 
-        # Validate trading pair exists on the exchange before fetching
-        try:
-            await market_data_service.validate_trading_pair(
-                config.connector_name, config.trading_pair, config.interval
-            )
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-
         candles_config = CandlesConfig(
             connector=config.connector_name,
             trading_pair=config.trading_pair,
             interval=config.interval
         )
 
-        candles = market_data_service.get_candles_feed(candles_config)
+        # Creating the feed validates the trading pair on first use (cache hit afterwards);
+        # an invalid pair raises ValueError.
+        try:
+            candles = await market_data_service.get_candles_feed(candles_config)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
         timeout = settings.market_data.candles_ready_timeout
         historical_data = await asyncio.wait_for(

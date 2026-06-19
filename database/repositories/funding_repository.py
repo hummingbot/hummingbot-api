@@ -1,8 +1,7 @@
-from datetime import datetime
-from typing import Dict, List, Optional
 from decimal import Decimal
+from typing import Dict, List
 
-from sqlalchemy import desc, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import FundingPayment

@@ -13,6 +13,8 @@ from sqlalchemy.orm import sessionmaker
 
 class HummingbotDatabase:
     def __init__(self, db_path: str):
+        if not os.path.isfile(db_path):
+            raise FileNotFoundError(f"Database file '{db_path}' not found")
         self.db_name = os.path.basename(db_path)
         self.db_path = db_path
         self.db_path = f'sqlite:///{os.path.join(db_path)}'

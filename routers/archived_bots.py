@@ -13,6 +13,20 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Archived Bots"], prefix="/archived-bots")
 
 
+def _validate_db_path(db_path: str) -> str:
+    """
+    Resolve db_path and ensure it points to a database file inside the archived bots directory.
+
+    Raises HTTPException 400 for paths escaping the archived directory and 404 for missing files.
+    """
+    try:
+        return fs_util.get_archived_db_path(db_path)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
 @router.get("/", response_model=List[str])
 async def list_databases():
     """
@@ -79,8 +93,9 @@ async def get_database_status(db_path: str):
     Returns:
         Database status including table health
     """
+    resolved_db_path = _validate_db_path(db_path)
     try:
-        db = HummingbotDatabase(db_path)
+        db = HummingbotDatabase(resolved_db_path)
         return {
             "db_path": db_path,
             "status": db.status,
@@ -101,8 +116,9 @@ async def get_database_summary(db_path: str):
     Returns:
         Summary statistics of the database contents
     """
+    resolved_db_path = _validate_db_path(db_path)
     try:
-        db = HummingbotDatabase(db_path)
+        db = HummingbotDatabase(resolved_db_path)
 
         # Get basic counts
         orders = db.get_orders()
@@ -136,8 +152,9 @@ async def get_database_performance(db_path: str):
     Returns:
         Trade-based performance metrics with rolling calculations
     """
+    resolved_db_path = _validate_db_path(db_path)
     try:
-        db = HummingbotDatabase(db_path)
+        db = HummingbotDatabase(resolved_db_path)
 
         # Use new trade-based performance calculation
         performance_data = db.calculate_trade_based_performance()
@@ -194,8 +211,9 @@ async def get_database_trades(
     Returns:
         List of trades with pagination info
     """
+    resolved_db_path = _validate_db_path(db_path)
     try:
-        db = HummingbotDatabase(db_path)
+        db = HummingbotDatabase(resolved_db_path)
         trades = db.get_trade_fills()
 
         # Apply pagination
@@ -235,8 +253,9 @@ async def get_database_orders(
     Returns:
         List of orders with pagination info
     """
+    resolved_db_path = _validate_db_path(db_path)
     try:
-        db = HummingbotDatabase(db_path)
+        db = HummingbotDatabase(resolved_db_path)
         orders = db.get_orders()
 
         # Apply status filter if provided
@@ -272,8 +291,9 @@ async def get_database_executors(db_path: str):
     Returns:
         List of executors with their configurations and results
     """
+    resolved_db_path = _validate_db_path(db_path)
     try:
-        db = HummingbotDatabase(db_path)
+        db = HummingbotDatabase(resolved_db_path)
         executors = db.get_executors_data()
 
         return {
@@ -302,8 +322,9 @@ async def get_database_positions(
     Returns:
         List of positions with pagination info
     """
+    resolved_db_path = _validate_db_path(db_path)
     try:
-        db = HummingbotDatabase(db_path)
+        db = HummingbotDatabase(resolved_db_path)
         positions = db.get_positions()
 
         # Apply pagination
@@ -335,8 +356,9 @@ async def get_database_controllers(db_path: str):
     Returns:
         List of controllers that were running with their configurations
     """
+    resolved_db_path = _validate_db_path(db_path)
     try:
-        db = HummingbotDatabase(db_path)
+        db = HummingbotDatabase(resolved_db_path)
         controllers = db.get_controllers_data()
 
         return {

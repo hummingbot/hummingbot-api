@@ -5,11 +5,11 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
+from fastapi import WebSocket
+from fastapi.websockets import WebSocketDisconnect
 from hummingbot.core.event.event_forwarder import SourceInfoEventForwarder
 from hummingbot.core.event.events import OrderBookEvent, OrderBookTradeEvent
 from hummingbot.data_feed.candles_feed.data_types import CandlesConfig
-from fastapi import WebSocket
-from fastapi.websockets import WebSocketDisconnect
 
 from config import settings
 from services.market_data_service import MarketDataService
@@ -101,17 +101,8 @@ class WebSocketManager:
         if sub_id in subs:
             self._cleanup_subscription(subs.pop(sub_id))
 
-        # Validate trading pair exists before starting feed
-        try:
-            if sub_type == "candles":
-                await self._market_data_service.validate_trading_pair(
-                    connector, trading_pair, sub.interval or "1m"
-                )
-        except ValueError as e:
-            await self._send_error(websocket, str(e))
-            return
-
-        # Start the feed / ensure it exists
+        # Start the feed / ensure it exists. For candles, creating the feed also validates
+        # the trading pair on first use (cache hit afterwards); an invalid pair raises ValueError.
         try:
             if sub_type == "candles":
                 config = CandlesConfig(
@@ -120,10 +111,13 @@ class WebSocketManager:
                     interval=sub.interval,
                     max_records=sub.max_records,
                 )
-                self._market_data_service.get_candles_feed(config)
+                await self._market_data_service.get_candles_feed(config)
             else:
                 # Both order_book and trades need the order book initialized
                 await self._market_data_service.initialize_order_book(connector, trading_pair)
+        except ValueError as e:
+            await self._send_error(websocket, str(e))
+            return
         except Exception as e:
             await self._send_error(websocket, f"Failed to start feed: {e}")
             return
@@ -189,7 +183,7 @@ class WebSocketManager:
             while True:
                 await asyncio.sleep(sub.update_interval)
                 try:
-                    feed = self._market_data_service.get_candles_feed(config)
+                    feed = await self._market_data_service.get_candles_feed(config)
                     if not feed.ready:
                         continue
                     df = feed.candles_df

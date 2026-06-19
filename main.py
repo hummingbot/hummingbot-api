@@ -38,7 +38,7 @@ from hummingbot.client.config.config_crypt import ETHKeyFileSecretManger  # noqa
 from hummingbot.core.gateway.gateway_http_client import GatewayHttpClient  # noqa: E402
 from hummingbot.core.rate_oracle.rate_oracle import RATE_ORACLE_SOURCES, RateOracle  # noqa: E402
 
-from config import settings  # noqa: E402
+from config import settings, warn_if_insecure_security_defaults  # noqa: E402
 from database import AsyncDatabaseManager  # noqa: E402
 from routers import (  # noqa: E402
     accounts,
@@ -69,6 +69,7 @@ from services.executor_service import ExecutorService  # noqa: E402
 from services.executor_ws_manager import ExecutorWebSocketManager  # noqa: E402
 from services.gateway_service import GatewayService  # noqa: E402
 from services.market_data_service import MarketDataService  # noqa: E402
+from services.trading_history_service import TradingHistoryService  # noqa: E402
 from services.trading_service import TradingService  # noqa: E402
 from services.unified_connector_service import UnifiedConnectorService  # noqa: E402
 from services.websocket_manager import WebSocketManager  # noqa: E402
@@ -87,7 +88,6 @@ logging.getLogger('services.mqtt_manager').setLevel(logging.INFO)
 # Get settings from Pydantic Settings
 username = settings.security.username
 password = settings.security.password
-debug_mode = settings.security.debug_mode
 
 # Security setup
 security = HTTPBasic()
@@ -99,6 +99,9 @@ async def lifespan(app: FastAPI):
     Lifespan context manager for the FastAPI application.
     Handles startup and shutdown events.
     """
+    # SEC-018: warn loudly if USERNAME/PASSWORD/CONFIG_PASSWORD are still the insecure defaults
+    warn_if_insecure_security_defaults(settings.security)
+
     # Ensure password verification file exists
     if BackendAPISecurity.new_password_required():
         # Create secrets manager with CONFIG_PASSWORD
@@ -200,14 +203,18 @@ async def lifespan(app: FastAPI):
 
     # AccountsService - account management, balances, portfolio (simplified)
     accounts_service = AccountsService(
+        db_manager=db_manager,
+        connector_service=connector_service,
+        market_data_service=market_data_service,
+        trading_service=trading_service,
         account_update_interval=settings.app.account_update_interval,
         gateway_url=settings.gateway.url
     )
-    # Inject services into AccountsService
-    accounts_service._connector_service = connector_service
-    accounts_service._market_data_service = market_data_service
-    accounts_service._trading_service = trading_service
     logging.info("AccountsService initialized")
+
+    # TradingHistoryService - read-only persistence queries for orders/trades/funding
+    trading_history_service = TradingHistoryService(db_manager=db_manager)
+    logging.info("TradingHistoryService initialized")
 
     # =========================================================================
     # 4. ExecutorService - depends on TradingService (NO circular dependency)
@@ -231,6 +238,7 @@ async def lifespan(app: FastAPI):
         broker_port=settings.broker.port,
         broker_username=settings.broker.username,
         broker_password=settings.broker.password,
+        db_manager=db_manager,
         performance_dump_interval=settings.broker.performance_dump_interval
     )
 
@@ -275,6 +283,7 @@ async def lifespan(app: FastAPI):
     app.state.market_data_service = market_data_service
     app.state.trading_service = trading_service
     app.state.accounts_service = accounts_service
+    app.state.trading_history_service = trading_history_service
     app.state.executor_service = executor_service
     websocket_manager = WebSocketManager(market_data_service)
     app.state.websocket_manager = websocket_manager
@@ -301,7 +310,7 @@ async def lifespan(app: FastAPI):
 
     websocket_manager.shutdown()
     await executor_ws_manager.shutdown()
-    bots_orchestrator.stop()
+    await bots_orchestrator.stop()
     await accounts_service.stop()
     await executor_service.stop()
     market_data_service.stop()
@@ -320,13 +329,16 @@ app = FastAPI(
     redirect_slashes=False,
 )
 
-# Add CORS middleware
+# Add CORS middleware (SEC-019). Origins are restricted by default: a wildcard origin must not be
+# combined with allow_credentials=True. Trusted origins are configured via CORS_ALLOW_ORIGINS /
+# CORS_ALLOW_ORIGIN_REGEX (see config.CORSSettings); the default only allows localhost origins.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Modify in production to specific origins
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=settings.cors.allow_origins,
+    allow_origin_regex=settings.cors.allow_origin_regex or None,
+    allow_credentials=settings.cors.allow_credentials,
+    allow_methods=settings.cors.allow_methods,
+    allow_headers=settings.cors.allow_headers,
 )
 
 
@@ -372,7 +384,7 @@ def auth_user(
     is_correct_password = secrets.compare_digest(
         current_password_bytes, correct_password_bytes
     )
-    if not (is_correct_username and is_correct_password) and not debug_mode:
+    if not (is_correct_username and is_correct_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",

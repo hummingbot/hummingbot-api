@@ -1,8 +1,8 @@
 import json
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, List, Optional
 
-from sqlalchemy import delete, desc, select, and_, or_, func
+from sqlalchemy import and_, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import BotRun
