@@ -1,4 +1,4 @@
-.PHONY: setup run deploy stop install uninstall build install-pre-commit tailscale-status
+.PHONY: setup run deploy stop install uninstall build install-pre-commit tailscale-status reset
 
 SETUP_SENTINEL := .setup-complete
 
@@ -89,3 +89,27 @@ install-pre-commit:
 # Build Docker image
 build:
 	docker build -t hummingbot/hummingbot-api:latest .
+
+# Reset to near-origin state:
+#   - stops Docker containers (with volume wipe) and/or source uvicorn if running
+#   - removes .env and .setup-complete from the project root
+#   - removes all credential folders under bots/credentials/ except master_account
+#   - removes all .yml files under bots/credentials/master_account/
+reset:
+	@echo "[INFO] Checking for running hummingbot-api services..."
+	@if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'hummingbot-api'; then \
+		echo "[INFO] Docker containers running — stopping and wiping volumes..."; \
+		docker compose down -v; \
+	else \
+		echo "[INFO] No Docker containers running."; \
+	fi
+	@if pgrep -f "uvicorn main:app" >/dev/null 2>&1; then \
+		echo "[INFO] Source uvicorn process found — stopping..."; \
+		pkill -f "uvicorn main:app" || true; \
+	fi
+	@echo "[INFO] Removing .env and .setup-complete..."
+	rm -f .env $(SETUP_SENTINEL)
+	@echo "[INFO] Clearing credentials..."
+	@find bots/credentials -mindepth 1 -maxdepth 1 -type d ! -name master_account -exec rm -rf {} +
+	@find bots/credentials/master_account -name "*.yml" -delete
+	@echo "[INFO] Reset complete."
