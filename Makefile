@@ -112,4 +112,5 @@ reset:
 	@echo "[INFO] Clearing credentials..."
 	@find bots/credentials -mindepth 1 -maxdepth 1 -type d ! -name master_account -exec rm -rf {} +
 	@find bots/credentials/master_account -name "*.yml" -delete
+	@rm -f bots/credentials/master_account/.password_verification
 	@echo "[INFO] Reset complete."
