@@ -78,15 +78,12 @@ from .executors import (
 from .gateway import (
     AddPoolRequest,
     AddTokenRequest,
-    CreateWalletRequest,
     GatewayBalanceRequest,
     GatewayConfig,
     GatewayStatus,
     GatewayWalletCredential,
     GatewayWalletInfo,
-    SendTransactionRequest,
     SetDefaultWalletRequest,
-    ShowPrivateKeyRequest,
     UpdateApiKeysRequest,
 )
 
@@ -282,9 +279,6 @@ __all__ = [
     # Gateway models
     "GatewayConfig",
     "GatewayStatus",
-    "CreateWalletRequest",
-    "ShowPrivateKeyRequest",
-    "SendTransactionRequest",
     "SetDefaultWalletRequest",
     "GatewayWalletCredential",
     "GatewayWalletInfo",
