@@ -103,9 +103,9 @@ reset:
 	else \
 		echo "[INFO] No Docker containers running."; \
 	fi
-	@if pgrep -f "uvicorn main:app" >/dev/null 2>&1; then \
+	@if pgrep -f "uvicorn main[:]app" >/dev/null 2>&1; then \
 		echo "[INFO] Source uvicorn process found — stopping..."; \
-		pkill -f "uvicorn main:app" || true; \
+		pkill -f "uvicorn main[:]app" || true; \
 	fi
 	@echo "[INFO] Removing .env and .setup-complete..."
 	rm -f .env $(SETUP_SENTINEL)
