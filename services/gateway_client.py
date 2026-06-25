@@ -1,6 +1,6 @@
 import logging
 import ssl
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import aiohttp
 
@@ -13,16 +13,24 @@ class GatewayClient:
     Provides essential functionality for wallet management and balance queries.
     """
 
-    def __init__(self, base_url: str = "http://localhost:15888", ssl_context: Optional[ssl.SSLContext] = None):
+    def __init__(
+        self,
+        base_url: str = "http://localhost:15888",
+        ssl_context_factory: Optional[Callable[[], ssl.SSLContext]] = None,
+    ):
         """
         Args:
-            base_url: Gateway base URL. Use an ``https://`` scheme together with ``ssl_context``
-                to talk to a secured (mTLS) Gateway (SEC-048).
-            ssl_context: Client SSLContext presenting the shared client cert. Required for
-                ``https://`` URLs; ignored for plain ``http://``.
+            base_url: Gateway base URL. Use an ``https://`` scheme together with
+                ``ssl_context_factory`` to talk to a secured (mTLS) Gateway (SEC-048).
+            ssl_context_factory: Zero-arg callable returning a client SSLContext presenting the
+                shared client cert. Called lazily (and cached) on the first ``https`` request, so
+                certs generated *after* the API started — e.g. once the Gateway is started — are
+                picked up without an API restart. Ignored for plain ``http://``.
         """
         self.base_url = base_url
-        self._ssl_context = ssl_context
+        self._ssl_context_factory = ssl_context_factory
+        self._ssl_context: Optional[ssl.SSLContext] = None
+        self._is_https = base_url.lower().startswith("https://")
         self._session: Optional[aiohttp.ClientSession] = None
 
     @staticmethod
@@ -52,11 +60,24 @@ class GatewayClient:
             raise ValueError(f"No valid wallet configured for chain '{chain}' (found placeholder: {default_wallet})")
         return default_wallet
 
+    def _get_ssl_context(self) -> Optional[ssl.SSLContext]:
+        """Lazily build and cache the client SSLContext for https Gateways.
+
+        Deferred so certs created after startup (once the Gateway is started) are picked up.
+        Raises FileNotFoundError (from the factory) while the cert set is still absent.
+        """
+        if not self._is_https or self._ssl_context_factory is None:
+            return None
+        if self._ssl_context is None:
+            self._ssl_context = self._ssl_context_factory()
+        return self._ssl_context
+
     async def _get_session(self) -> aiohttp.ClientSession:
         """Get or create aiohttp session"""
         if self._session is None or self._session.closed:
-            if self._ssl_context is not None:
-                connector = aiohttp.TCPConnector(ssl=self._ssl_context)
+            ssl_context = self._get_ssl_context()
+            if ssl_context is not None:
+                connector = aiohttp.TCPConnector(ssl=ssl_context)
                 self._session = aiohttp.ClientSession(connector=connector)
             else:
                 self._session = aiohttp.ClientSession()
@@ -69,8 +90,15 @@ class GatewayClient:
 
     async def _request(self, method: str, path: str, params: Dict = None, json: Dict = None) -> Optional[Dict]:
         """Make HTTP request to Gateway"""
-        session = await self._get_session()
         url = f"{self.base_url}/{path}"
+
+        try:
+            session = await self._get_session()
+        except FileNotFoundError as e:
+            # https Gateway selected but the shared certs aren't available yet (Gateway not
+            # started). Return a clean error instead of crashing the caller.
+            logger.warning(f"Gateway mTLS certs unavailable, cannot reach {url}: {e}")
+            return {"error": "Gateway client certificates not available; start the Gateway first", "status": 503}
 
         try:
             if method == "GET":
