@@ -29,18 +29,32 @@ SERVER_CERT_FILES = (
 # Subset a *client* needs to trust the server and present its own cert.
 CLIENT_CERT_FILES = ("ca_cert.pem", "client_cert.pem", "client_key.pem")
 
-GATEWAY_DIR = "gateway-files"
+# The shared Gateway dir lives UNDER bots/ so it is inside the one host<->container bind mount
+# (docker-compose maps ./bots:/hummingbot-api/bots). Files placed anywhere else are written to
+# the API container's ephemeral filesystem and never reach the Gateway/instance containers.
+GATEWAY_SUBPATH = os.path.join("bots", "gateway-files")
 CERTS_SUBDIR = "certs"
 
 
-def _bots_path() -> str:
-    # Mirrors GatewayService/DockerService: BOTS_PATH (host path) when containerized.
+def _local_base() -> str:
+    """Base path the API *process* reads/writes (container-local; the mounted bots/ dir)."""
+    return os.getcwd()
+
+
+def _host_base() -> str:
+    """Base path for Docker bind-mount SOURCES (the host path, BOTS_PATH when containerized)."""
     return os.environ.get("BOTS_PATH", os.getcwd())
 
 
-def gateway_certs_dir() -> str:
-    """Canonical host directory holding the shared mTLS cert set."""
-    return os.path.join(_bots_path(), GATEWAY_DIR, CERTS_SUBDIR)
+def gateway_certs_dir(host: bool = False) -> str:
+    """Directory holding the shared mTLS cert set.
+
+    ``host=False`` (default) returns the path the API process reads/writes; ``host=True``
+    returns the host path to use as a Docker bind-mount source. The two are identical when not
+    containerized and resolve to the same files (under the shared bots/ mount) when they are.
+    """
+    base = _host_base() if host else _local_base()
+    return os.path.join(base, GATEWAY_SUBPATH, CERTS_SUBDIR)
 
 
 def certs_present(certs_dir: Optional[str] = None) -> bool:

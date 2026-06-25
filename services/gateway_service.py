@@ -23,7 +23,10 @@ class GatewayService:
     """
 
     GATEWAY_CONTAINER_NAME = "gateway"
-    GATEWAY_DIR = "gateway-files"
+    # Shared Gateway dir lives UNDER bots/ so it sits inside the single host<->container bind
+    # mount (./bots:/hummingbot-api/bots). Anything written outside that mount by a containerized
+    # API lands on the container's ephemeral FS and never reaches the Gateway container.
+    GATEWAY_SUBPATH = os.path.join("bots", "gateway-files")
     # Path inside the Gateway container where it reads the mTLS cert set.
     GATEWAY_CERTS_BIND = "/home/gateway/certs"
 
@@ -37,10 +40,19 @@ class GatewayService:
             logger.error(f"Failed to connect to Docker. Error: {e}")
             raise
 
+    def _gateway_base(self, host: bool = False) -> str:
+        """Gateway-files base. host=False is the path the API process reads/writes
+        (container-local); host=True is the host path used as a Docker bind-mount source."""
+        base = self.BOTS_PATH if host else self.SOURCE_PATH
+        return os.path.join(base, self.GATEWAY_SUBPATH)
+
     def _ensure_gateway_directories(self):
-        """Create necessary directories for Gateway if they don't exist"""
-        # Gateway files are at root level, same as bots directory
-        gateway_base = os.path.join(self.BOTS_PATH, self.GATEWAY_DIR)
+        """Create necessary directories for Gateway if they don't exist.
+
+        Directories are created on the path the API process can actually write (container-local,
+        inside the mounted bots/ dir); the matching host paths are used for the bind mounts.
+        """
+        gateway_base = self._gateway_base(host=False)
 
         conf_dir = os.path.join(gateway_base, "conf")
         logs_dir = os.path.join(gateway_base, "logs")
@@ -129,10 +141,12 @@ class GatewayService:
         passphrase = config.passphrase or settings.security.config_password
         secured = not config.dev_mode
 
-        # Set up volumes - use BOTS_PATH which contains the HOST path
+        # Set up volumes - bind-mount SOURCES must be HOST paths (the Docker daemon runs on the
+        # host), so use the host-side base even though the API process wrote via the local base.
+        host_base = self._gateway_base(host=True)
         volumes = {
-            os.path.join(self.BOTS_PATH, self.GATEWAY_DIR, "conf"): {'bind': '/home/gateway/conf', 'mode': 'rw'},
-            os.path.join(self.BOTS_PATH, self.GATEWAY_DIR, "logs"): {'bind': '/home/gateway/logs', 'mode': 'rw'},
+            os.path.join(host_base, "conf"): {'bind': '/home/gateway/conf', 'mode': 'rw'},
+            os.path.join(host_base, "logs"): {'bind': '/home/gateway/logs', 'mode': 'rw'},
         }
 
         # Set up environment variables
@@ -143,10 +157,11 @@ class GatewayService:
 
         if secured:
             # SEC-048: run the Gateway with TLS + client-cert auth. Generate the shared mTLS
-            # cert set once (idempotent; existing CA reused) and mount it read-only so the
-            # Gateway decrypts its server key with the same passphrase.
+            # cert set once (idempotent; existing CA reused) into the local-base dir, and mount
+            # the matching host path read-only so the Gateway decrypts its server key with the
+            # same passphrase.
             ensure_gateway_certs(passphrase, dirs["certs"])
-            volumes[dirs["certs"]] = {'bind': self.GATEWAY_CERTS_BIND, 'mode': 'ro'}
+            volumes[os.path.join(host_base, "certs")] = {'bind': self.GATEWAY_CERTS_BIND, 'mode': 'ro'}
             logger.info("Starting Gateway in secured mode (TLS + mTLS, DEV=false)")
         else:
             logger.warning(
@@ -313,7 +328,7 @@ class GatewayService:
         if container is None:
             if remove_data:
                 # No container, but try to remove data if requested
-                gateway_dir = os.path.join(self.SOURCE_PATH, self.GATEWAY_DIR)
+                gateway_dir = self._gateway_base(host=False)
                 if os.path.exists(gateway_dir):
                     try:
                         shutil.rmtree(gateway_dir)
@@ -340,7 +355,7 @@ class GatewayService:
 
             # Remove data if requested
             if remove_data:
-                gateway_dir = os.path.join(self.SOURCE_PATH, self.GATEWAY_DIR)
+                gateway_dir = self._gateway_base(host=False)
                 if os.path.exists(gateway_dir):
                     shutil.rmtree(gateway_dir)
                     logger.info(f"Removed Gateway data directory: {gateway_dir}")

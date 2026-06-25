@@ -12,7 +12,7 @@ from docker.types import LogConfig
 from config import settings
 from models import V2ControllerDeployment
 from utils.file_system import fs_util
-from utils.gateway_certs import ensure_gateway_certs
+from utils.gateway_certs import ensure_gateway_certs, gateway_certs_dir
 
 # Create module-specific logger
 logger = logging.getLogger(__name__)
@@ -252,9 +252,12 @@ class DockerService:
         # cert set. Cert keys are decrypted inside the container with CONFIG_PASSWORD, so this
         # is only enabled when a config password is set. Generation is idempotent: the instance
         # reuses (or seeds) the same CA the Gateway uses.
-        gateway_certs_dir = None
+        gateway_certs_host_dir = None
         if settings.security.config_password:
-            gateway_certs_dir = ensure_gateway_certs(settings.security.config_password)
+            # Generate/locate the shared cert set (written to the local-base dir) and resolve the
+            # matching HOST path for the bind-mount source.
+            ensure_gateway_certs(settings.security.config_password)
+            gateway_certs_host_dir = gateway_certs_dir(host=True)
             gateway_section = client_config.get('gateway') or {}
             gateway_section['gateway_use_ssl'] = True
             client_config['gateway'] = gateway_section
@@ -284,8 +287,8 @@ class DockerService:
 
         # SEC-048: mount the shared mTLS certs read-only where hummingbot reads them
         # (root_path()/certs == /home/hummingbot/certs inside the instance container).
-        if gateway_certs_dir:
-            volumes[gateway_certs_dir] = {'bind': '/home/hummingbot/certs', 'mode': 'ro'}
+        if gateway_certs_host_dir:
+            volumes[gateway_certs_host_dir] = {'bind': '/home/hummingbot/certs', 'mode': 'ro'}
 
         # Set up environment variables
         environment = {}
