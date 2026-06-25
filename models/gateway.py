@@ -8,13 +8,14 @@ from pydantic import BaseModel, Field
 
 
 class GatewayConfig(BaseModel):
-    """Configuration for Gateway container deployment"""
-    passphrase: Optional[str] = Field(
-        default=None,
-        description="Gateway passphrase for config encryption and mTLS cert keys. "
-                    "Defaults to the API's CONFIG_PASSWORD so a single secret secures "
-                    "the Gateway, this API, and deployed instances (SEC-048)."
-    )
+    """Configuration for Gateway container deployment.
+
+    Note: there is intentionally no ``passphrase`` field. The Gateway (v2.x) uses a single
+    ``GATEWAY_PASSPHRASE`` for *both* TLS cert-key decryption and wallet encryption, and the
+    shared mTLS cert set must be decryptable by this API's clients — which decrypt the client
+    cert with ``CONFIG_PASSWORD``. The passphrase is therefore always ``CONFIG_PASSWORD``; a
+    separate value would only break the API<->Gateway mTLS chain (SEC-048).
+    """
     image: str = Field(default="hummingbot/gateway:latest", description="Docker image for Gateway")
     port: int = Field(default=15888, description="Port for Gateway API")
     dev_mode: bool = Field(

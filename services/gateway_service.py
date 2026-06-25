@@ -135,10 +135,12 @@ class GatewayService:
         # Ensure directories exist
         dirs = self._ensure_gateway_directories()
 
-        # SEC-048: a single secret (CONFIG_PASSWORD) secures the Gateway, this API, and
-        # deployed instances. The per-request passphrase is honoured if provided, but for
-        # mTLS to work end-to-end it must match the secret the clients/instances decrypt with.
-        passphrase = config.passphrase or settings.security.config_password
+        # SEC-048: a single secret (CONFIG_PASSWORD) secures the Gateway, this API, and deployed
+        # instances. The Gateway uses GATEWAY_PASSPHRASE for both TLS and wallet encryption, and
+        # the shared mTLS certs must be decryptable by this API's clients (which use
+        # CONFIG_PASSWORD) — so the passphrase is always CONFIG_PASSWORD; a different value would
+        # break the mTLS chain. There is deliberately no per-request override.
+        passphrase = settings.security.config_password
         secured = not config.dev_mode
 
         # Set up volumes - bind-mount SOURCES must be HOST paths (the Docker daemon runs on the
