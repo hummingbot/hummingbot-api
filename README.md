@@ -122,13 +122,13 @@ Gateway enables decentralized exchange trading. Start it via MCP:
 
 Or via API at http://localhost:8000/docs using the Gateway endpoints (`POST /gateway/start` with an empty body).
 
-Gateway starts **secured by default**: it runs with TLS + mutual-cert (mTLS) authentication and the
-required certificates are auto-generated on first start under `bots/gateway-files/certs/` — no
-passphrase prompt and no manual cert step. The single secret protecting the Gateway (TLS + wallet
-encryption) is your `CONFIG_PASSWORD`. Once running, Gateway is available at https://localhost:15888.
+Gateway always runs **secured**: it serves TLS + mutual-cert (mTLS) authentication and the required
+certificates are auto-generated on first start under `bots/gateway-files/certs/` — no passphrase
+prompt and no manual cert step. The single secret protecting the Gateway (TLS + wallet encryption)
+is your `CONFIG_PASSWORD`. Once running, Gateway is available at https://localhost:15888.
 
-> Development mode (plain HTTP, no TLS, loopback only) is available as an explicit opt-in for local
-> debugging by passing `{"dev_mode": true}` to `POST /gateway/start` — do not use it with funded wallets.
+> There is no development/insecure mode: a Gateway holding wallet keys must never be served over
+> plain HTTP, so the API only ever runs it with mTLS.
 
 ## Configuration
 

@@ -10,19 +10,17 @@ from pydantic import BaseModel, Field
 class GatewayConfig(BaseModel):
     """Configuration for Gateway container deployment.
 
-    Note: there is intentionally no ``passphrase`` field. The Gateway (v2.x) uses a single
-    ``GATEWAY_PASSPHRASE`` for *both* TLS cert-key decryption and wallet encryption, and the
-    shared mTLS cert set must be decryptable by this API's clients — which decrypt the client
-    cert with ``CONFIG_PASSWORD``. The passphrase is therefore always ``CONFIG_PASSWORD``; a
-    separate value would only break the API<->Gateway mTLS chain (SEC-048).
+    The Gateway always runs secured (TLS + mTLS); there is intentionally no ``dev_mode`` and no
+    ``passphrase`` field (SEC-048):
+    - A Gateway that holds wallet keys must never be served over plain HTTP, so the API does not
+      support a dev/insecure mode.
+    - The Gateway (v2.x) uses a single ``GATEWAY_PASSPHRASE`` for *both* TLS cert-key decryption
+      and wallet encryption, and the shared mTLS cert set must be decryptable by this API's
+      clients (which use ``CONFIG_PASSWORD``). The passphrase is therefore always
+      ``CONFIG_PASSWORD``; a separate value would only break the API<->Gateway mTLS chain.
     """
     image: str = Field(default="hummingbot/gateway:latest", description="Docker image for Gateway")
     port: int = Field(default=15888, description="Port for Gateway API")
-    dev_mode: bool = Field(
-        default=False,
-        description="Opt-in escape hatch: plain HTTP, no mTLS, bound to loopback only. "
-                    "Defaults to False so the Gateway runs secured with TLS + client-cert auth."
-    )
 
 
 class GatewayStatus(BaseModel):

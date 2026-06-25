@@ -129,9 +129,8 @@ class GatewaySettings(BaseSettings):
 
     url: str = Field(
         default="https://localhost:15888",
-        description="Gateway service URL. Defaults to https for the secured (mTLS) Gateway "
-                    "(SEC-048); use 'https://gateway:15888' when running in Docker. Set an "
-                    "'http://' scheme only when the Gateway is started in dev_mode."
+        description="Gateway service URL. The Gateway always runs secured (mTLS), so this must use "
+                    "the 'https' scheme (SEC-048); use 'https://gateway:15888' when running in Docker."
     )
 
     model_config = SettingsConfigDict(env_prefix="GATEWAY_", extra="ignore")

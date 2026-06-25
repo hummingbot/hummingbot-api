@@ -135,13 +135,13 @@ class GatewayService:
         # Ensure directories exist
         dirs = self._ensure_gateway_directories()
 
-        # SEC-048: a single secret (CONFIG_PASSWORD) secures the Gateway, this API, and deployed
-        # instances. The Gateway uses GATEWAY_PASSPHRASE for both TLS and wallet encryption, and
-        # the shared mTLS certs must be decryptable by this API's clients (which use
-        # CONFIG_PASSWORD) — so the passphrase is always CONFIG_PASSWORD; a different value would
-        # break the mTLS chain. There is deliberately no per-request override.
+        # SEC-048: the API only ever runs the Gateway secured (TLS + mTLS). There is no dev-mode
+        # escape hatch — a Gateway holding wallet keys must never be served over plain HTTP.
+        # A single secret (CONFIG_PASSWORD) secures the Gateway, this API, and deployed instances:
+        # the Gateway uses GATEWAY_PASSPHRASE for both TLS and wallet encryption, and the shared
+        # mTLS certs must be decryptable by this API's clients (which use CONFIG_PASSWORD), so the
+        # passphrase is always CONFIG_PASSWORD.
         passphrase = settings.security.config_password
-        secured = not config.dev_mode
 
         # Set up volumes - bind-mount SOURCES must be HOST paths (the Docker daemon runs on the
         # host), so use the host-side base even though the API process wrote via the local base.
@@ -151,25 +151,16 @@ class GatewayService:
             os.path.join(host_base, "logs"): {'bind': '/home/gateway/logs', 'mode': 'rw'},
         }
 
-        # Set up environment variables
+        # Run the Gateway with TLS + client-cert auth (DEV=false). Generate the shared mTLS cert
+        # set once (idempotent; existing CA reused) into the local-base dir, and mount the matching
+        # host path read-only so the Gateway decrypts its server key with the same passphrase.
+        ensure_gateway_certs(passphrase, dirs["certs"])
+        volumes[os.path.join(host_base, "certs")] = {'bind': self.GATEWAY_CERTS_BIND, 'mode': 'ro'}
         environment = {
             "GATEWAY_PASSPHRASE": passphrase,
-            "DEV": str(config.dev_mode).lower(),
+            "DEV": "false",
         }
-
-        if secured:
-            # SEC-048: run the Gateway with TLS + client-cert auth. Generate the shared mTLS
-            # cert set once (idempotent; existing CA reused) into the local-base dir, and mount
-            # the matching host path read-only so the Gateway decrypts its server key with the
-            # same passphrase.
-            ensure_gateway_certs(passphrase, dirs["certs"])
-            volumes[os.path.join(host_base, "certs")] = {'bind': self.GATEWAY_CERTS_BIND, 'mode': 'ro'}
-            logger.info("Starting Gateway in secured mode (TLS + mTLS, DEV=false)")
-        else:
-            logger.warning(
-                "Starting Gateway in dev_mode: plain HTTP with NO TLS and NO client-cert auth. "
-                "Bound to loopback only; do not use with funded wallets exposed to a network."
-            )
+        logger.info("Starting Gateway in secured mode (TLS + mTLS, DEV=false)")
 
         # Configure logging
         log_config = LogConfig(
