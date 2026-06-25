@@ -115,10 +115,17 @@ async def lifespan(app: FastAPI):
 
     # Initialize GatewayHttpClient singleton
     parsed_gateway_url = urlparse(settings.gateway.url)
+    gateway_use_ssl = parsed_gateway_url.scheme == "https"
+    if gateway_use_ssl:
+        # SEC-048: the in-process GatewayHttpClient reads its client certs only from
+        # root_path()/certs. Mirror the shared cert set there if the Gateway was already
+        # started in a previous run (no-op when certs haven't been generated yet).
+        from utils.gateway_certs import sync_client_certs_to_root
+        sync_client_certs_to_root()
     gateway_config = GatewayConfigMap(
         gateway_api_host=parsed_gateway_url.hostname or "localhost",
         gateway_api_port=str(parsed_gateway_url.port or 15888),
-        gateway_use_ssl=parsed_gateway_url.scheme == "https"
+        gateway_use_ssl=gateway_use_ssl
     )
     GatewayHttpClient.get_instance(gateway_config)
     logging.info(f"Initialized GatewayHttpClient with URL: {settings.gateway.url}")

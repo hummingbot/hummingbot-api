@@ -1,4 +1,5 @@
 import logging
+import ssl
 from typing import Any, Dict, List, Optional
 
 import aiohttp
@@ -12,8 +13,16 @@ class GatewayClient:
     Provides essential functionality for wallet management and balance queries.
     """
 
-    def __init__(self, base_url: str = "http://localhost:15888"):
+    def __init__(self, base_url: str = "http://localhost:15888", ssl_context: Optional[ssl.SSLContext] = None):
+        """
+        Args:
+            base_url: Gateway base URL. Use an ``https://`` scheme together with ``ssl_context``
+                to talk to a secured (mTLS) Gateway (SEC-048).
+            ssl_context: Client SSLContext presenting the shared client cert. Required for
+                ``https://`` URLs; ignored for plain ``http://``.
+        """
         self.base_url = base_url
+        self._ssl_context = ssl_context
         self._session: Optional[aiohttp.ClientSession] = None
 
     @staticmethod
@@ -46,7 +55,11 @@ class GatewayClient:
     async def _get_session(self) -> aiohttp.ClientSession:
         """Get or create aiohttp session"""
         if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession()
+            if self._ssl_context is not None:
+                connector = aiohttp.TCPConnector(ssl=self._ssl_context)
+                self._session = aiohttp.ClientSession(connector=connector)
+            else:
+                self._session = aiohttp.ClientSession()
         return self._session
 
     async def close(self):

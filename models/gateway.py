@@ -9,10 +9,19 @@ from pydantic import BaseModel, Field
 
 class GatewayConfig(BaseModel):
     """Configuration for Gateway container deployment"""
-    passphrase: str = Field(description="Gateway passphrase for configuration encryption")
+    passphrase: Optional[str] = Field(
+        default=None,
+        description="Gateway passphrase for config encryption and mTLS cert keys. "
+                    "Defaults to the API's CONFIG_PASSWORD so a single secret secures "
+                    "the Gateway, this API, and deployed instances (SEC-048)."
+    )
     image: str = Field(default="hummingbot/gateway:latest", description="Docker image for Gateway")
     port: int = Field(default=15888, description="Port for Gateway API")
-    dev_mode: bool = Field(default=True, description="Enable development mode")
+    dev_mode: bool = Field(
+        default=False,
+        description="Opt-in escape hatch: plain HTTP, no mTLS, bound to loopback only. "
+                    "Defaults to False so the Gateway runs secured with TLS + client-cert auth."
+    )
 
 
 class GatewayStatus(BaseModel):

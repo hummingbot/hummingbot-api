@@ -8,7 +8,9 @@ import docker
 from docker.errors import DockerException
 from docker.types import LogConfig
 
+from config import settings
 from models.gateway import GatewayConfig, GatewayStatus
+from utils.gateway_certs import ensure_gateway_certs
 
 # Create module-specific logger
 logger = logging.getLogger(__name__)
@@ -22,6 +24,8 @@ class GatewayService:
 
     GATEWAY_CONTAINER_NAME = "gateway"
     GATEWAY_DIR = "gateway-files"
+    # Path inside the Gateway container where it reads the mTLS cert set.
+    GATEWAY_CERTS_BIND = "/home/gateway/certs"
 
     def __init__(self):
         self.SOURCE_PATH = os.getcwd()
@@ -40,14 +44,17 @@ class GatewayService:
 
         conf_dir = os.path.join(gateway_base, "conf")
         logs_dir = os.path.join(gateway_base, "logs")
+        certs_dir = os.path.join(gateway_base, "certs")
 
         os.makedirs(conf_dir, exist_ok=True)
         os.makedirs(logs_dir, exist_ok=True)
+        os.makedirs(certs_dir, exist_ok=True)
 
         return {
             "base": gateway_base,
             "conf": conf_dir,
-            "logs": logs_dir
+            "logs": logs_dir,
+            "certs": certs_dir,
         }
 
     def _get_gateway_container(self) -> Optional[docker.models.containers.Container]:
@@ -116,6 +123,12 @@ class GatewayService:
         # Ensure directories exist
         dirs = self._ensure_gateway_directories()
 
+        # SEC-048: a single secret (CONFIG_PASSWORD) secures the Gateway, this API, and
+        # deployed instances. The per-request passphrase is honoured if provided, but for
+        # mTLS to work end-to-end it must match the secret the clients/instances decrypt with.
+        passphrase = config.passphrase or settings.security.config_password
+        secured = not config.dev_mode
+
         # Set up volumes - use BOTS_PATH which contains the HOST path
         volumes = {
             os.path.join(self.BOTS_PATH, self.GATEWAY_DIR, "conf"): {'bind': '/home/gateway/conf', 'mode': 'rw'},
@@ -124,9 +137,22 @@ class GatewayService:
 
         # Set up environment variables
         environment = {
-            "GATEWAY_PASSPHRASE": config.passphrase,
+            "GATEWAY_PASSPHRASE": passphrase,
             "DEV": str(config.dev_mode).lower(),
         }
+
+        if secured:
+            # SEC-048: run the Gateway with TLS + client-cert auth. Generate the shared mTLS
+            # cert set once (idempotent; existing CA reused) and mount it read-only so the
+            # Gateway decrypts its server key with the same passphrase.
+            ensure_gateway_certs(passphrase, dirs["certs"])
+            volumes[dirs["certs"]] = {'bind': self.GATEWAY_CERTS_BIND, 'mode': 'ro'}
+            logger.info("Starting Gateway in secured mode (TLS + mTLS, DEV=false)")
+        else:
+            logger.warning(
+                "Starting Gateway in dev_mode: plain HTTP with NO TLS and NO client-cert auth. "
+                "Bound to loopback only; do not use with funded wallets exposed to a network."
+            )
 
         # Configure logging
         log_config = LogConfig(
@@ -169,8 +195,12 @@ class GatewayService:
                 # Linux: Use host networking
                 container_config["network_mode"] = "host"
             else:
-                # macOS/Windows: Use bridge networking with port mapping
-                container_config["ports"] = {'15888/tcp': config.port}
+                # macOS/Windows: Use bridge networking with port mapping.
+                # SEC-048: bind the host publish to loopback so the socket is never offered on
+                # the public interface (container-to-container traffic still flows over the
+                # emqx-bridge network by container name). Host networking on Linux can't be
+                # loopback-scoped here; mTLS is the control there.
+                container_config["ports"] = {'15888/tcp': ('127.0.0.1', config.port)}
 
             container = self.client.containers.run(**container_config)
 
