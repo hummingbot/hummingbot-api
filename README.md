@@ -118,11 +118,17 @@ Restart Claude Desktop after adding.
 
 Gateway enables decentralized exchange trading. Start it via MCP:
 
-> "Start Gateway in development mode with passphrase 'admin'"
+> "Start Gateway"
 
-Or via API at http://localhost:8000/docs using the Gateway endpoints.
+Or via API at http://localhost:8000/docs using the Gateway endpoints (`POST /gateway/start` with an empty body).
 
-Once running, Gateway is available at http://localhost:15888
+Gateway always runs **secured**: it serves TLS + mutual-cert (mTLS) authentication and the required
+certificates are auto-generated on first start under `bots/gateway-files/certs/` — no passphrase
+prompt and no manual cert step. The single secret protecting the Gateway (TLS + wallet encryption)
+is your `CONFIG_PASSWORD`. Once running, Gateway is available at https://localhost:15888.
+
+> There is no development/insecure mode: a Gateway holding wallet keys must never be served over
+> plain HTTP, so the API only ever runs it with mTLS.
 
 ## Configuration
 

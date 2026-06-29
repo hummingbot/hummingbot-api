@@ -17,6 +17,7 @@ from services.gateway_wallet_service import GatewayWalletService, balance_entry
 from services.perpetual_trading_service import PerpetualTradingService
 from services.portfolio_analytics_service import PortfolioAnalyticsService
 from utils.file_system import fs_util
+from utils.gateway_certs import build_client_ssl_context
 
 # Create module-specific logger
 logger = logging.getLogger(__name__)
@@ -109,9 +110,15 @@ class AccountsService:
         self._market_data_service = market_data_service  # MarketDataService
         self._trading_service = trading_service  # TradingService
 
-        # Initialize Gateway client
+        # Initialize Gateway client. For a secured (https) Gateway, present the shared client
+        # cert over mTLS; certs are decrypted with CONFIG_PASSWORD (SEC-048). The SSL context is
+        # built lazily so certs generated once the Gateway is started are picked up without an
+        # API restart.
         self.gateway_base_url = gateway_url
-        self.gateway_client = GatewayClient(gateway_url)
+        ssl_context_factory = None
+        if gateway_url.lower().startswith("https://"):
+            ssl_context_factory = lambda: build_client_ssl_context(settings.security.config_password)  # noqa: E731
+        self.gateway_client = GatewayClient(gateway_url, ssl_context_factory=ssl_context_factory)
 
         # Composed services: gateway wallet CRUD/balances, perpetual trading and pure portfolio analytics
         self.gateway_wallet_service = GatewayWalletService(self.gateway_client)

@@ -115,10 +115,17 @@ async def lifespan(app: FastAPI):
 
     # Initialize GatewayHttpClient singleton
     parsed_gateway_url = urlparse(settings.gateway.url)
+    gateway_use_ssl = parsed_gateway_url.scheme == "https"
+    if gateway_use_ssl:
+        # SEC-048: the in-process GatewayHttpClient reads its client certs only from
+        # root_path()/certs. Mirror the shared cert set there if the Gateway was already
+        # started in a previous run (no-op when certs haven't been generated yet).
+        from utils.gateway_certs import sync_client_certs_to_root
+        sync_client_certs_to_root()
     gateway_config = GatewayConfigMap(
         gateway_api_host=parsed_gateway_url.hostname or "localhost",
         gateway_api_port=str(parsed_gateway_url.port or 15888),
-        gateway_use_ssl=parsed_gateway_url.scheme == "https"
+        gateway_use_ssl=gateway_use_ssl
     )
     GatewayHttpClient.get_instance(gateway_config)
     logging.info(f"Initialized GatewayHttpClient with URL: {settings.gateway.url}")
@@ -245,6 +252,17 @@ async def lifespan(app: FastAPI):
     backtesting_service = BacktestingService()
     docker_service = DockerService()
     gateway_service = GatewayService()
+    # If a secured Gateway is already running but this API lost the shared mTLS certs (e.g. the
+    # API container was recreated without the persisted bots/ mount), regenerate the cert set and
+    # restart the Gateway so it loads a matching server cert. Non-fatal: the API must still boot
+    # even when Docker is unavailable or the Gateway is simply not running.
+    if gateway_use_ssl:
+        try:
+            reconcile = gateway_service.reconcile_certs()
+            if reconcile.get("action") != "none":
+                logging.info(f"Gateway cert reconciliation: {reconcile.get('message')}")
+        except Exception as e:
+            logging.warning(f"Gateway cert reconciliation skipped: {e}")
     bot_archiver = BotArchiver(
         settings.aws.api_key,
         settings.aws.secret_key,
