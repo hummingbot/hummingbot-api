@@ -10,7 +10,7 @@ from docker.types import LogConfig
 
 from config import settings
 from models.gateway import GatewayConfig, GatewayStatus
-from utils.gateway_certs import ensure_gateway_certs
+from utils.gateway_certs import certs_present, ensure_gateway_certs, gateway_certs_dir
 
 # Create module-specific logger
 logger = logging.getLogger(__name__)
@@ -298,6 +298,48 @@ class GatewayService:
                 "success": False,
                 "message": f"Failed to start Gateway: {str(e)}"
             }
+
+    def reconcile_certs(self) -> Dict[str, Any]:
+        """Make a running Gateway usable by this API's mTLS client.
+
+        "Was the Gateway started with this API?" reduces to: does the API hold the shared client
+        cert set? The set lives on the bots/ volume both containers share, so a running Gateway
+        with the certs absent on the API side was not started by (or is inconsistent with) this
+        API instance — every secured request would fail the mTLS handshake.
+
+        Decision matrix:
+        - container not running        -> nothing (start the Gateway to generate certs)
+        - running + certs present       -> nothing (already consistent)
+        - running + certs missing       -> regenerate the cert set and restart the Gateway so it
+                                           loads the server cert that matches our client cert
+
+        The restart is required: the Gateway reads its server cert/key only at startup, so writing
+        new certs to the shared volume has no effect on an already-running container.
+        """
+        container = self._get_gateway_container()
+        if container is None or container.status != "running":
+            return {
+                "success": True,
+                "action": "none",
+                "message": "Gateway container not running; start it to generate certs",
+            }
+
+        if certs_present(gateway_certs_dir()):
+            return {
+                "success": True,
+                "action": "none",
+                "message": "Gateway running and shared mTLS certs present",
+            }
+
+        logger.warning(
+            "Gateway container is running but the shared mTLS certs are missing on the API side; "
+            "regenerating the cert set and restarting the Gateway so it loads a matching server cert"
+        )
+        dirs = self._ensure_gateway_directories()
+        ensure_gateway_certs(settings.security.config_password, dirs["certs"])
+        result = self.restart()
+        result["action"] = "regenerated_and_restarted"
+        return result
 
     def stop(self) -> Dict[str, Any]:
         """Stop the Gateway container"""

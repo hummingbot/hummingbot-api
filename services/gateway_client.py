@@ -32,6 +32,10 @@ class GatewayClient:
         self._ssl_context: Optional[ssl.SSLContext] = None
         self._is_https = base_url.lower().startswith("https://")
         self._session: Optional[aiohttp.ClientSession] = None
+        # Guards the "certs unavailable" warning so background pollers don't spam it every cycle
+        # while the Gateway is simply not started. Logged once on the transition, then suppressed
+        # until certs become available again.
+        self._certs_unavailable_warned = False
 
     @staticmethod
     def parse_network_id(network_id: str) -> tuple[str, str]:
@@ -70,6 +74,8 @@ class GatewayClient:
             return None
         if self._ssl_context is None:
             self._ssl_context = self._ssl_context_factory()
+            # Certs are now available; allow a fresh warning if they ever disappear again.
+            self._certs_unavailable_warned = False
         return self._ssl_context
 
     async def _get_session(self) -> aiohttp.ClientSession:
@@ -96,8 +102,14 @@ class GatewayClient:
             session = await self._get_session()
         except FileNotFoundError as e:
             # https Gateway selected but the shared certs aren't available yet (Gateway not
-            # started). Return a clean error instead of crashing the caller.
-            logger.warning(f"Gateway mTLS certs unavailable, cannot reach {url}: {e}")
+            # started). Return a clean error instead of crashing the caller. Warn only once on
+            # the transition so background pollers don't spam the log every cycle while the
+            # Gateway stays unstarted (a normal, optional state).
+            if not self._certs_unavailable_warned:
+                logger.warning(f"Gateway mTLS certs unavailable, cannot reach {url}: {e}")
+                self._certs_unavailable_warned = True
+            else:
+                logger.debug(f"Gateway mTLS certs still unavailable, cannot reach {url}: {e}")
             return {"error": "Gateway client certificates not available; start the Gateway first", "status": 503}
 
         try:

@@ -252,6 +252,17 @@ async def lifespan(app: FastAPI):
     backtesting_service = BacktestingService()
     docker_service = DockerService()
     gateway_service = GatewayService()
+    # If a secured Gateway is already running but this API lost the shared mTLS certs (e.g. the
+    # API container was recreated without the persisted bots/ mount), regenerate the cert set and
+    # restart the Gateway so it loads a matching server cert. Non-fatal: the API must still boot
+    # even when Docker is unavailable or the Gateway is simply not running.
+    if gateway_use_ssl:
+        try:
+            reconcile = gateway_service.reconcile_certs()
+            if reconcile.get("action") != "none":
+                logging.info(f"Gateway cert reconciliation: {reconcile.get('message')}")
+        except Exception as e:
+            logging.warning(f"Gateway cert reconciliation skipped: {e}")
     bot_archiver = BotArchiver(
         settings.aws.api_key,
         settings.aws.secret_key,
