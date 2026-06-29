@@ -229,6 +229,37 @@ async def get_available_candle_connectors():
     return list(CandlesFactory._candles_map.keys())
 
 
+@router.get("/volumes/{connector_name}")
+async def get_24h_volumes(
+        connector_name: str,
+        market_data_manager: MarketDataService = Depends(get_market_data_service),
+):
+    """
+    Get 24h quote-denominated volume per trading pair for a connector, keyed by Hummingbot
+    trading pair (BASE-QUOTE). Intended for ranking/curating a trade-pair selector.
+
+    A value of 0.0 marks a listed-but-untraded market (e.g. Hyperliquid's permissionless
+    tokenized-equity spot pairs like AAPL-USDC), so clients can rank by volume and hide it.
+
+    Supported connectors: hyperliquid, hyperliquid_perpetual, binance, binance_perpetual,
+    okx, okx_perpetual.
+
+    Returns:
+        {"connector": str, "volumes": {trading_pair: quote_volume_24h}}
+
+    Raises:
+        HTTPException: 400 if the connector has no public 24h-volume source, 502 on fetch error.
+    """
+    try:
+        volumes = await market_data_manager.get_24h_volumes(connector_name)
+        return {"connector": connector_name, "volumes": volumes}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error fetching 24h volumes for {connector_name}: {e}", exc_info=True)
+        raise HTTPException(status_code=502, detail=f"Error fetching 24h volumes: {str(e)}")
+
+
 # Enhanced Market Data Endpoints
 
 @router.post("/prices", response_model=PricesResponse)
