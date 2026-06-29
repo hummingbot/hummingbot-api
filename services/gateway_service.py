@@ -79,6 +79,52 @@ class GatewayService:
             logger.error(f"Error getting Gateway container: {e}")
             return None
 
+    def _get_self_container(self) -> Optional[docker.models.containers.Container]:
+        """Best-effort lookup of the container this API process is running in.
+
+        Used to attach the Gateway to the same Docker network(s) the API is on, so the
+        Gateway is reachable by container name (https://gateway:15888) regardless of the
+        Compose project prefix (e.g. a workspace-scoped `185_emqx-bridge` network).
+        """
+        candidates = []
+        # Docker sets HOSTNAME to the short container id by default.
+        hostname = os.environ.get("HOSTNAME")
+        if hostname:
+            candidates.append(hostname)
+        # Fallback: parse the container id from cgroup/mountinfo in case HOSTNAME was overridden.
+        for proc_file in ("/proc/self/mountinfo", "/proc/self/cgroup"):
+            try:
+                with open(proc_file) as f:
+                    content = f.read()
+            except OSError:
+                continue
+            marker = "/docker/containers/"
+            idx = content.find(marker)
+            if idx != -1:
+                rest = content[idx + len(marker):]
+                cid = rest.split("/", 1)[0].strip()
+                if cid:
+                    candidates.append(cid)
+
+        for ident in candidates:
+            try:
+                return self.client.containers.get(ident)
+            except (docker.errors.NotFound, DockerException):
+                continue
+        return None
+
+    def _get_api_network_names(self) -> list:
+        """User-defined Docker networks the API container is attached to.
+
+        Excludes the special `host`/`none`/default `bridge` networks since those don't
+        provide container-name DNS resolution for the Gateway.
+        """
+        container = self._get_self_container()
+        if container is None:
+            return []
+        networks = container.attrs.get("NetworkSettings", {}).get("Networks", {})
+        return [name for name in networks if name not in ("host", "none", "bridge")]
+
     def get_status(self) -> GatewayStatus:
         """Get the current status of the Gateway container"""
         container = self._get_gateway_container()
@@ -212,17 +258,31 @@ class GatewayService:
 
             container = self.client.containers.run(**container_config)
 
-            # On macOS/Windows, connect to emqx-bridge network if it exists
+            # On macOS/Windows, attach the Gateway to the same Docker network(s) the API
+            # container is on so it's reachable by container name (https://gateway:15888).
+            # Detecting the API's own networks handles Compose project prefixes (e.g. a
+            # workspace-scoped `185_emqx-bridge`) that fixed names would miss. Fall back to
+            # the legacy fixed names when self-detection isn't possible (e.g. API run on host).
             if not use_host_network:
-                possible_networks = ["hummingbot-api_emqx-bridge", "emqx-bridge"]
-                for net in possible_networks:
+                target_networks = self._get_api_network_names()
+                if not target_networks:
+                    target_networks = ["hummingbot-api_emqx-bridge", "emqx-bridge"]
+                connected = False
+                for net in target_networks:
                     try:
                         network = self.client.networks.get(net)
                         network.connect(container)
                         logger.info(f"Connected Gateway to {net} network")
-                        break
+                        connected = True
                     except docker.errors.NotFound:
                         continue
+                    except DockerException as e:
+                        logger.warning(f"Failed to connect Gateway to {net} network: {e}")
+                if not connected:
+                    logger.warning(
+                        "Gateway not attached to any shared Docker network; the API may not "
+                        "be able to reach it by container name"
+                    )
 
             logger.info(f"Gateway container started successfully: {container.id}")
             return {
