@@ -6,6 +6,7 @@ from typing import Dict, List, Optional
 from fastapi import HTTPException
 
 from services.gateway_client import GatewayClient
+from services.gecko_price_source import GeckoPriceSource
 
 # Create module-specific logger
 logger = logging.getLogger(__name__)
@@ -38,14 +39,23 @@ class GatewayWalletService:
     Gateway manages its own encrypted wallets; this service only talks to it over HTTP via GatewayClient.
     """
 
-    def __init__(self, gateway_client: GatewayClient):
+    def __init__(self, gateway_client: GatewayClient, market_data_service=None):
         """
         Initialize the GatewayWalletService.
 
         Args:
             gateway_client: Client used for all Gateway HTTP interactions.
+            market_data_service: MarketDataService used to publish on-chain DEX prices into the
+                shared price pool so portfolio quoting can resolve blockchain token values.
         """
         self.gateway_client = gateway_client
+        self._market_data_service = market_data_service
+        # Batched DEX price lookups via GeckoTerminal, tried before per-token Gateway quotes.
+        self._gecko_source = GeckoPriceSource(gateway_client)
+
+    async def close(self) -> None:
+        """Release resources held by this service (the GeckoTerminal HTTP client)."""
+        await self._gecko_source.close()
 
     async def _require_gateway(self) -> None:
         """Raise a 503 HTTPException if the Gateway service is not reachable."""
@@ -225,11 +235,14 @@ class GatewayWalletService:
         """
         from hummingbot.core.data_type.common import TradeType
         from hummingbot.core.gateway.gateway_http_client import GatewayHttpClient
-        from hummingbot.core.rate_oracle.rate_oracle import RateOracle
 
         gateway_client = GatewayHttpClient.get_instance()
-        rate_oracle = RateOracle.get_instance()
         prices = {}
+
+        def publish_price(trading_pair: str, price: Decimal):
+            """Push an on-chain price into the shared pool so quoting can resolve it later."""
+            if self._market_data_service is not None:
+                self._market_data_service.set_price(trading_pair, price)
 
         # Construct full network name (e.g., "solana-mainnet-beta")
         full_network = f"{chain}-{network}"
@@ -255,14 +268,30 @@ class GatewayWalletService:
                 eth_needs_weth_price = True
                 logger.debug("Removing duplicate ETH, will use WETH price on ethereum")
 
+        # GeckoTerminal first: batch-price the tokens by contract address in a single call set.
+        # Whatever it covers is published here and skipped in the per-token Gateway loop below;
+        # anything it misses (unknown token, no pool, failure) falls back to Gateway pricing.
+        try:
+            gecko_prices = await self._gecko_source.fetch_prices(chain, network, tokens)
+            for token, price in gecko_prices.items():
+                prices[token] = price
+                publish_price(f"{token}-{quote_asset}", price)
+                logger.debug(f"Fetched GeckoTerminal price for {token}: {price} {quote_asset}")
+        except Exception as e:
+            logger.warning(f"GeckoTerminal pricing failed for {full_network}: {e}")
+
         for token in tokens:
             token_upper = token.upper()
 
             # Skip same-token quotes (e.g., USDC/USDC) - price is always 1
             if token_upper == quote_asset.upper():
                 prices[token] = Decimal("1")
-                rate_oracle.set_price(f"{token}-{quote_asset}", Decimal("1"))
+                publish_price(f"{token}-{quote_asset}", Decimal("1"))
                 logger.debug(f"Skipping same-token quote for {token}, price=1")
+                continue
+
+            # Already priced by GeckoTerminal above - no Gateway quote needed.
+            if token in prices:
                 continue
 
             try:
@@ -289,9 +318,9 @@ class GatewayWalletService:
                     elif result and "price" in result:
                         price = Decimal(str(result["price"]))
                         prices[token] = price
-                        # Also update the rate oracle so future lookups can find it
+                        # Also publish to the shared pool so future lookups can find it
                         trading_pair = f"{token}-USDC"
-                        rate_oracle.set_price(trading_pair, price)
+                        publish_price(trading_pair, price)
                         logger.debug(f"Fetched immediate price for {token}: {price} USDC")
             except Exception as e:
                 logger.error(f"Error fetching gateway prices: {e}", exc_info=True)
@@ -299,7 +328,7 @@ class GatewayWalletService:
         # Copy WETH price to ETH on ethereum networks
         if eth_needs_weth_price and "WETH" in prices:
             prices["ETH"] = prices["WETH"]
-            rate_oracle.set_price("ETH-USDC", prices["WETH"])
+            publish_price("ETH-USDC", prices["WETH"])
             logger.debug(f"Copied WETH price to ETH: {prices['WETH']} USDC")
 
         return prices
