@@ -114,12 +114,14 @@ from .gateway_trading import (  # Swap models; CLMM models; Pool info models; Po
 )
 
 # Market data models
-from .market_data import (  # New enhanced market data models; Trading pair management models
+from .market_data import (  # New enhanced market data models; Ticker & rate models; Trading pair management models
     ActiveFeedInfo,
     ActiveFeedsResponse,
     AddTradingPairRequest,
+    AllTickersResponse,
     CandleData,
     CandlesResponse,
+    ConnectorTickersResponse,
     FundingInfoRequest,
     FundingInfoResponse,
     MarketDataSettings,
@@ -128,14 +130,19 @@ from .market_data import (  # New enhanced market data models; Trading pair mana
     OrderBookQueryResult,
     OrderBookRequest,
     OrderBookResponse,
+    PoolPricesResponse,
     PriceData,
     PriceForQuoteVolumeRequest,
     PriceForVolumeRequest,
     PriceRequest,
     PricesResponse,
     QuoteVolumeForPriceRequest,
+    RateRequest,
+    RatesResponse,
     RemoveTradingPairRequest,
+    SingleRateResponse,
     SupportedOrderTypesResponse,
+    TickerInfo,
     TradingPairResponse,
     TradingRulesResponse,
     VolumeForPriceRequest,
@@ -157,19 +164,6 @@ from .portfolio import (
     PortfolioStateResponse,
     TokenBalance,
     TokenDistribution,
-)
-
-# Rate Oracle models
-from .rate_oracle import (
-    GlobalTokenConfig,
-    RateOracleConfig,
-    RateOracleConfigResponse,
-    RateOracleConfigUpdateRequest,
-    RateOracleConfigUpdateResponse,
-    RateOracleSourceConfig,
-    RateRequest,
-    RateResponse,
-    SingleRateResponse,
 )
 
 # Script models
@@ -270,6 +264,14 @@ __all__ = [
     "AddTradingPairRequest",
     "RemoveTradingPairRequest",
     "TradingPairResponse",
+    # Ticker & rate models
+    "TickerInfo",
+    "ConnectorTickersResponse",
+    "AllTickersResponse",
+    "RateRequest",
+    "RatesResponse",
+    "SingleRateResponse",
+    "PoolPricesResponse",
     # Account models
     "LeverageRequest",
     "PositionModeRequest",
@@ -346,16 +348,6 @@ __all__ = [
     "TradeHistoryResponse",
     "OrderHistoryResponse",
     "ExecutorsResponse",
-    # Rate Oracle models
-    "GlobalTokenConfig",
-    "RateOracleSourceConfig",
-    "RateOracleConfig",
-    "RateOracleConfigResponse",
-    "RateOracleConfigUpdateRequest",
-    "RateOracleConfigUpdateResponse",
-    "RateRequest",
-    "RateResponse",
-    "SingleRateResponse",
     # Executor models
     "CreateExecutorRequest",
     "CreateExecutorResponse",

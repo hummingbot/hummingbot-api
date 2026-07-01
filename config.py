@@ -55,6 +55,10 @@ class MarketDataSettings(BaseSettings):
         default=60.0,
         description="Maximum allowed WebSocket subscription update interval in seconds"
     )
+    ticker_update_interval: int = Field(
+        default=30,
+        description="How often to refresh tickers from connected exchanges in seconds"
+    )
 
     model_config = SettingsConfigDict(env_prefix="MARKET_DATA_", extra="ignore")
 
