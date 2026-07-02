@@ -14,9 +14,12 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 if TYPE_CHECKING:
     from services.unified_connector_service import UnifiedConnectorService
 
-from hummingbot.core.rate_oracle.rate_oracle import RateOracle
+from hummingbot.connector.utils import combine_to_hb_trading_pair
 from hummingbot.data_feed.candles_feed.candles_factory import CandlesFactory, UnsupportedConnectorException
 from hummingbot.data_feed.candles_feed.data_types import CandlesConfig
+
+from services.ticker_sources import Ticker, fetch_tickers
+from utils.rate_finder import find_rate
 
 logger = logging.getLogger(__name__)
 
@@ -43,31 +46,42 @@ class MarketDataService:
     def __init__(
             self,
             connector_service: "UnifiedConnectorService",
-            rate_oracle: RateOracle,
+            quote_token: str = "USDT",
             cleanup_interval: int = 300,
-            feed_timeout: int = 600
+            feed_timeout: int = 600,
+            ticker_update_interval: int = 30,
     ):
         """
         Initialize the MarketDataService.
 
         Args:
             connector_service: UnifiedConnectorService for connector access
-            rate_oracle: RateOracle instance for price conversions
-            cleanup_interval: How often to run cleanup (seconds, default: 5 minutes)
+            quote_token: Global quote token everything is valued in (e.g. "USDT")
+            cleanup_interval: How often to run feed cleanup (seconds, default: 5 minutes)
             feed_timeout: How long to keep unused feeds alive (seconds, default: 10 minutes)
+            ticker_update_interval: How often to refresh tickers from connected exchanges (seconds)
         """
         self._connector_service = connector_service
-        self._rate_oracle = rate_oracle
+        self._quote_token = quote_token
         self._cleanup_interval = cleanup_interval
         self._feed_timeout = feed_timeout
+        self._ticker_update_interval = ticker_update_interval
 
         # Candle feeds management
         self._candle_feeds: Dict[str, Any] = {}
         self._last_access_times: Dict[str, float] = {}
         self._feed_configs: Dict[str, Tuple[FeedType, Any]] = {}
 
+        # Ticker pool: per-connector tickers gathered from connected exchanges, plus a merged
+        # price dict used by the cross-rate finder. External (e.g. blockchain/Gateway) prices
+        # are kept separately so the periodic ticker rebuild never wipes them.
+        self._tickers: Dict[str, Dict[str, Ticker]] = {}
+        self._prices: Dict[str, Decimal] = {}
+        self._external_prices: Dict[str, Decimal] = {}
+
         # Background tasks
         self._cleanup_task: Optional[asyncio.Task] = None
+        self._ticker_task: Optional[asyncio.Task] = None
         self._is_running = False
 
         logger.info("MarketDataService initialized")
@@ -79,20 +93,22 @@ class MarketDataService:
         if not self._is_running:
             self._is_running = True
             self._cleanup_task = asyncio.create_task(self._cleanup_loop())
-            self._rate_oracle.start()
+            self._ticker_task = asyncio.create_task(self._ticker_collection_loop())
             logger.info(
                 f"MarketDataService started with cleanup_interval={self._cleanup_interval}s, "
-                f"feed_timeout={self._feed_timeout}s"
+                f"feed_timeout={self._feed_timeout}s, ticker_update_interval={self._ticker_update_interval}s"
             )
 
-    async def warmup_rate_oracle(self):
-        """Eagerly fetch prices so the oracle cache is populated before the first portfolio query."""
+    async def warmup_tickers(self):
+        """Run one ticker collection pass so the price pool is populated before serving traffic."""
         try:
-            prices = await self._rate_oracle._source.get_prices(quote_token=self._rate_oracle.quote_token)
-            self._rate_oracle._prices.update(prices)
-            logger.info(f"RateOracle warmed up with {len(prices)} prices")
+            await self._collect_all_tickers()
+            logger.info(
+                f"Ticker pool warmed up: {len(self._prices)} prices across "
+                f"{len(self._tickers)} connectors"
+            )
         except Exception as e:
-            logger.warning(f"RateOracle warmup failed: {e}")
+            logger.warning(f"Ticker warmup failed: {e}")
 
     def stop(self):
         """Stop the market data service and cleanup all feeds."""
@@ -101,6 +117,10 @@ class MarketDataService:
         if self._cleanup_task:
             self._cleanup_task.cancel()
             self._cleanup_task = None
+
+        if self._ticker_task:
+            self._ticker_task.cancel()
+            self._ticker_task = None
 
         # Stop all candle feeds
         for feed_key, feed in self._candle_feeds.items():
@@ -112,6 +132,8 @@ class MarketDataService:
         self._candle_feeds.clear()
         self._last_access_times.clear()
         self._feed_configs.clear()
+        self._tickers.clear()
+        self._prices.clear()
 
         logger.info("MarketDataService stopped")
 
@@ -524,22 +546,154 @@ class MarketDataService:
             logger.error(f"Error getting prices for {connector_name}: {e}")
             return {"error": str(e)}
 
-    def get_rate(self, base: str, quote: str = "USDT") -> Optional[Decimal]:
+    def get_rate(self, base: str, quote: Optional[str] = None) -> Optional[Decimal]:
         """
-        Get exchange rate from rate oracle.
+        Get exchange rate from the collected ticker pool using cross-rate resolution.
+
+        Resolves the rate from the merged price pool (all connected exchanges plus any
+        externally pushed prices) via :func:`find_rate`, so direct, reverse and bridged
+        pairs are all supported.
 
         Args:
             base: Base currency
-            quote: Quote currency (default: USD)
+            quote: Quote currency (defaults to the configured global quote token)
 
         Returns:
-            Exchange rate or None
+            Exchange rate or None if it cannot be resolved from the pool
+        """
+        quote = quote or self._quote_token
+        return self.get_pair_rate(combine_to_hb_trading_pair(base=base, quote=quote))
+
+    def get_pair_rate(self, trading_pair: str) -> Optional[Decimal]:
+        """
+        Resolve a rate for a ``BASE-QUOTE`` trading pair from the ticker pool.
+
+        This mirrors the ``RateOracle.get_pair_rate`` interface so it can also serve as the
+        rate provider for connector trade-volume telemetry.
         """
         try:
-            return self._rate_oracle.get_pair_rate(f"{base}-{quote}")
+            return find_rate(self._prices, trading_pair)
         except Exception as e:
-            logger.debug(f"Rate not available for {base}-{quote}: {e}")
+            logger.debug(f"Rate not available for {trading_pair}: {e}")
             return None
+
+    def set_price(self, trading_pair: str, price: Decimal):
+        """
+        Push an external price into the pool (e.g. blockchain/Gateway DEX prices that are
+        not covered by CEX tickers). External prices persist across ticker refreshes and
+        take precedence over collected ticker prices for the same pair.
+        """
+        try:
+            self._external_prices[trading_pair] = Decimal(str(price))
+            self._prices[trading_pair] = self._external_prices[trading_pair]
+        except Exception as e:
+            logger.debug(f"Failed to set price for {trading_pair}: {e}")
+
+    @property
+    def prices(self) -> Dict[str, Decimal]:
+        """The merged price pool (ticker prices plus external prices)."""
+        return self._prices
+
+    def get_ticker(self, connector_name: str, trading_pair: str) -> Optional[Ticker]:
+        """Get a single collected ticker for a connector/pair, or None."""
+        return self._tickers.get(connector_name, {}).get(trading_pair)
+
+    def get_tickers(self, connector_name: Optional[str] = None) -> Dict[str, Dict[str, Ticker]]:
+        """
+        Get collected tickers.
+
+        Args:
+            connector_name: If provided, return only that connector's tickers (wrapped in a
+                single-key dict); otherwise return tickers for all connectors.
+        """
+        if connector_name is not None:
+            return {connector_name: self._tickers.get(connector_name, {})}
+        return self._tickers
+
+    def get_rate_for_connector(
+            self, connector_name: str, base: str, quote: Optional[str] = None
+    ) -> Optional[Decimal]:
+        """Resolve a rate using only a single connector's tickers (no cross-exchange merge)."""
+        quote = quote or self._quote_token
+        connector_prices = {pair: t.price for pair, t in self._tickers.get(connector_name, {}).items()}
+        try:
+            return find_rate(connector_prices, combine_to_hb_trading_pair(base=base, quote=quote))
+        except Exception:
+            return None
+
+    # ==================== Ticker Collection ====================
+
+    def _connected_connector_names(self) -> List[str]:
+        """Unique connector names currently connected (trading connectors + started data connectors).
+
+        Every connected exchange is collected: dedicated adapters provide price+volume, and the
+        generic adapter provides price for the rest. Paper-trade connectors are skipped.
+        """
+        names = set()
+        for account_connectors in self._connector_service.get_all_trading_connectors().values():
+            names.update(account_connectors.keys())
+        names.update(self._connector_service._data_connectors.keys())
+        return [n for n in names if "paper_trade" not in n]
+
+    async def _collect_all_tickers(self):
+        """Fetch tickers from every connected exchange concurrently and rebuild the price pool."""
+        connector_names = self._connected_connector_names()
+        if not connector_names:
+            return
+
+        async def _fetch(name: str) -> Tuple[str, Dict[str, Ticker]]:
+            connector = self._connector_service.get_best_connector_for_market(name)
+            if connector is None:
+                return name, {}
+            return name, await fetch_tickers(connector, name)
+
+        results = await asyncio.gather(
+            *[_fetch(name) for name in connector_names], return_exceptions=True
+        )
+
+        for result in results:
+            if isinstance(result, Exception):
+                logger.warning(f"Ticker collection task failed: {result}")
+                continue
+            name, tickers = result
+            if tickers:
+                self._tickers[name] = tickers
+
+        self._rebuild_price_pool()
+
+    def _rebuild_price_pool(self):
+        """
+        Rebuild the merged ``trading_pair -> price`` pool from all connectors' tickers.
+
+        On duplicate pairs across exchanges, the entry with the higher 24h volume wins
+        (more liquid market). Externally pushed prices are layered on top last so they are
+        never overwritten by ticker data.
+        """
+        best: Dict[str, Ticker] = {}
+        for tickers in self._tickers.values():
+            for pair, ticker in tickers.items():
+                current = best.get(pair)
+                if current is None or self._is_more_liquid(ticker, current):
+                    best[pair] = ticker
+        merged = {pair: ticker.price for pair, ticker in best.items()}
+        merged.update(self._external_prices)
+        self._prices = merged
+
+    @staticmethod
+    def _is_more_liquid(candidate: Ticker, current: Ticker) -> bool:
+        """True if candidate should replace current (higher volume, treating None as 0)."""
+        return (candidate.volume or Decimal("0")) > (current.volume or Decimal("0"))
+
+    async def _ticker_collection_loop(self):
+        """Background task that periodically refreshes tickers from connected exchanges."""
+        while self._is_running:
+            try:
+                await asyncio.sleep(self._ticker_update_interval)
+                await self._collect_all_tickers()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in ticker collection loop: {e}", exc_info=True)
 
     # ==================== Trading Rules ====================
 
@@ -750,9 +904,9 @@ class MarketDataService:
     # ==================== Properties ====================
 
     @property
-    def rate_oracle(self) -> RateOracle:
-        """Get the rate oracle instance."""
-        return self._rate_oracle
+    def quote_token(self) -> str:
+        """The global quote token everything is valued in."""
+        return self._quote_token
 
     @property
     def connector_service(self) -> "UnifiedConnectorService":

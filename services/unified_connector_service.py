@@ -26,7 +26,6 @@ from hummingbot.connector.gateway.gateway import Gateway
 from hummingbot.connector.perpetual_derivative_py_base import PerpetualDerivativePyBase
 from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, TradeType
 from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderState
-from hummingbot.core.rate_oracle.rate_oracle import RateOracle
 from hummingbot.core.utils.async_utils import safe_ensure_future
 
 from utils.file_system import fs_util
@@ -73,6 +72,14 @@ class UnifiedConnectorService:
 
         # Connector settings cache
         self._conn_settings = AllConnectorSettings.get_connector_settings()
+
+        # Rate provider for trade-volume telemetry (set to MarketDataService by main on startup).
+        # Exposes get_pair_rate(pair) -> Decimal, the RateOracle-compatible interface.
+        self._rate_provider = None
+
+    def set_rate_provider(self, rate_provider):
+        """Set the rate provider used by trade-volume telemetry (MarketDataService)."""
+        self._rate_provider = rate_provider
 
     def _is_perpetual_connector(self, connector: ConnectorBase) -> bool:
         """Check if connector is a perpetual derivative connector.
@@ -1146,7 +1153,10 @@ class UnifiedConnectorService:
 
         try:
             instance_id = f"{account_name}_hbotapi"
-            rate_provider = RateOracle.get_instance()
+            rate_provider = self._rate_provider
+            if rate_provider is None:
+                logger.debug(f"No rate provider set, skipping trade-volume metrics for {connector_name}")
+                return
 
             metrics_collector = TradeVolumeMetricCollector(
                 connector=connector,

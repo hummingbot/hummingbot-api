@@ -21,6 +21,7 @@ dependencies:
   - pip
   - pip:
       - hummingbot
+      - geckoterminal-py>=0.3.1
       - msgpack>=1.0.5
       - flake8
       - isort

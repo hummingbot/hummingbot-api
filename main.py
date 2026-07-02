@@ -36,7 +36,6 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials  # noqa: E402
 from hummingbot.client.config.client_config_map import GatewayConfigMap  # noqa: E402
 from hummingbot.client.config.config_crypt import ETHKeyFileSecretManger  # noqa: E402
 from hummingbot.core.gateway.gateway_http_client import GatewayHttpClient  # noqa: E402
-from hummingbot.core.rate_oracle.rate_oracle import RATE_ORACLE_SOURCES, RateOracle  # noqa: E402
 
 from config import settings, warn_if_insecure_security_defaults  # noqa: E402
 from database import AsyncDatabaseManager  # noqa: E402
@@ -54,7 +53,6 @@ from routers import (  # noqa: E402
     gateway_swap,
     market_data,
     portfolio,
-    rate_oracle,
     scripts,
     storage,
     system,
@@ -136,47 +134,21 @@ async def lifespan(app: FastAPI):
     await db_manager.create_tables()
     logging.info("Database initialized")
 
-    # Read rate oracle configuration from conf_client.yml
+    # Read the global quote token (the currency everything is valued in) from conf_client.yml.
+    # Prices come from our own ticker pool (MarketDataService), not the legacy RateOracle.
     from utils.file_system import FileSystemUtil
     fs_util = FileSystemUtil()
 
+    quote_token = "USDT"
     try:
         conf_client_path = "credentials/master_account/conf_client.yml"
         config_data = fs_util.read_yaml_file(conf_client_path)
-
-        # Get rate_oracle_source configuration
-        rate_oracle_source_data = config_data.get("rate_oracle_source", {})
-        source_name = rate_oracle_source_data.get("name", "gate_io")
-
-        # Get global_token configuration
-        global_token_data = config_data.get("global_token", {})
-        quote_token = global_token_data.get("global_token_name", "USDT")
-
-        # Create rate source instance
-        from routers.rate_oracle import create_rate_source
-        if source_name in RATE_ORACLE_SOURCES:
-            rate_source = create_rate_source(source_name)
-            logging.info(f"Configured RateOracle with source: {source_name}, quote_token: {quote_token}")
-        else:
-            logging.warning(f"Unknown rate oracle source '{source_name}', defaulting to gate_io")
-            rate_source = create_rate_source("gate_io")
-            source_name = "gate_io"
-
-        # Initialize RateOracle with configured source and quote token
-        rate_oracle = RateOracle.get_instance()
-        rate_oracle.source = rate_source
-        rate_oracle.quote_token = quote_token
-
+        quote_token = config_data.get("global_token", {}).get("global_token_name", "USDT")
+        logging.info(f"Configured global quote token: {quote_token}")
     except FileNotFoundError:
-        logging.warning("conf_client.yml not found, using default RateOracle configuration (gate_io, USDT)")
-        from routers.rate_oracle import create_rate_source
-        rate_oracle = RateOracle.get_instance()
-        rate_oracle.source = create_rate_source("gate_io")
+        logging.warning("conf_client.yml not found, defaulting global quote token to USDT")
     except Exception as e:
-        logging.warning(f"Error reading conf_client.yml: {e}, using default RateOracle configuration (gate_io)")
-        from routers.rate_oracle import create_rate_source
-        rate_oracle = RateOracle.get_instance()
-        rate_oracle.source = create_rate_source("gate_io")
+        logging.warning(f"Error reading conf_client.yml: {e}, defaulting global quote token to USDT")
 
     # =========================================================================
     # 2. UnifiedConnectorService - Single source of truth for all connectors
@@ -192,13 +164,17 @@ async def lifespan(app: FastAPI):
     # 3. Services that depend on connector_service
     # =========================================================================
 
-    # MarketDataService - candles, order books, prices
+    # MarketDataService - candles, order books, tickers, cross-rate pricing
     market_data_service = MarketDataService(
         connector_service=connector_service,
-        rate_oracle=rate_oracle,
+        quote_token=quote_token,
         cleanup_interval=settings.market_data.cleanup_interval,
-        feed_timeout=settings.market_data.feed_timeout
+        feed_timeout=settings.market_data.feed_timeout,
+        ticker_update_interval=settings.market_data.ticker_update_interval,
     )
+    # Connector trade-volume telemetry resolves rates through the ticker pool instead of the
+    # legacy RateOracle singleton.
+    connector_service.set_rate_provider(market_data_service)
     logging.info("MarketDataService initialized")
 
     # TradingService - order placement, positions, trading interfaces
@@ -286,7 +262,7 @@ async def lifespan(app: FastAPI):
 
     bots_orchestrator.start()
     market_data_service.start()
-    await market_data_service.warmup_rate_oracle()
+    await market_data_service.warmup_tickers()
     executor_service.start()
     await executor_service.cleanup_orphaned_executors()
     await executor_service.recover_positions_from_db()
@@ -425,7 +401,6 @@ app.include_router(bot_orchestration.router, dependencies=[Depends(auth_user)])
 app.include_router(controllers.router, dependencies=[Depends(auth_user)])
 app.include_router(scripts.router, dependencies=[Depends(auth_user)])
 app.include_router(market_data.router, dependencies=[Depends(auth_user)])
-app.include_router(rate_oracle.router, dependencies=[Depends(auth_user)])
 app.include_router(backtesting.router, dependencies=[Depends(auth_user)])
 app.include_router(archived_bots.router, dependencies=[Depends(auth_user)])
 app.include_router(storage.router, dependencies=[Depends(auth_user)])

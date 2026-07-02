@@ -121,7 +121,7 @@ class AccountsService:
         self.gateway_client = GatewayClient(gateway_url, ssl_context_factory=ssl_context_factory)
 
         # Composed services: gateway wallet CRUD/balances, perpetual trading and pure portfolio analytics
-        self.gateway_wallet_service = GatewayWalletService(self.gateway_client)
+        self.gateway_wallet_service = GatewayWalletService(self.gateway_client, market_data_service)
         self.perpetual_trading_service = PerpetualTradingService(self.get_connector_instance)
         self.portfolio_analytics_service = PortfolioAnalyticsService()
 
@@ -138,12 +138,23 @@ class AccountsService:
     def get_accounts_state(self):
         return self.accounts_state
 
-    def get_default_market(self, token: str, connector_name: str) -> str:
+    def _market_components(self, token: str, connector_name: str) -> tuple[str, str]:
+        """Resolve the (base, quote) used to price a token on a connector.
+
+        Unwraps binance-earn staked tokens (LD-prefix) and picks the connector's native quote
+        (e.g. USDC on hyperliquid, USD on hyperliquid_perpetual), falling back to the global
+        default quote. This is the single source of truth for both ticker-pool lookups and the
+        exchange fallback fetch, so they always agree on base and quote.
+        """
         if token.startswith("LD") and token != "LDO":
             # These tokens are staked in binance earn
             token = token[2:]
         quote = self.default_quotes.get(connector_name, self.default_quote)
-        return f"{token}-{quote}"
+        return token, quote
+
+    def get_default_market(self, token: str, connector_name: str) -> str:
+        base, quote = self._market_components(token, connector_name)
+        return f"{base}-{quote}"
 
     def start(self):
         """
@@ -199,6 +210,12 @@ class AccountsService:
                 self._gateway_poller_started = False
             except Exception as e:
                 logger.error(f"Error stopping Gateway transaction poller: {e}", exc_info=True)
+
+        # Close the GeckoTerminal price source HTTP client
+        try:
+            await self.gateway_wallet_service.close()
+        except Exception as e:
+            logger.error(f"Error closing Gateway wallet service: {e}", exc_info=True)
 
         # Stop all connectors through the connector service
         await self._connector_service.stop_all()
@@ -427,10 +444,11 @@ class AccountsService:
                 self.accounts_state[account_name][connector_name] = result
 
     async def _get_connector_tokens_info(self, connector, connector_name: str, skip_balance_refresh: bool = False) -> List[Dict]:
-        """Get token info from a connector instance using RateOracle cached prices.
+        """Get token info from a connector instance using the ticker pool prices.
 
-        Fetches fresh balances from the exchange, then tries the RateOracle (instant, in-memory)
-        first for each token price. Only falls back to a batch exchange call for tokens the oracle can't price.
+        Fetches fresh balances from the exchange, then tries the ticker pool (instant, in-memory
+        cross-rate resolution) first for each token price. Only falls back to a batch exchange
+        call for tokens the pool can't price.
 
         Args:
             connector: The connector instance
@@ -456,13 +474,17 @@ class AccountsService:
             if "USD" in token:
                 price = Decimal("1")
             else:
-                # Try RateOracle first (instant, cached)
-                rate = self._market_data_service.get_rate(token, "USDT")
+                # Price using THIS connector's own tickers and its native quote (instant,
+                # in-memory cross-rate resolution). Using the connector's own quote avoids
+                # mismatches on exchanges that don't list the global quote (e.g. hyperliquid
+                # quotes in USDC/USD, not USDT).
+                base, quote = self._market_components(token, connector_name)
+                rate = self._market_data_service.get_rate_for_connector(connector_name, base, quote)
                 if rate and rate > 0:
                     price = rate
                 else:
                     # Queue for fallback batch fetch from exchange
-                    market = self.get_default_market(token, connector_name)
+                    market = f"{base}-{quote}"
                     missing_pairs.append(market)
                     missing_indices.append(len(tokens_info))
                     price = None  # resolved below

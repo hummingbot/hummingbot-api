@@ -10,18 +10,25 @@ from config import settings
 from deps import get_market_data_service
 from models import (
     AddTradingPairRequest,
+    AllTickersResponse,
+    ConnectorTickersResponse,
     FundingInfoRequest,
     FundingInfoResponse,
     OrderBookLevel,
     OrderBookQueryResult,
     OrderBookRequest,
     OrderBookResponse,
+    PoolPricesResponse,
     PriceForQuoteVolumeRequest,
     PriceForVolumeRequest,
     PriceRequest,
     PricesResponse,
     QuoteVolumeForPriceRequest,
+    RateRequest,
+    RatesResponse,
     RemoveTradingPairRequest,
+    SingleRateResponse,
+    TickerInfo,
     TradingPairResponse,
     VolumeForPriceRequest,
     VWAPForVolumeRequest,
@@ -267,6 +274,98 @@ async def get_prices(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching prices: {str(e)}")
+
+
+# ==================== Tickers & cross-rates ====================
+
+def _tickers_to_info(tickers) -> dict:
+    """Convert {pair: Ticker} to {pair: TickerInfo}."""
+    return {pair: TickerInfo(**t.to_dict()) for pair, t in tickers.items()}
+
+
+@router.get("/tickers", response_model=AllTickersResponse)
+async def get_all_tickers(
+        market_data_manager: MarketDataService = Depends(get_market_data_service)
+):
+    """Get the latest collected tickers from every connected exchange, grouped by connector."""
+    all_tickers = market_data_manager.get_tickers()
+    return AllTickersResponse(
+        tickers={name: _tickers_to_info(tickers) for name, tickers in all_tickers.items()}
+    )
+
+
+@router.get("/tickers/{connector_name}", response_model=ConnectorTickersResponse)
+async def get_connector_tickers(
+        connector_name: str,
+        market_data_manager: MarketDataService = Depends(get_market_data_service)
+):
+    """Get the latest collected tickers for a single connector."""
+    tickers = market_data_manager.get_tickers(connector_name).get(connector_name, {})
+    info = _tickers_to_info(tickers)
+    return ConnectorTickersResponse(connector=connector_name, count=len(info), tickers=info)
+
+
+@router.post("/rates", response_model=RatesResponse)
+async def get_rates(
+        request: RateRequest,
+        market_data_manager: MarketDataService = Depends(get_market_data_service)
+):
+    """
+    Resolve cross-rates for trading pairs from the collected ticker pool.
+
+    Rates are resolved via direct, reverse or bridged paths. When ``connector`` is set, only
+    that exchange's tickers are used; otherwise the merged multi-exchange pool is used.
+    """
+    rates = {}
+    for pair in request.trading_pairs:
+        if request.connector:
+            base, quote = pair.split("-") if "-" in pair else (pair, None)
+            rate = market_data_manager.get_rate_for_connector(request.connector, base, quote) if quote else None
+        else:
+            rate = market_data_manager.get_pair_rate(pair)
+        rates[pair] = float(rate) if rate else None
+    return RatesResponse(
+        quote_token=market_data_manager.quote_token,
+        connector=request.connector,
+        rates=rates,
+    )
+
+
+@router.get("/rate/{trading_pair}", response_model=SingleRateResponse)
+async def get_single_rate(
+        trading_pair: str,
+        connector: str = None,
+        market_data_manager: MarketDataService = Depends(get_market_data_service)
+):
+    """
+    Resolve a cross-rate for a single ``BASE-QUOTE`` trading pair from the ticker pool.
+
+    Pass ``?connector=<name>`` to restrict resolution to a single exchange's tickers.
+    """
+    if connector:
+        base, quote = trading_pair.split("-") if "-" in trading_pair else (trading_pair, None)
+        rate = market_data_manager.get_rate_for_connector(connector, base, quote) if quote else None
+    else:
+        rate = market_data_manager.get_pair_rate(trading_pair)
+    return SingleRateResponse(
+        trading_pair=trading_pair,
+        rate=float(rate) if rate else None,
+        quote_token=market_data_manager.quote_token,
+        connector=connector,
+    )
+
+
+@router.get("/pool-prices", response_model=PoolPricesResponse)
+async def get_pool_prices(
+        market_data_manager: MarketDataService = Depends(get_market_data_service)
+):
+    """Get a snapshot of the merged price pool used for cross-rate resolution."""
+    prices = {pair: float(price) for pair, price in market_data_manager.prices.items()}
+    return PoolPricesResponse(
+        quote_token=market_data_manager.quote_token,
+        prices_count=len(prices),
+        prices=prices,
+    )
 
 
 @router.post("/funding-info", response_model=FundingInfoResponse)
