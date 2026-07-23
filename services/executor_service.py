@@ -663,6 +663,21 @@ class ExecutorService:
         # Check if this is a POSITION_HOLD close type (keep_position=True)
         if executor.close_type == CloseType.POSITION_HOLD:
             await self._aggregate_position_hold(executor_id, executor, metadata)
+        elif metadata.get("executor_type") == "lp_executor":
+            # An LP position's base is not held as spot: the entry swap's base is
+            # deposited into the pool (add-liquidity is neither a buy nor a sell,
+            # so a position-hold created by that entry order_executor is never
+            # drawn down by the swap ledger) and returned mostly as quote on
+            # close. A keep_position=False unwind therefore ends holding no base,
+            # so its lingering hold is phantom -- clear it so positions/summary,
+            # the shutdown reconciler, and the restart guard see the true (flat)
+            # state instead of a position that was closed long ago.
+            #
+            # Restrict to a *clean* close: a FAILED open never deposited into the
+            # pool, leaving the swapped base in the wallet as a real spot
+            # position (must NOT be cleared); POSITION_HOLD is handled above.
+            if executor.close_type not in (CloseType.POSITION_HOLD, CloseType.FAILED):
+                await self._clear_lp_position_hold(executor_id, metadata)
 
         # Persist final state to database
         await self._persist_executor_completed(executor_id, executor)
@@ -1071,6 +1086,36 @@ class ExecutorService:
     ) -> str:
         """Generate a unique key for position tracking."""
         return f"{account_name}|{connector_name}|{trading_pair}|{controller_id}"
+
+    async def _clear_lp_position_hold(
+        self,
+        executor_id: str,
+        metadata: Dict[str, Any]
+    ):
+        """Clear the phantom spot hold left behind by a fully-unwound LP position.
+
+        The base an LP slot uses is bought by an entry order_executor (stopped
+        keep_position=True, which records a hold) and then deposited into the
+        pool. Neither the deposit nor the mostly-quote withdrawal is a swap fill,
+        so that hold's ``net_amount_base`` never comes back down. When the
+        lp_executor closes with keep_position=False the base is gone (returned as
+        quote), so the hold is stale -- clear it by its (account, connector,
+        pair, controller) key. See the caller in ``_handle_executor_completion``.
+        """
+        account_name = metadata.get("account_name", self.default_account)
+        connector_name = metadata.get("connector_name", "")
+        trading_pair = metadata.get("trading_pair", "")
+        controller_id = metadata.get("controller_id", "main")
+        if not connector_name or not trading_pair:
+            return
+        cleared = await self.clear_position_held(
+            account_name, connector_name, trading_pair, controller_id
+        )
+        if cleared:
+            logger.info(
+                f"Cleared phantom LP position hold for {executor_id} "
+                f"({connector_name}/{trading_pair}, controller={controller_id})"
+            )
 
     async def _aggregate_position_hold(
         self,
