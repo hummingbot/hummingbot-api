@@ -18,7 +18,8 @@ from hummingbot.connector.utils import combine_to_hb_trading_pair
 from hummingbot.data_feed.candles_feed.candles_factory import CandlesFactory, UnsupportedConnectorException
 from hummingbot.data_feed.candles_feed.data_types import CandlesConfig
 
-from services.ticker_sources import Ticker, fetch_tickers
+from services.ticker_sources import Ticker, TickerFetchError, fetch_tickers
+from services.unified_connector_service import UnknownConnectorError
 from utils.rate_finder import find_rate
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,8 @@ class MarketDataService:
             cleanup_interval: int = 300,
             feed_timeout: int = 600,
             ticker_update_interval: int = 30,
+            ticker_max_age: int = 60,
+            ticker_subscription_ttl: int = 600,
     ):
         """
         Initialize the MarketDataService.
@@ -60,12 +63,17 @@ class MarketDataService:
             cleanup_interval: How often to run feed cleanup (seconds, default: 5 minutes)
             feed_timeout: How long to keep unused feeds alive (seconds, default: 10 minutes)
             ticker_update_interval: How often to refresh tickers from connected exchanges (seconds)
+            ticker_max_age: Max age of cached tickers before an on-demand request refetches them
+            ticker_subscription_ttl: How long a ticker-only connector stays in the background
+                refresh cycle after its last on-demand request (seconds)
         """
         self._connector_service = connector_service
         self._quote_token = quote_token
         self._cleanup_interval = cleanup_interval
         self._feed_timeout = feed_timeout
         self._ticker_update_interval = ticker_update_interval
+        self._ticker_max_age = ticker_max_age
+        self._ticker_subscription_ttl = ticker_subscription_ttl
 
         # Candle feeds management
         self._candle_feeds: Dict[str, Any] = {}
@@ -78,6 +86,13 @@ class MarketDataService:
         self._tickers: Dict[str, Dict[str, Ticker]] = {}
         self._prices: Dict[str, Decimal] = {}
         self._external_prices: Dict[str, Decimal] = {}
+
+        # On-demand ticker fetching: last successful fetch per connector, a per-connector lock
+        # that collapses concurrent requests into a single upstream call, and the last time each
+        # connector was explicitly requested (drives the background subscription TTL).
+        self._ticker_updated_at: Dict[str, float] = {}
+        self._ticker_locks: Dict[str, asyncio.Lock] = {}
+        self._ticker_requests: Dict[str, float] = {}
 
         # Background tasks
         self._cleanup_task: Optional[asyncio.Task] = None
@@ -134,6 +149,9 @@ class MarketDataService:
         self._feed_configs.clear()
         self._tickers.clear()
         self._prices.clear()
+        self._ticker_updated_at.clear()
+        self._ticker_requests.clear()
+        self._ticker_locks.clear()
 
         logger.info("MarketDataService stopped")
 
@@ -623,22 +641,102 @@ class MarketDataService:
 
     # ==================== Ticker Collection ====================
 
-    def _connected_connector_names(self) -> List[str]:
-        """Unique connector names currently connected (trading connectors + started data connectors).
+    async def fetch_connector_tickers(
+            self,
+            connector_name: str,
+            *,
+            max_age: Optional[float] = None,
+            force: bool = False
+    ) -> Dict[str, Ticker]:
+        """
+        Get one connector's tickers, fetching on demand when the cache is missing or stale.
 
-        Every connected exchange is collected: dedicated adapters provide price+volume, and the
-        generic adapter provides price for the rest. Paper-trade connectors are skipped.
+        This works without API keys: ``get_best_connector_for_market`` falls back to a keyless
+        public data connector, which is then also picked up by the background refresh cycle.
+
+        Args:
+            connector_name: Exchange connector name
+            max_age: Accept cached tickers up to this age in seconds (defaults to ticker_max_age)
+            force: Ignore the cache and always fetch
+
+        Returns:
+            Mapping of trading pair to Ticker
+
+        Raises:
+            UnknownConnectorError: the name is not a known Hummingbot connector
+            TickerUnsupportedError: the connector cannot serve public tickers without credentials
+            TickerFetchError: the fetch or parse failed
+        """
+        if not self._connector_service.is_known_connector(connector_name):
+            raise UnknownConnectorError(f"Connector {connector_name} not found")
+
+        # Mark the connector as actively requested so the background loop keeps it warm.
+        self._ticker_requests[connector_name] = time.time()
+        max_age = self._ticker_max_age if max_age is None else max_age
+
+        if not force and self._is_ticker_fresh(connector_name, max_age):
+            return self._tickers[connector_name]
+
+        lock = self._ticker_locks.setdefault(connector_name, asyncio.Lock())
+        async with lock:
+            # A concurrent request may have refreshed the cache while we waited on the lock.
+            if not force and self._is_ticker_fresh(connector_name, max_age):
+                return self._tickers[connector_name]
+
+            connector = self._connector_service.get_best_connector_for_market(connector_name)
+            if connector is None:
+                raise TickerFetchError(f"No connector available for '{connector_name}'")
+
+            tickers = await fetch_tickers(connector, connector_name, raise_on_error=True)
+            self._tickers[connector_name] = tickers
+            self._ticker_updated_at[connector_name] = time.time()
+            self._rebuild_price_pool()
+            logger.info(f"On-demand ticker fetch for '{connector_name}': {len(tickers)} pairs")
+            return tickers
+
+    def _is_ticker_fresh(self, connector_name: str, max_age: float) -> bool:
+        """True if there are cached tickers for the connector and they are younger than max_age."""
+        if not self._tickers.get(connector_name):
+            return False
+        return time.time() - self._ticker_updated_at.get(connector_name, 0.0) <= max_age
+
+    def ticker_updated_at(self, connector_name: str) -> Optional[float]:
+        """Timestamp of the last successful ticker fetch for a connector, or None."""
+        return self._ticker_updated_at.get(connector_name)
+
+    def _connected_connector_names(self) -> List[str]:
+        """Unique connector names to collect tickers for.
+
+        Trading connectors are always collected. Data connectors are too, except ticker-only
+        ones whose last on-demand request is older than the subscription TTL: without that
+        expiry, one request per exchange would permanently add every venue to each cycle.
+        Paper-trade connectors are skipped.
         """
         names = set()
         for account_connectors in self._connector_service.get_all_trading_connectors().values():
             names.update(account_connectors.keys())
-        names.update(self._connector_service._data_connectors.keys())
+
+        now = time.time()
+        for name in self._connector_service._data_connectors:
+            last_request = self._ticker_requests.get(name)
+            # Data connectors created for other purposes (order books, trading rules) were never
+            # requested for tickers and are always collected.
+            if last_request is None or now - last_request <= self._ticker_subscription_ttl:
+                names.add(name)
+
         return [n for n in names if "paper_trade" not in n]
 
     async def _collect_all_tickers(self):
         """Fetch tickers from every connected exchange concurrently and rebuild the price pool."""
         connector_names = self._connected_connector_names()
+
+        # Drop connectors that fell out of the collection set so no one is served stale data.
+        for stale in [n for n in self._tickers if n not in connector_names]:
+            self._tickers.pop(stale, None)
+            self._ticker_updated_at.pop(stale, None)
+
         if not connector_names:
+            self._rebuild_price_pool()
             return
 
         async def _fetch(name: str) -> Tuple[str, Dict[str, Ticker]]:
@@ -651,6 +749,7 @@ class MarketDataService:
             *[_fetch(name) for name in connector_names], return_exceptions=True
         )
 
+        now = time.time()
         for result in results:
             if isinstance(result, Exception):
                 logger.warning(f"Ticker collection task failed: {result}")
@@ -658,6 +757,7 @@ class MarketDataService:
             name, tickers = result
             if tickers:
                 self._tickers[name] = tickers
+                self._ticker_updated_at[name] = now
 
         self._rebuild_price_pool()
 
@@ -681,8 +781,21 @@ class MarketDataService:
 
     @staticmethod
     def _is_more_liquid(candidate: Ticker, current: Ticker) -> bool:
-        """True if candidate should replace current (higher volume, treating None as 0)."""
-        return (candidate.volume or Decimal("0")) > (current.volume or Decimal("0"))
+        """True if candidate should replace current as the price source for a pair.
+
+        Quote volume is the only cross-exchange comparable measure (the same pair implies the
+        same quote token), and it is populated whenever the exchange reported any volume at
+        all, so exchanges that only report base volume still take part in the comparison
+        instead of always ranking as zero.
+        """
+        candidate_volume, current_volume = candidate.quote_volume, current.quote_volume
+        if candidate_volume is not None and current_volume is not None:
+            return candidate_volume > current_volume
+        if candidate_volume is not None:
+            return True  # a known volume beats an unknown one
+        if current_volume is not None:
+            return False
+        return candidate.timestamp > current.timestamp  # both unknown: prefer the fresher one
 
     async def _ticker_collection_loop(self):
         """Background task that periodically refreshes tickers from connected exchanges."""
