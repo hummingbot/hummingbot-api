@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import time
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from hummingbot.data_feed.candles_feed.candles_factory import CandlesFactory, UnsupportedConnectorException
@@ -11,8 +11,6 @@ from config import settings
 from deps import get_market_data_service
 from models import (
     AddTradingPairRequest,
-    AllTickersResponse,
-    ConnectorTickersResponse,
     FundingInfoRequest,
     FundingInfoResponse,
     OrderBookLevel,
@@ -30,6 +28,7 @@ from models import (
     RemoveTradingPairRequest,
     SingleRateResponse,
     TickerInfo,
+    TickersResponse,
     TradingPairResponse,
     VolumeForPriceRequest,
     VWAPForVolumeRequest,
@@ -286,20 +285,37 @@ def _tickers_to_info(tickers) -> dict:
     return {pair: TickerInfo(**t.to_dict()) for pair, t in tickers.items()}
 
 
-@router.get("/tickers", response_model=AllTickersResponse)
-async def get_all_tickers(
-        market_data_manager: MarketDataService = Depends(get_market_data_service)
-):
-    """Get the latest collected tickers from every connected exchange, grouped by connector."""
-    all_tickers = market_data_manager.get_tickers()
-    return AllTickersResponse(
-        tickers={name: _tickers_to_info(tickers) for name, tickers in all_tickers.items()}
+def _requested_connectors(connectors: Optional[List[str]]) -> List[str]:
+    """Parse the connector filter, accepting both ?connectors=a,b and ?connectors=a&connectors=b."""
+    names = []
+    for value in connectors or []:
+        names.extend(part.strip() for part in value.split(","))
+    return list(dict.fromkeys(n for n in names if n))  # de-duplicated, order preserved
+
+
+def _build_tickers_response(
+        tickers_by_connector: dict,
+        errors: dict,
+        market_data_manager: MarketDataService,
+) -> TickersResponse:
+    grouped = {name: _tickers_to_info(t) for name, t in tickers_by_connector.items()}
+    return TickersResponse(
+        tickers=grouped,
+        counts={name: len(t) for name, t in grouped.items()},
+        updated_at={
+            name: market_data_manager.ticker_updated_at(name) for name in grouped
+        },
+        errors={name: str(exc) for name, exc in errors.items()},
     )
 
 
-@router.get("/tickers/{connector_name}", response_model=ConnectorTickersResponse)
-async def get_connector_tickers(
-        connector_name: str,
+@router.get("/tickers", response_model=TickersResponse)
+async def get_tickers(
+        connectors: Optional[List[str]] = Query(
+            None,
+            description="Restrict to these connectors. Accepts a comma-separated list or the "
+                        "parameter repeated. Omit to return the whole collected pool."
+        ),
         refresh: bool = Query(False, description="Force a fresh fetch, ignoring the cache"),
         max_age: Optional[float] = Query(
             None, ge=0, description="Accept cached tickers up to this age in seconds"
@@ -307,38 +323,46 @@ async def get_connector_tickers(
         market_data_manager: MarketDataService = Depends(get_market_data_service)
 ):
     """
-    Get the tickers for a single connector, with 24h base and quote volume where available.
+    Get tickers grouped by connector, with 24h base and quote volume where available.
 
-    Tickers are fetched on demand through a keyless public data connector when the cache is
-    missing or stale, so this works for exchanges no API keys are configured for. The connector
-    then joins the background refresh cycle.
+    Without ``connectors`` this returns the collected pool as-is. Naming connectors fetches
+    them on demand (concurrently) through keyless public data connectors when the cache is
+    missing or stale, so it works for exchanges no API keys are configured for; those
+    connectors then join the background refresh cycle.
+
+    A connector that fails does not remove the others from the response: it is reported under
+    ``errors`` alongside the successful results. An error status is returned only when nothing
+    could be served at all.
     """
-    try:
-        tickers = await market_data_manager.fetch_connector_tickers(
-            connector_name, max_age=max_age, force=refresh
-        )
-    except UnknownConnectorError:
-        raise HTTPException(status_code=404, detail=f"Connector '{connector_name}' not found")
-    except TickerUnsupportedError as e:
-        # Known connector, but no amount of retrying will make it serve public tickers.
-        raise HTTPException(status_code=400, detail=str(e))
-    except TickerFetchError as e:
-        raise HTTPException(
-            status_code=502, detail=f"Failed to fetch tickers from '{connector_name}': {e}"
-        )
-    except Exception as e:
-        logger.error(
-            f"Unexpected error fetching tickers for {connector_name}: {e}", exc_info=True
-        )
-        raise HTTPException(status_code=500, detail=str(e))
+    names = _requested_connectors(connectors)
 
-    info = _tickers_to_info(tickers)
-    return ConnectorTickersResponse(
-        connector=connector_name,
-        count=len(info),
-        tickers=info,
-        updated_at=market_data_manager.ticker_updated_at(connector_name),
-    )
+    # No filter and no refresh: a plain read of the pool, no requests made.
+    if not names and not refresh:
+        return _build_tickers_response(market_data_manager.get_tickers(), {}, market_data_manager)
+
+    targets = names or market_data_manager.collected_connector_names()
+    if not targets:
+        return _build_tickers_response({}, {}, market_data_manager)
+
+    try:
+        tickers, errors = await market_data_manager.fetch_tickers_for(
+            targets, max_age=max_age, force=refresh
+        )
+    except UnknownConnectorError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    # Everything requested failed, so report why instead of an empty, seemingly-fine 200.
+    if errors and not tickers:
+        detail = "; ".join(f"{name}: {exc}" for name, exc in sorted(errors.items()))
+        if all(isinstance(exc, TickerUnsupportedError) for exc in errors.values()):
+            # Known connectors that can never serve public tickers; retrying will not help.
+            raise HTTPException(status_code=400, detail=detail)
+        if all(isinstance(exc, TickerFetchError) for exc in errors.values()):
+            raise HTTPException(status_code=502, detail=f"Failed to fetch tickers: {detail}")
+        logger.error(f"Unexpected error fetching tickers for {targets}: {detail}")
+        raise HTTPException(status_code=500, detail=detail)
+
+    return _build_tickers_response(tickers, errors, market_data_manager)
 
 
 @router.post("/rates", response_model=RatesResponse)

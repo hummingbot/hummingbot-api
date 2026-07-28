@@ -1,5 +1,4 @@
 from datetime import datetime
-from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
@@ -207,20 +206,22 @@ class TickerInfo(BaseModel):
     timestamp: float = Field(description="Collection timestamp")
 
 
-class ConnectorTickersResponse(BaseModel):
-    """Tickers for a single connector."""
-    connector: str = Field(description="Connector name")
-    count: int = Field(description="Number of tickers")
-    tickers: Dict[str, TickerInfo] = Field(description="Trading pair to ticker mapping")
-    updated_at: Optional[float] = Field(
-        default=None, description="Unix timestamp of the last successful fetch"
-    )
-
-
-class AllTickersResponse(BaseModel):
+class TickersResponse(BaseModel):
     """Tickers grouped by connector."""
     tickers: Dict[str, Dict[str, TickerInfo]] = Field(
         description="Connector to {trading pair: ticker} mapping"
+    )
+    counts: Dict[str, int] = Field(
+        default_factory=dict, description="Number of tickers per connector"
+    )
+    updated_at: Dict[str, Optional[float]] = Field(
+        default_factory=dict,
+        description="Unix timestamp of the last successful fetch, per connector"
+    )
+    errors: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Connectors that could not be fetched, with the reason. Present only when "
+                    "some requested connectors succeeded and others failed"
     )
 
 

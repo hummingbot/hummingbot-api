@@ -18,11 +18,22 @@ from hummingbot.connector.utils import combine_to_hb_trading_pair
 from hummingbot.data_feed.candles_feed.candles_factory import CandlesFactory, UnsupportedConnectorException
 from hummingbot.data_feed.candles_feed.data_types import CandlesConfig
 
-from services.ticker_sources import Ticker, TickerFetchError, fetch_tickers
+from services.ticker_sources import Ticker, TickerFetchError, TickerUnsupportedError, fetch_tickers
 from services.unified_connector_service import UnknownConnectorError
 from utils.rate_finder import find_rate
 
 logger = logging.getLogger(__name__)
+
+# Connector name fragments that must never contribute market data. Paper-trade connectors
+# simulate fills, and test networks trade worthless assets at arbitrary prices, so letting
+# either into the ticker pool would corrupt cross-rate resolution and portfolio valuation.
+_NON_MARKET_CONNECTOR_MARKERS = ("paper_trade", "testnet", "sandbox")
+
+
+def is_market_data_connector(connector_name: str) -> bool:
+    """False for paper-trade and test-network connectors, whose prices are not real markets."""
+    lowered = connector_name.lower()
+    return not any(marker in lowered for marker in _NON_MARKET_CONNECTOR_MARKERS)
 
 
 class FeedType(Enum):
@@ -612,20 +623,8 @@ class MarketDataService:
         """The merged price pool (ticker prices plus external prices)."""
         return self._prices
 
-    def get_ticker(self, connector_name: str, trading_pair: str) -> Optional[Ticker]:
-        """Get a single collected ticker for a connector/pair, or None."""
-        return self._tickers.get(connector_name, {}).get(trading_pair)
-
-    def get_tickers(self, connector_name: Optional[str] = None) -> Dict[str, Dict[str, Ticker]]:
-        """
-        Get collected tickers.
-
-        Args:
-            connector_name: If provided, return only that connector's tickers (wrapped in a
-                single-key dict); otherwise return tickers for all connectors.
-        """
-        if connector_name is not None:
-            return {connector_name: self._tickers.get(connector_name, {})}
+    def get_tickers(self) -> Dict[str, Dict[str, Ticker]]:
+        """Get the collected ticker pool, as ``{connector: {trading_pair: Ticker}}``."""
         return self._tickers
 
     def get_rate_for_connector(
@@ -670,6 +669,14 @@ class MarketDataService:
         if not self._connector_service.is_known_connector(connector_name):
             raise UnknownConnectorError(f"Connector {connector_name} not found")
 
+        # Refused rather than merely skipped during collection: serving them here would cache
+        # the result and pull it into the price pool through _rebuild_price_pool.
+        if not is_market_data_connector(connector_name):
+            raise TickerUnsupportedError(
+                f"'{connector_name}' is a paper-trade or test-network connector; its prices are "
+                f"not real market data and are excluded from the ticker pool"
+            )
+
         # Mark the connector as actively requested so the background loop keeps it warm.
         self._ticker_requests[connector_name] = time.time()
         max_age = self._ticker_max_age if max_age is None else max_age
@@ -683,7 +690,18 @@ class MarketDataService:
             if not force and self._is_ticker_fresh(connector_name, max_age):
                 return self._tickers[connector_name]
 
-            connector = self._connector_service.get_best_connector_for_market(connector_name)
+            try:
+                connector = self._connector_service.get_best_connector_for_market(connector_name)
+            except UnknownConnectorError:
+                raise
+            except Exception as e:
+                # Building a keyless connector can fail before any request is made: an optional
+                # dependency is missing (dydx_v4 needs v4_proto, vertex needs eip712_structs) or
+                # the connector demands credentials in its constructor. Retrying never helps.
+                raise TickerUnsupportedError(
+                    f"'{connector_name}' cannot be instantiated for public market data: "
+                    f"{type(e).__name__}: {e}"
+                ) from e
             if connector is None:
                 raise TickerFetchError(f"No connector available for '{connector_name}'")
 
@@ -693,6 +711,49 @@ class MarketDataService:
             self._rebuild_price_pool()
             logger.info(f"On-demand ticker fetch for '{connector_name}': {len(tickers)} pairs")
             return tickers
+
+    async def fetch_tickers_for(
+            self,
+            connector_names: List[str],
+            *,
+            max_age: Optional[float] = None,
+            force: bool = False
+    ) -> Tuple[Dict[str, Dict[str, Ticker]], Dict[str, BaseException]]:
+        """
+        Fetch several connectors' tickers concurrently.
+
+        Returns ``(tickers_by_connector, errors_by_connector)``. One exchange failing never
+        removes another's data from the result, so failures are reported per connector rather
+        than raised: the caller decides whether a partial result is still useful, and maps the
+        returned exceptions to a status code.
+
+        Raises:
+            UnknownConnectorError: if any requested name is not a known connector. Unlike a
+                fetch failure this is a caller mistake, so it fails fast before any request.
+        """
+        unknown = [n for n in connector_names if not self._connector_service.is_known_connector(n)]
+        if unknown:
+            raise UnknownConnectorError(f"Connectors not found: {', '.join(sorted(unknown))}")
+
+        async def _fetch(name: str):
+            return name, await self.fetch_connector_tickers(name, max_age=max_age, force=force)
+
+        results = await asyncio.gather(
+            *[_fetch(name) for name in connector_names], return_exceptions=True
+        )
+
+        tickers: Dict[str, Dict[str, Ticker]] = {}
+        errors: Dict[str, BaseException] = {}
+        for name, result in zip(connector_names, results):
+            if isinstance(result, BaseException):
+                errors[name] = result
+            else:
+                tickers[name] = result[1]
+        return tickers, errors
+
+    def collected_connector_names(self) -> List[str]:
+        """Connector names currently in the background ticker collection cycle."""
+        return self._connected_connector_names()
 
     def _is_ticker_fresh(self, connector_name: str, max_age: float) -> bool:
         """True if there are cached tickers for the connector and they are younger than max_age."""
@@ -710,7 +771,8 @@ class MarketDataService:
         Trading connectors are always collected. Data connectors are too, except ticker-only
         ones whose last on-demand request is older than the subscription TTL: without that
         expiry, one request per exchange would permanently add every venue to each cycle.
-        Paper-trade connectors are skipped.
+        Paper-trade and test-network connectors are always skipped, even when an account has
+        one configured for trading.
         """
         names = set()
         for account_connectors in self._connector_service.get_all_trading_connectors().values():
@@ -724,7 +786,7 @@ class MarketDataService:
             if last_request is None or now - last_request <= self._ticker_subscription_ttl:
                 names.add(name)
 
-        return [n for n in names if "paper_trade" not in n]
+        return [n for n in names if is_market_data_connector(n)]
 
     async def _collect_all_tickers(self):
         """Fetch tickers from every connected exchange concurrently and rebuild the price pool."""

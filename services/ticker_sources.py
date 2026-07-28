@@ -38,6 +38,8 @@ from typing import (
     Union,
 )
 
+from config import settings
+
 logger = logging.getLogger(__name__)
 
 # Per-connector fetch timeout (seconds). One slow exchange must not stall the whole cycle.
@@ -299,7 +301,9 @@ TICKER_SPECS: Dict[str, TickerSpec] = {
     ),
 }
 
-# Connector name variants that share another connector's spec/adapter.
+# Mainnet connector variants that share another connector's spec/adapter. Testnets are
+# deliberately left out: their prices and volumes are not real market data, so they have no
+# business in the pool that backs cross-rate pricing.
 _SPEC_ALIASES: Dict[str, str] = {
     "kucoin_hft": "kucoin",
 }
@@ -332,6 +336,7 @@ def _normalize(
         Tuple[Any, Optional[Decimal], Optional[Decimal], Optional[Decimal]],
     ],
     connector_name: str,
+    timestamp: Optional[float] = None,
 ) -> Dict[str, Ticker]:
     """
     Map raw rows to ``{hb_pair -> Ticker}``.
@@ -340,11 +345,14 @@ def _normalize(
     symbol the connector does not track, or with no usable price, are skipped; each row is
     guarded so one malformed entry cannot abort the whole exchange.
 
+    ``timestamp`` overrides the collection time, for rows served from a slower-refreshing
+    snapshot; it defaults to now.
+
     Raises TickerFetchError when rows were present but none matched the symbol map, which is
     what a payload/symbol-map key mismatch looks like. Silently returning {} there would show
     up as an empty 200 with no clue as to why.
     """
-    now = time.time()
+    now = time.time() if timestamp is None else timestamp
     out: Dict[str, Ticker] = {}
     seen = 0
     unmapped = 0
@@ -477,8 +485,78 @@ async def _hyperliquid(connector, symbol_map: Mapping[str, str]) -> Dict[str, Ti
     return _normalize(symbol_map, rows, extract, "hyperliquid")
 
 
+def _hyperliquid_perp_extract(row):
+    """Price/volume out of a Hyperliquid perp asset context (main dex or HIP-3)."""
+    return (
+        row.get("_name"),
+        _mid(None, None, row.get("midPx")) or _to_decimal(row.get("markPx")),
+        _to_decimal(row.get("dayBaseVlm")),
+        _to_decimal(row.get("dayNtlVlm")),
+    )
+
+
+# HIP-3 snapshots per connector name: {name: (fetched_at, rows)}. Shared exchange-wide data,
+# so the connector instance it came from does not matter.
+_hip3_snapshots: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
+
+
+async def _hyperliquid_hip3_tickers(
+    connector, symbol_map: Mapping[str, str], connector_name: str
+) -> Dict[str, Ticker]:
+    """
+    Tickers for HIP-3 builder-deployed perp dexes (``xyz:TSLA``, ``flx:...``, ...).
+
+    These live on separate dexes and are absent from ``metaAndAssetCtxs``; collecting them
+    costs one ``allPerpMetas`` call plus one ``metaAndAssetCtxs`` per dex (~10 requests, ~4s).
+    That is too expensive for every cycle, so the snapshot is refreshed on its own interval
+    and reused in between -- HIP-3 prices are therefore up to that interval old, which the
+    returned tickers report honestly via their timestamp.
+
+    Never raises: HIP-3 is supplementary, so any failure leaves the main dex tickers intact.
+    """
+    interval = settings.market_data.hyperliquid_hip3_interval
+    if interval <= 0:
+        return {}
+    if not hasattr(connector, "_fetch_and_cache_hip3_market_data"):
+        return {}  # hummingbot build without HIP-3 support
+
+    now = time.time()
+    snapshot = _hip3_snapshots.get(connector_name)
+    if snapshot is None or now - snapshot[0] > interval:
+        try:
+            # Loading the symbol map already fetched and cached the dex markets, so reuse
+            # those on the first pass instead of paying for the same ~10 requests twice.
+            cached = getattr(connector, "_dex_markets", None)
+            dex_markets = cached if (snapshot is None and cached) else \
+                await connector._fetch_and_cache_hip3_market_data()
+            rows = [
+                {**row, "_name": row.get("name")}
+                for row in connector._iter_hip3_merged_markets(dex_markets=dex_markets)
+                if isinstance(row, dict)
+            ]
+            snapshot = (now, rows)
+            _hip3_snapshots[connector_name] = snapshot
+        except Exception as e:  # noqa: BLE001
+            if snapshot is None:
+                logger.warning(f"[{connector_name}] HIP-3 market fetch failed: {e}")
+                return {}
+            logger.warning(f"[{connector_name}] HIP-3 refresh failed, serving last snapshot: {e}")
+
+    fetched_at, rows = snapshot
+    if not rows:
+        return {}
+    try:
+        return _normalize(
+            symbol_map, rows, _hyperliquid_perp_extract, f"{connector_name}:hip3",
+            timestamp=fetched_at,
+        )
+    except TickerFetchError as e:
+        logger.warning(f"[{connector_name}] HIP-3 markets could not be mapped: {e}")
+        return {}
+
+
 async def _hyperliquid_perpetual(connector, symbol_map: Mapping[str, str]) -> Dict[str, Ticker]:
-    """Hyperliquid perpetuals.
+    """Hyperliquid perpetuals, main dex plus HIP-3 builder dexes.
 
     ``metaAndAssetCtxs`` returns ``[meta, assetCtxs]`` of equal length, index-aligned, and the
     ctxs carry no symbol of their own -- zipping against ``meta["universe"]`` is the only join.
@@ -498,15 +576,9 @@ async def _hyperliquid_perpetual(connector, symbol_map: Mapping[str, str]) -> Di
         if isinstance(entry, dict) and isinstance(ctx, dict)
     ]
 
-    def extract(row):
-        return (
-            row.get("_name"),
-            _mid(None, None, row.get("midPx")) or _to_decimal(row.get("markPx")),
-            _to_decimal(row.get("dayBaseVlm")),
-            _to_decimal(row.get("dayNtlVlm")),
-        )
-
-    return _normalize(symbol_map, rows, extract, "hyperliquid_perpetual")
+    tickers = _normalize(symbol_map, rows, _hyperliquid_perp_extract, "hyperliquid_perpetual")
+    tickers.update(await _hyperliquid_hip3_tickers(connector, symbol_map, "hyperliquid_perpetual"))
+    return tickers
 
 
 TICKER_ADAPTERS: Dict[

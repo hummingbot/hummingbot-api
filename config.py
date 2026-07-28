@@ -68,6 +68,12 @@ class MarketDataSettings(BaseSettings):
         description="How long a ticker-only connector stays in the background refresh cycle "
                     "after its last request, in seconds"
     )
+    hyperliquid_hip3_interval: int = Field(
+        default=120,
+        description="How often to refresh Hyperliquid HIP-3 (builder-deployed perp dex) tickers, "
+                    "in seconds. These need one request per dex (~10 total), so they refresh on a "
+                    "slower cadence than the main perp dex. Set to 0 to exclude HIP-3 markets."
+    )
 
     model_config = SettingsConfigDict(env_prefix="MARKET_DATA_", extra="ignore")
 
