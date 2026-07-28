@@ -1,8 +1,9 @@
 import asyncio
 import logging
 import time
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from hummingbot.data_feed.candles_feed.candles_factory import CandlesFactory, UnsupportedConnectorException
 from hummingbot.data_feed.candles_feed.data_types import CandlesConfig, HistoricalCandlesConfig
 
@@ -35,6 +36,8 @@ from models import (
 )
 from models.market_data import CandlesConfigRequest
 from services.market_data_service import MarketDataService
+from services.ticker_sources import TickerFetchError, TickerUnsupportedError
+from services.unified_connector_service import UnknownConnectorError
 
 logger = logging.getLogger(__name__)
 
@@ -297,12 +300,45 @@ async def get_all_tickers(
 @router.get("/tickers/{connector_name}", response_model=ConnectorTickersResponse)
 async def get_connector_tickers(
         connector_name: str,
+        refresh: bool = Query(False, description="Force a fresh fetch, ignoring the cache"),
+        max_age: Optional[float] = Query(
+            None, ge=0, description="Accept cached tickers up to this age in seconds"
+        ),
         market_data_manager: MarketDataService = Depends(get_market_data_service)
 ):
-    """Get the latest collected tickers for a single connector."""
-    tickers = market_data_manager.get_tickers(connector_name).get(connector_name, {})
+    """
+    Get the tickers for a single connector, with 24h base and quote volume where available.
+
+    Tickers are fetched on demand through a keyless public data connector when the cache is
+    missing or stale, so this works for exchanges no API keys are configured for. The connector
+    then joins the background refresh cycle.
+    """
+    try:
+        tickers = await market_data_manager.fetch_connector_tickers(
+            connector_name, max_age=max_age, force=refresh
+        )
+    except UnknownConnectorError:
+        raise HTTPException(status_code=404, detail=f"Connector '{connector_name}' not found")
+    except TickerUnsupportedError as e:
+        # Known connector, but no amount of retrying will make it serve public tickers.
+        raise HTTPException(status_code=400, detail=str(e))
+    except TickerFetchError as e:
+        raise HTTPException(
+            status_code=502, detail=f"Failed to fetch tickers from '{connector_name}': {e}"
+        )
+    except Exception as e:
+        logger.error(
+            f"Unexpected error fetching tickers for {connector_name}: {e}", exc_info=True
+        )
+        raise HTTPException(status_code=500, detail=str(e))
+
     info = _tickers_to_info(tickers)
-    return ConnectorTickersResponse(connector=connector_name, count=len(info), tickers=info)
+    return ConnectorTickersResponse(
+        connector=connector_name,
+        count=len(info),
+        tickers=info,
+        updated_at=market_data_manager.ticker_updated_at(connector_name),
+    )
 
 
 @router.post("/rates", response_model=RatesResponse)
