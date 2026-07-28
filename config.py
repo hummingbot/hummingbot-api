@@ -59,6 +59,15 @@ class MarketDataSettings(BaseSettings):
         default=30,
         description="How often to refresh tickers from connected exchanges in seconds"
     )
+    ticker_max_age: int = Field(
+        default=60,
+        description="Max age of cached tickers before an on-demand request refetches them, in seconds"
+    )
+    ticker_subscription_ttl: int = Field(
+        default=600,
+        description="How long a ticker-only connector stays in the background refresh cycle "
+                    "after its last request, in seconds"
+    )
 
     model_config = SettingsConfigDict(env_prefix="MARKET_DATA_", extra="ignore")
 
