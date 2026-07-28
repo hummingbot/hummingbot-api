@@ -198,7 +198,12 @@ class TradingPairResponse(BaseModel):
 class TickerInfo(BaseModel):
     """A single collected ticker."""
     price: float = Field(description="Mid price (or last price when bid/ask unavailable)")
-    volume: Optional[float] = Field(default=None, description="24h quote volume when available")
+    base_volume: Optional[float] = Field(
+        default=None, description="24h volume denominated in the base asset"
+    )
+    quote_volume: Optional[float] = Field(
+        default=None, description="24h volume denominated in the quote asset"
+    )
     timestamp: float = Field(description="Collection timestamp")
 
 
@@ -207,6 +212,9 @@ class ConnectorTickersResponse(BaseModel):
     connector: str = Field(description="Connector name")
     count: int = Field(description="Number of tickers")
     tickers: Dict[str, TickerInfo] = Field(description="Trading pair to ticker mapping")
+    updated_at: Optional[float] = Field(
+        default=None, description="Unix timestamp of the last successful fetch"
+    )
 
 
 class AllTickersResponse(BaseModel):
