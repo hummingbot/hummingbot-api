@@ -35,6 +35,13 @@ from utils.security import BackendAPISecurity
 logger = logging.getLogger(__name__)
 
 
+class UnknownConnectorError(ValueError):
+    """Raised when a connector name is not a known Hummingbot connector.
+
+    Subclasses ValueError so existing ``except ValueError`` handlers keep working.
+    """
+
+
 class UnifiedConnectorService:
     """
     Single source of truth for ALL connector instances.
@@ -183,6 +190,14 @@ class UnifiedConnectorService:
     # =========================================================================
     # Data Connector Management (non-authenticated, shared)
     # =========================================================================
+
+    def is_known_connector(self, connector_name: str) -> bool:
+        """True if the name is a known Hummingbot exchange connector.
+
+        Gateway network connectors (e.g. 'solana-mainnet-beta') are not in AllConnectorSettings
+        and therefore return False.
+        """
+        return connector_name in self._conn_settings
 
     def get_data_connector(self, connector_name: str) -> ConnectorBase:
         """
@@ -689,7 +704,7 @@ class UnifiedConnectorService:
         """Create a non-authenticated data connector."""
         conn_setting = self._conn_settings.get(connector_name)
         if not conn_setting:
-            raise ValueError(f"Connector {connector_name} not found")
+            raise UnknownConnectorError(f"Connector {connector_name} not found")
 
         # Get config keys but don't use real API keys
         connector_config = AllConnectorSettings.get_connector_config_keys(connector_name)
