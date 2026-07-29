@@ -7,15 +7,48 @@ prices, without depending on the global ``RateOracle``. The algorithm resolves a
 in order: a direct lookup, the reverse pair (reciprocal), or a bridged cross-rate through
 any intermediate pair that shares the base or quote asset.
 
-The helper functions (``combine_to_hb_trading_pair``, ``split_hb_trading_pair`` and
-``unwrap_token_symbol``) are reused from hummingbot to keep trading-pair formatting and
-token normalization identical to the rest of the stack.
+The trading-pair helpers (``combine_to_hb_trading_pair`` and ``split_hb_trading_pair``) are
+reused from hummingbot. ``unwrap_token_symbol`` is vendored below instead of imported: it has
+moved between ``hummingbot.core.gateway.utils`` and ``hummingbot.core.rate_oracle.utils``
+across hummingbot versions, so importing it makes the API fail to boot on some installs.
 """
+import re
 from decimal import Decimal
-from typing import Dict, Optional
+from typing import Dict, List, Match, Optional, Pattern
 
 from hummingbot.connector.utils import combine_to_hb_trading_pair, split_hb_trading_pair
-from hummingbot.core.rate_oracle.utils import unwrap_token_symbol
+
+# W{TOKEN} only applies to a few special tokens. It should NOT match all W-prefixed token names like WAVE or WOW.
+CAPITAL_W_SYMBOLS_PATTERN = re.compile(r"^W(BTC|ETH|AVAX|ALBT|XRP|POL)")
+
+# w{TOKEN} generally means a wrapped token on the Ethereum network. e.g. wNXM, wDGLD.
+SMALL_W_SYMBOLS_PATTERN = re.compile(r"^w(\w+)")
+
+# {TOKEN}.e generally means a wrapped token on the Avalanche network.
+DOT_E_SYMBOLS_PATTERN = re.compile(r"(\w+)\.e$", re.IGNORECASE)
+
+USD_EQUIVALANT_TOKENS = ["USC"]
+
+
+def unwrap_token_symbol(on_chain_token_symbol: str) -> str:
+    """
+    Normalize a wrapped/bridged token symbol to its underlying asset (e.g. WBTC -> BTC,
+    wNXM -> NXM, USDC.e -> USDC). Vendored from hummingbot to keep normalization identical
+    to the rest of the stack without depending on its module layout.
+    """
+    patterns: List[Pattern] = [
+        CAPITAL_W_SYMBOLS_PATTERN,
+        SMALL_W_SYMBOLS_PATTERN,
+        DOT_E_SYMBOLS_PATTERN
+    ]
+    for p in patterns:
+        m: Optional[Match] = p.search(on_chain_token_symbol)
+        if m is not None:
+            return m.group(1)
+
+    if on_chain_token_symbol in USD_EQUIVALANT_TOKENS:
+        on_chain_token_symbol = "USDT"
+    return on_chain_token_symbol
 
 
 def find_rate(prices: Dict[str, Decimal], pair: str) -> Optional[Decimal]:
