@@ -197,6 +197,8 @@ async def lifespan(app: FastAPI):
         cleanup_interval=settings.market_data.cleanup_interval,
         feed_timeout=settings.market_data.feed_timeout,
         ticker_update_interval=settings.market_data.ticker_update_interval,
+        ticker_max_age=settings.market_data.ticker_max_age,
+        ticker_subscription_ttl=settings.market_data.ticker_subscription_ttl,
     )
     # Connector trade-volume telemetry resolves rates through the ticker pool instead of the
     # legacy RateOracle singleton.
