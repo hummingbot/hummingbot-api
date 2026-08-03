@@ -482,8 +482,13 @@ class BotsOrchestrator:
         deployment_status: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
+        include_final_status: bool = False,
     ) -> List[Dict]:
-        """Get bot runs with optional filtering, serialized as dictionaries."""
+        """Get bot runs with optional filtering, serialized as dictionaries.
+
+        ``final_status`` is omitted by default: the blob is ~99% of a run record's
+        bytes (up to ~89 KB each) and is only meaningful on the detail endpoint.
+        """
         async with self.db_manager.get_session_context() as session:
             bot_run_repo = BotRunRepository(session)
             bot_runs = await bot_run_repo.get_bot_runs(
@@ -496,7 +501,10 @@ class BotsOrchestrator:
                 limit=limit,
                 offset=offset,
             )
-            return [self._serialize_bot_run(run) for run in bot_runs]
+            return [
+                self._serialize_bot_run(run, include_final_status=include_final_status)
+                for run in bot_runs
+            ]
 
     async def get_bot_run_stats(self) -> Dict[str, Any]:
         """Get statistics about bot runs."""
@@ -560,9 +568,13 @@ class BotsOrchestrator:
             # Don't fail the deployment if bot run creation fails
 
     @staticmethod
-    def _serialize_bot_run(run) -> Dict:
-        """Serialize a BotRun ORM object into a JSON-friendly dictionary."""
-        return {
+    def _serialize_bot_run(run, include_final_status: bool = True) -> Dict:
+        """Serialize a BotRun ORM object into a JSON-friendly dictionary.
+
+        Set ``include_final_status=False`` to drop the (large) final status blob,
+        e.g. for list responses.
+        """
+        serialized = {
             "id": run.id,
             "bot_name": run.bot_name,
             "instance_name": run.instance_name,
@@ -576,9 +588,11 @@ class BotsOrchestrator:
             "deployment_status": run.deployment_status,
             "run_status": run.run_status,
             "deployment_config": run.deployment_config,
-            "final_status": run.final_status,
             "error_message": run.error_message,
         }
+        if include_final_status:
+            serialized["final_status"] = run.final_status
+        return serialized
 
     # ============================================
     # Stop & Archive orchestration
