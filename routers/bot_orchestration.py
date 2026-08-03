@@ -256,6 +256,7 @@ async def get_bot_runs(
     deployment_status: str = None,
     limit: int = 100,
     offset: int = 0,
+    include_final_status: bool = False,
     bots_manager: BotsOrchestrator = Depends(get_bots_orchestrator)
 ):
     """
@@ -270,6 +271,9 @@ async def get_bot_runs(
         deployment_status: Filter by deployment status (DEPLOYED, FAILED, ARCHIVED)
         limit: Maximum number of results to return
         offset: Number of results to skip
+        include_final_status: Include the final status snapshot for each run. Off by
+            default because the blob can be ~89 KB per record (~99% of the payload);
+            use GET /bot-runs/{bot_run_id} to fetch it for a single run.
         bots_manager: Bot orchestrator service dependency
 
     Returns:
@@ -284,7 +288,8 @@ async def get_bot_runs(
             run_status=run_status,
             deployment_status=deployment_status,
             limit=limit,
-            offset=offset
+            offset=offset,
+            include_final_status=include_final_status
         )
 
         return {
