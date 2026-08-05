@@ -210,6 +210,26 @@ class AppSettings(BaseSettings):
     )
 
 
+class BacktestingSettings(BaseSettings):
+    """Backtest result retention.
+
+    A finished backtest is ~98% bulk arrays (processed_data, pnl_timeseries) and only a
+    few KB of metrics, so full payloads are archived to disk and only metrics stay
+    resident. Retention is therefore a count of results, not a memory budget.
+    """
+
+    max_results: int = Field(
+        default=100,
+        description="How many finished backtests to retain before the oldest are reaped"
+    )
+    results_path: str = Field(
+        default="bots/data/backtests",
+        description="Directory holding archived backtest payloads (inside the bots volume, so it survives redeploys)"
+    )
+
+    model_config = SettingsConfigDict(env_prefix="BACKTESTING_", extra="ignore")
+
+
 class Settings(BaseSettings):
     """Combined application settings."""
 
@@ -221,6 +241,7 @@ class Settings(BaseSettings):
     gateway: GatewaySettings = Field(default_factory=GatewaySettings)
     cors: CORSSettings = Field(default_factory=CORSSettings)
     app: AppSettings = Field(default_factory=AppSettings)
+    backtesting: BacktestingSettings = Field(default_factory=BacktestingSettings)
 
     # Direct banned_tokens field to handle env parsing
     banned_tokens: List[str] = Field(
@@ -234,5 +255,6 @@ class Settings(BaseSettings):
         env_prefix="",
         extra="ignore"
     )
+
 
 settings = Settings()
