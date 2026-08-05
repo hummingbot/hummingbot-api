@@ -43,10 +43,17 @@ async def get_backtest_task(
     service: BacktestingService = Depends(get_backtesting_service),
 ):
     """Get a backtest task by ID, including results if completed."""
-    task = service.get_task(task_id)
-    if task is None:
+    payload = service.get_task_payload(task_id)
+    if payload is None:
+        # A reaped task is reported as 410 rather than 404: it did exist and its result is
+        # permanently gone, which a caller cannot infer from "not found".
+        if service.was_reaped(task_id):
+            raise HTTPException(
+                status_code=410,
+                detail=f"Task {task_id} completed but its result was reaped to honour the retention limit",
+            )
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-    return task.to_dict(include_result=True)
+    return payload
 
 
 @router.delete("/tasks/{task_id}")
