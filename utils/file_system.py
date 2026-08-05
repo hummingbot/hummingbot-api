@@ -312,6 +312,22 @@ class FileSystemUtil:
             f"bots.controllers.{controller_type}.{controller_name}.{controller_name}",
         ]
 
+        # A controller module imports its own base class, so the base is a member of the
+        # module namespace too -- and every base except ControllerConfigBase is itself a
+        # strict subclass of ControllerConfigBase. Matching on "subclass and not my own
+        # base" therefore accepts the *sibling* bases, and since getmembers() returns
+        # members sorted by name, whichever sorts first wins. That silently resolved
+        # e.g. ema_trend_v1 -> DirectionalTradingControllerConfigBase ("D" < "E"), whose
+        # extra="forbid" then rejected every controller-specific field (ema_fast, ...)
+        # as "Extra inputs are not permitted". Exclude ALL bases, as
+        # BacktestingEngineBase.get_controller_config_instance_from_dict already does.
+        config_bases = (
+            ControllerConfigBase,
+            DirectionalTradingControllerConfigBase,
+            MarketMakingControllerConfigBase,
+        )
+
+        errors: list[str] = []
         for module_name in module_paths:
             try:
                 if module_name not in sys.modules:
@@ -319,20 +335,21 @@ class FileSystemUtil:
                 else:
                     script_module = importlib.reload(sys.modules[module_name])
 
-                # Find the subclass of controller config base in the module
+                # Find the concrete config subclass defined by this controller
                 for _, cls in inspect.getmembers(script_module, inspect.isclass):
-                    is_directional = (issubclass(cls, DirectionalTradingControllerConfigBase)
-                                      and cls is not DirectionalTradingControllerConfigBase)
-                    is_market_making = (issubclass(cls, MarketMakingControllerConfigBase)
-                                        and cls is not MarketMakingControllerConfigBase)
-                    is_generic = (issubclass(cls, ControllerConfigBase)
-                                  and cls is not ControllerConfigBase)
-                    if is_directional or is_market_making or is_generic:
+                    if issubclass(cls, ControllerConfigBase) and cls not in config_bases:
                         return cls
-            except (ImportError, AttributeError, ModuleNotFoundError):
-                continue
+            except ModuleNotFoundError as e:
+                # A genuinely absent controller module is expected while probing the two
+                # layouts; a missing third-party dependency (e.g. sklearn) is not, and
+                # must not be reported as "controller not found".
+                if e.name and not module_name.startswith(e.name):
+                    errors.append(f"{module_name}: missing dependency '{e.name}'")
+            except (ImportError, AttributeError) as e:
+                errors.append(f"{module_name}: {type(e).__name__}: {e}")
 
-        logger.warning(f"Could not load controller class for '{controller_type}.{controller_name}'")
+        detail = f" ({'; '.join(errors)})" if errors else ""
+        logger.warning(f"Could not load controller class for '{controller_type}.{controller_name}'{detail}")
         return None
 
     def ensure_file_and_dump_text(self, file_path: str, text: str) -> None:
@@ -464,7 +481,8 @@ class FileSystemUtil:
         if not os.path.isdir(archived_bot_dir):
             raise FileNotFoundError(f"Archived bot directory '{bot_name}' not found")
 
-        import subprocess, platform
+        import platform
+        import subprocess
         if platform.system() == 'Darwin':
             # Strip macOS ACLs (Docker adds "deny delete" ACLs)
             subprocess.run(['chmod', '-R', '-N', archived_bot_dir], check=False)
