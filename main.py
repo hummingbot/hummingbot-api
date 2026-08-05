@@ -50,6 +50,7 @@ from routers import (  # noqa: E402
     docker,
     executors,
     gateway,
+    gateway_amm,
     gateway_clmm,
     gateway_swap,
     market_data,
@@ -431,6 +432,7 @@ app.include_router(portfolio.router, dependencies=[Depends(auth_user)])
 app.include_router(trading.router, dependencies=[Depends(auth_user)])
 app.include_router(gateway_swap.router, dependencies=[Depends(auth_user)])
 app.include_router(gateway_clmm.router, dependencies=[Depends(auth_user)])
+app.include_router(gateway_amm.router, dependencies=[Depends(auth_user)])
 app.include_router(bot_orchestration.router, dependencies=[Depends(auth_user)])
 app.include_router(controllers.router, dependencies=[Depends(auth_user)])
 app.include_router(scripts.router, dependencies=[Depends(auth_user)])

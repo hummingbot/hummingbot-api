@@ -87,8 +87,22 @@ from .gateway import (
     UpdateApiKeysRequest,
 )
 
-# Gateway Trading models (Swap + CLMM only, AMM removed)
-from .gateway_trading import (  # Swap models; CLMM models; Pool info models; Pool listing models
+# Gateway Trading models (Swap + CLMM + AMM)
+from .gateway_trading import (  # Swap models; CLMM models; AMM models; Pool info models; Pool listing models
+    AMMAddLiquidityRequest,
+    AMMCreatePoolRequest,
+    AMMCreatePoolResponse,
+    AMMExecuteSwapRequest,
+    AMMPoolInfoResponse,
+    AMMPositionDetail,
+    AMMPositionInfoResponse,
+    AMMPositionsOwnedRequest,
+    AMMQuoteLiquidityRequest,
+    AMMQuoteLiquidityResponse,
+    AMMQuoteSwapRequest,
+    AMMQuoteSwapResponse,
+    AMMRemoveLiquidityRequest,
+    AMMTransactionResponse,
     CLMMAddLiquidityRequest,
     CLMMClosePositionRequest,
     CLMMCollectFeesRequest,
@@ -302,6 +316,21 @@ __all__ = [
     # Gateway Trading models
     "SwapQuoteRequest",
     "SwapQuoteResponse",
+    # AMM models
+    "AMMPoolInfoResponse",
+    "AMMPositionDetail",
+    "AMMPositionInfoResponse",
+    "AMMQuoteSwapRequest",
+    "AMMQuoteSwapResponse",
+    "AMMExecuteSwapRequest",
+    "AMMTransactionResponse",
+    "AMMQuoteLiquidityRequest",
+    "AMMQuoteLiquidityResponse",
+    "AMMAddLiquidityRequest",
+    "AMMRemoveLiquidityRequest",
+    "AMMCreatePoolRequest",
+    "AMMCreatePoolResponse",
+    "AMMPositionsOwnedRequest",
     "SwapExecuteRequest",
     "SwapExecuteResponse",
     "CLMMOpenPositionRequest",

@@ -236,3 +236,143 @@ def test_check_gateway_error_ignores_legit_error_fields():
     only the exact {'error','status'} shape is the client's HTTP-error marker."""
     poll = {"txStatus": -1, "error": "SLIPPAGE_EXCEEDED (0x1771)", "signature": "abc", "fee": 0.1}
     assert check_gateway_error(poll) is poll
+
+
+# ============================================
+# AMM paths and payloads (unified /trading/amm)
+# ============================================
+# Pin the amm_* client methods to Gateway's /trading/amm/* route table (verified live on
+# 2026-08-05, hummingbot/gateway feat/meteora-damm-v2): camelCase keys, connector + chainNetwork,
+# position-addressing for meteora, and per-connector create-pool extras with unset optionals omitted.
+
+NET = "solana-mainnet-beta"
+WALLET = "82SggYRE2Vo4jN4a2pk3aQ4SET4ctafZJGbowmCqyHx5"
+POOL = "Bv65dPQKpUo7vRELhEGBkkm5wq9J3MvKGyUj8WxYtunM"
+
+
+@pytest.mark.asyncio
+async def test_amm_pool_info_path(client_and_calls):
+    client, calls = client_and_calls
+    await client.amm_pool_info(connector="meteora", chain_network=NET, pool_address=POOL)
+    c = calls[0]
+    assert (c["method"], c["path"]) == ("GET", "trading/amm/pool-info")
+    assert c["params"] == {"connector": "meteora", "chainNetwork": NET, "poolAddress": POOL}
+
+
+@pytest.mark.asyncio
+async def test_amm_position_info_path(client_and_calls):
+    client, calls = client_and_calls
+    await client.amm_position_info(connector="meteora", chain_network=NET, pool_address=POOL, wallet_address=WALLET)
+    c = calls[0]
+    assert (c["method"], c["path"]) == ("GET", "trading/amm/position-info")
+    assert c["params"] == {"connector": "meteora", "chainNetwork": NET, "poolAddress": POOL, "walletAddress": WALLET}
+
+
+@pytest.mark.asyncio
+async def test_amm_positions_owned_path(client_and_calls):
+    client, calls = client_and_calls
+    await client.amm_positions_owned(connector="meteora", chain_network=NET, wallet_address=WALLET)
+    c = calls[0]
+    assert (c["method"], c["path"]) == ("GET", "trading/amm/positions-owned")
+    assert c["params"] == {"connector": "meteora", "chainNetwork": NET, "walletAddress": WALLET}
+
+
+@pytest.mark.asyncio
+async def test_amm_quote_swap_path_and_slippage_omitted(client_and_calls):
+    client, calls = client_and_calls
+    await client.amm_quote_swap(connector="raydium", chain_network=NET, pool_address=POOL,
+                                base_token="SOL", side="SELL", amount=0.01)
+    c = calls[0]
+    assert (c["method"], c["path"]) == ("GET", "trading/amm/quote-swap")
+    assert c["params"] == {"connector": "raydium", "chainNetwork": NET, "poolAddress": POOL,
+                           "baseToken": "SOL", "side": "SELL", "amount": 0.01}
+    assert "slippagePct" not in c["params"]
+
+
+@pytest.mark.asyncio
+async def test_amm_execute_swap_path(client_and_calls):
+    client, calls = client_and_calls
+    await client.amm_execute_swap(connector="uniswap", chain_network="ethereum-mainnet", wallet_address=WALLET,
+                                  pool_address=POOL, base_token="WETH", side="BUY", amount=1.0, slippage_pct=0.5)
+    c = calls[0]
+    assert (c["method"], c["path"]) == ("POST", "trading/amm/execute-swap")
+    assert c["json"]["walletAddress"] == WALLET
+    assert c["json"]["chainNetwork"] == "ethereum-mainnet"
+    assert c["json"]["slippagePct"] == 0.5
+
+
+@pytest.mark.asyncio
+async def test_amm_add_liquidity_omits_position_when_unset(client_and_calls):
+    client, calls = client_and_calls
+    await client.amm_add_liquidity(connector="meteora", chain_network=NET, wallet_address=WALLET,
+                                   pool_address=POOL, base_token_amount=1.0, quote_token_amount=2.0)
+    c = calls[0]
+    assert (c["method"], c["path"]) == ("POST", "trading/amm/add-liquidity")
+    assert "positionAddress" not in c["json"]  # omit => open a new Meteora position
+
+
+@pytest.mark.asyncio
+async def test_amm_add_liquidity_includes_position_when_set(client_and_calls):
+    client, calls = client_and_calls
+    await client.amm_add_liquidity(connector="meteora", chain_network=NET, wallet_address=WALLET,
+                                   pool_address=POOL, base_token_amount=1.0, quote_token_amount=2.0,
+                                   position_address="POS123")
+    assert calls[0]["json"]["positionAddress"] == "POS123"
+
+
+@pytest.mark.asyncio
+async def test_amm_remove_liquidity_includes_position_when_set(client_and_calls):
+    client, calls = client_and_calls
+    await client.amm_remove_liquidity(connector="meteora", chain_network=NET, wallet_address=WALLET,
+                                      pool_address=POOL, percentage_to_remove=100, position_address="POS123")
+    c = calls[0]
+    assert (c["method"], c["path"]) == ("POST", "trading/amm/remove-liquidity")
+    assert c["json"]["percentageToRemove"] == 100
+    assert c["json"]["positionAddress"] == "POS123"
+
+
+@pytest.mark.asyncio
+async def test_amm_remove_liquidity_omits_position_for_fungible(client_and_calls):
+    client, calls = client_and_calls
+    await client.amm_remove_liquidity(connector="raydium", chain_network=NET, wallet_address=WALLET,
+                                      pool_address=POOL, percentage_to_remove=50)
+    assert "positionAddress" not in calls[0]["json"]
+
+
+@pytest.mark.asyncio
+async def test_amm_create_pool_meteora_extras(client_and_calls):
+    client, calls = client_and_calls
+    await client.amm_create_pool(connector="meteora", chain_network=NET, wallet_address=WALLET,
+                                 base_token="SOL", quote_token="USDC", base_token_amount=1.0,
+                                 config_address="CFG123")
+    c = calls[0]
+    assert (c["method"], c["path"]) == ("POST", "trading/amm/create-pool")
+    assert c["json"]["configAddress"] == "CFG123"
+    # Raydium/Uniswap extras and seed-price fields omitted when unset
+    for k in ("feeConfigIndex", "gasPrice", "maxGas", "quoteTokenAmount", "initialPrice"):
+        assert k not in c["json"]
+
+
+@pytest.mark.asyncio
+async def test_amm_create_pool_raydium_fee_config_index(client_and_calls):
+    client, calls = client_and_calls
+    await client.amm_create_pool(connector="raydium", chain_network=NET, wallet_address=WALLET,
+                                 base_token="SOL", quote_token="USDC", base_token_amount=1.0,
+                                 fee_config_index=0, quote_token_amount=100.0)
+    c = calls[0]
+    assert c["json"]["feeConfigIndex"] == 0
+    assert c["json"]["quoteTokenAmount"] == 100.0
+    assert "configAddress" not in c["json"]
+
+
+@pytest.mark.asyncio
+async def test_amm_create_pool_uniswap_gas_extras(client_and_calls):
+    client, calls = client_and_calls
+    await client.amm_create_pool(connector="uniswap", chain_network="ethereum-mainnet", wallet_address=WALLET,
+                                 base_token="WETH", quote_token="USDC", base_token_amount=1.0,
+                                 initial_price=3000.0, gas_price=20.0, max_gas=500000)
+    c = calls[0]
+    assert c["json"]["gasPrice"] == 20.0
+    assert c["json"]["maxGas"] == 500000
+    assert c["json"]["initialPrice"] == 3000.0
+    assert "configAddress" not in c["json"] and "feeConfigIndex" not in c["json"]
