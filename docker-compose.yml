@@ -2,6 +2,7 @@ services:
   hummingbot-api:
     container_name: hummingbot-api
     image: hummingbot/hummingbot-api:latest
+    restart: unless-stopped
     ports:
       - "8000:8000"
     volumes:
