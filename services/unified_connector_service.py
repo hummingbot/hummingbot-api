@@ -442,8 +442,14 @@ class UnifiedConnectorService:
             pairs.append(trading_pair)
 
         # 2. Throttler rate limits (#207). add_rate_limits() skips known limit_ids.
+        # Synced on data connectors too — their REST fetches go through the same
+        # throttler and can hit pair-templated limit_ids.
         throttler = getattr(connector, "_throttler", None)
-        if throttler is not None and hasattr(throttler, "add_rate_limits"):
+        if (
+            throttler is not None
+            and hasattr(throttler, "add_rate_limits")
+            and hasattr(connector, "rate_limits_rules")
+        ):
             try:
                 throttler.add_rate_limits(connector.rate_limits_rules)
             except Exception as e:
@@ -452,8 +458,12 @@ class UnifiedConnectorService:
                     f"{type(connector).__name__}: {e}"
                 )
 
-        # 3. Trading rules (#208). Only refresh when the pair has no rule yet —
-        # for per-pair-rules connectors this is a real (possibly on-chain) fetch.
+        # 3. Trading rules (#208). Trading connectors only — data connectors never
+        # place orders, and for per-pair-rules connectors a refresh is a real
+        # (possibly on-chain) fetch that would add latency and warnings to every
+        # order-book bootstrap. Only refresh when the pair has no rule yet.
+        if not getattr(connector, "is_trading_required", False):
+            return
         try:
             rules = getattr(connector, "trading_rules", None)
             if rules is not None and trading_pair not in rules and hasattr(connector, "_update_trading_rules"):

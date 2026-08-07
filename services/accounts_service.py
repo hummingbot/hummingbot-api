@@ -336,12 +336,12 @@ class AccountsService:
             raise
 
     async def load_account_state_history(self,
-                                        limit: Optional[int] = None,
-                                        cursor: Optional[str] = None,
-                                        start_time: Optional[datetime] = None,
-                                        end_time: Optional[datetime] = None,
-                                        interval: str = "5m",
-                                        account_names: Optional[List[str]] = None):
+                                         limit: Optional[int] = None,
+                                         cursor: Optional[str] = None,
+                                         start_time: Optional[datetime] = None,
+                                         end_time: Optional[datetime] = None,
+                                         interval: str = "5m",
+                                         account_names: Optional[List[str]] = None):
         """
         Load the account state history from the database with pagination and interval sampling.
 
@@ -543,7 +543,7 @@ class AccountsService:
                 tokens_info[info_idx]["value"] = float(price * Decimal(str(tokens_info[info_idx]["units"])))
 
         return tokens_info
-    
+
     async def _safe_get_last_traded_prices(self, connector, trading_pairs, timeout=10):
         """Safely get last traded prices with timeout and error handling.
         Fetches each pair individually via gather so one bad pair doesn't kill the rest."""
@@ -575,7 +575,7 @@ class AccountsService:
         last_traded.update(self._get_fallback_prices(missing_pairs))
 
         return last_traded
-    
+
     def _get_fallback_prices(self, trading_pairs):
         """Get fallback prices using cached values, only setting to 0 if no previous price exists."""
         fallback_prices = {}
@@ -618,7 +618,7 @@ class AccountsService:
 
         try:
             # Update the connector keys (this saves the credentials to file and validates them)
-            connector = await self._connector_service.update_connector_keys(account_name, connector_name, credentials)
+            await self._connector_service.update_connector_keys(account_name, connector_name, credentials)
 
             await self.update_account_state()
         except Exception as e:
@@ -687,13 +687,13 @@ class AccountsService:
         # Check if account already exists by looking at folders
         if account_name in self.list_accounts():
             raise HTTPException(status_code=400, detail="Account already exists.")
-        
+
         files_to_copy = ["conf_client.yml", "conf_fee_overrides.yml", "hummingbot_logs.yml", ".password_verification"]
         fs_util.create_folder('credentials', account_name)
         fs_util.create_folder(f'credentials/{account_name}', "connectors")
         for file in files_to_copy:
             fs_util.copy_file(f"credentials/master_account/{file}", f"credentials/{account_name}/{file}")
-        
+
         # Initialize account state
         self.accounts_state[account_name] = {}
 
@@ -716,7 +716,7 @@ class AccountsService:
         # Remove from account state
         if account_name in self.accounts_state:
             self.accounts_state.pop(account_name)
-    
+
     async def get_account_current_state(self, account_name: str) -> Dict[str, List[Dict]]:
         """
         Get current state for a specific account from database.
@@ -729,7 +729,7 @@ class AccountsService:
             logger.error(f"Error getting account current state: {e}")
             # Fallback to in-memory state
             return self.accounts_state.get(account_name, {})
-    
+
     async def get_account_state_history(self,
                                         account_name: str,
                                         limit: Optional[int] = None,
@@ -762,7 +762,7 @@ class AccountsService:
         except Exception as e:
             logger.error(f"Error getting account state history: {e}")
             return [], None, False
-    
+
     async def get_connector_current_state(self, account_name: str, connector_name: str) -> List[Dict]:
         """
         Get current state for a specific connector.
@@ -775,10 +775,10 @@ class AccountsService:
             logger.error(f"Error getting connector current state: {e}")
             # Fallback to in-memory state
             return self.accounts_state.get(account_name, {}).get(connector_name, [])
-    
-    async def get_connector_state_history(self, 
-                                          account_name: str, 
-                                          connector_name: str, 
+
+    async def get_connector_state_history(self,
+                                          account_name: str,
+                                          connector_name: str,
                                           limit: Optional[int] = None,
                                           cursor: Optional[str] = None,
                                           start_time: Optional[datetime] = None,
@@ -790,7 +790,7 @@ class AccountsService:
             async with self.db_manager.get_session_context() as session:
                 repository = AccountRepository(session)
                 return await repository.get_account_state_history(
-                    account_name=account_name, 
+                    account_name=account_name,
                     connector_name=connector_name,
                     limit=limit,
                     cursor=cursor,
@@ -800,7 +800,7 @@ class AccountsService:
         except Exception as e:
             logger.error(f"Error getting connector state history: {e}")
             return [], None, False
-    
+
     async def get_all_unique_tokens(self) -> List[str]:
         """
         Get all unique tokens across all accounts and connectors.
@@ -818,7 +818,7 @@ class AccountsService:
                     for token_info in connector_data:
                         tokens.add(token_info.get("token"))
             return sorted(list(tokens))
-    
+
     async def get_token_current_state(self, token: str) -> List[Dict]:
         """
         Get current state of a specific token across all accounts.
@@ -830,7 +830,7 @@ class AccountsService:
         except Exception as e:
             logger.error(f"Error getting token current state: {e}")
             return []
-    
+
     async def get_portfolio_value(self, account_name: Optional[str] = None) -> Dict[str, Any]:
         """
         Get total portfolio value, optionally filtered by account.
@@ -843,9 +843,9 @@ class AccountsService:
             logger.error(f"Error getting portfolio value: {e}")
             # Fallback to in-memory calculation
             portfolio = {"accounts": {}, "total_value": 0}
-            
+
             accounts_to_process = [account_name] if account_name else self.accounts_state.keys()
-            
+
             for acc_name in accounts_to_process:
                 account_value = 0
                 if acc_name in self.accounts_state:
@@ -854,9 +854,9 @@ class AccountsService:
                             account_value += token_info.get("value", 0)
                     portfolio["accounts"][acc_name] = account_value
                     portfolio["total_value"] += account_value
-            
+
             return portfolio
-    
+
     def get_portfolio_distribution(self, account_name: Optional[str] = None) -> Dict[str, Any]:
         """
         Get portfolio distribution by tokens with percentages.
@@ -872,8 +872,8 @@ class AccountsService:
         return self.portfolio_analytics_service.get_account_distribution(self.accounts_state)
 
     async def place_trade(self, account_name: str, connector_name: str, trading_pair: str,
-                         trade_type: TradeType, amount: Decimal, order_type: OrderType = OrderType.LIMIT,
-                         price: Optional[Decimal] = None, position_action: PositionAction = PositionAction.OPEN) -> str:
+                          trade_type: TradeType, amount: Decimal, order_type: OrderType = OrderType.LIMIT,
+                          price: Optional[Decimal] = None, position_action: PositionAction = PositionAction.OPEN) -> str:
         """
         Place a trade using the specified account and connector.
 
@@ -902,41 +902,50 @@ class AccountsService:
         # Validate price for limit orders
         if order_type in [OrderType.LIMIT, OrderType.LIMIT_MAKER] and price is None:
             raise HTTPException(status_code=400, detail="Price is required for LIMIT and LIMIT_MAKER orders")
-        
+
+        # Register the pair and sync pair-derived state (throttler limits, per-pair
+        # trading rules) — without this, per-pair-rules connectors (e.g. XRPL) 503
+        # forever on the empty-rules check below and 400 on the pair check after it,
+        # because rules are only built for pairs known at connector init (#207/#208).
+        await self._connector_service.sync_pair_derived_state(connector, trading_pair)
+
         # Check if trading rules are loaded
         if not connector.trading_rules:
             raise HTTPException(
-                status_code=503, 
+                status_code=503,
                 detail=f"Trading rules not yet loaded for {connector_name}. Please try again in a moment."
             )
-        
+
         # Validate trading pair and get trading rule
         if trading_pair not in connector.trading_rules:
             available_pairs = list(connector.trading_rules.keys())[:10]  # Show first 10
             more_text = f" (and {len(connector.trading_rules) - 10} more)" if len(connector.trading_rules) > 10 else ""
             raise HTTPException(
-                status_code=400, 
+                status_code=400,
                 detail=f"Trading pair '{trading_pair}' not supported on {connector_name}. "
                        f"Available pairs: {available_pairs}{more_text}"
             )
-        
+
         trading_rule = connector.trading_rules[trading_pair]
-        
+
         # Validate order type is supported
         if order_type not in connector.supported_order_types():
             supported_types = [ot.name for ot in connector.supported_order_types()]
-            raise HTTPException(status_code=400, detail=f"Order type '{order_type.name}' not supported. Supported types: {supported_types}")
-        
+            raise HTTPException(
+                status_code=400,
+                detail=f"Order type '{order_type.name}' not supported. Supported types: {supported_types}")
+
         # Quantize amount according to trading rules
         quantized_amount = connector.quantize_order_amount(trading_pair, amount)
-        
+
         # Validate minimum order size
         if quantized_amount < trading_rule.min_order_size:
             raise HTTPException(
-                status_code=400, 
-                detail=f"Order amount {quantized_amount} is below minimum order size {trading_rule.min_order_size} for {trading_pair}"
+                status_code=400,
+                detail=f"Order amount {quantized_amount} is below minimum order size "
+                       f"{trading_rule.min_order_size} for {trading_pair}"
             )
-        
+
         # Calculate and validate notional size
         if order_type in [OrderType.LIMIT, OrderType.LIMIT_MAKER]:
             quantized_price = connector.quantize_order_price(trading_pair, price)
@@ -950,15 +959,14 @@ class AccountsService:
             except Exception as e:
                 logger.error(f"Error getting market price for {trading_pair}: {e}")
             notional_size = price * quantized_amount if price else Decimal("0")
-            
+
         if notional_size < trading_rule.min_notional_size:
             raise HTTPException(
                 status_code=400,
-                detail=f"Order notional value {notional_size} is below minimum notional size {trading_rule.min_notional_size} for {trading_pair}. "
+                detail=f"Order notional value {notional_size} is below minimum notional size "
+                       f"{trading_rule.min_notional_size} for {trading_pair}. "
                        f"Increase the amount or price to meet the minimum requirement."
             )
-        
-
 
         try:
             # Place the order using the connector with quantized values
@@ -980,16 +988,17 @@ class AccountsService:
                     position_action=position_action
                 )
 
-            logger.info(f"Placed {trade_type} order for {amount} {trading_pair} on {connector_name} (Account: {account_name}). Order ID: {order_id}")
+            logger.info(f"Placed {trade_type} order for {amount} {trading_pair} on {connector_name} "
+                        f"(Account: {account_name}). Order ID: {order_id}")
             return order_id
-            
+
         except HTTPException:
             # Re-raise HTTP exceptions as-is
             raise
         except Exception as e:
             logger.error(f"Failed to place {trade_type} order: {e}")
             raise HTTPException(status_code=500, detail=f"Failed to place trade: {str(e)}")
-    
+
     async def get_connector_instance(self, account_name: str, connector_name: str):
         """
         Get a connector instance for direct access.
@@ -1012,38 +1021,38 @@ class AccountsService:
     async def get_active_orders(self, account_name: str, connector_name: str) -> Dict[str, Any]:
         """
         Get active orders for a specific connector.
-        
+
         Args:
             account_name: Name of the account
             connector_name: Name of the connector
-            
+
         Returns:
             Dictionary of active orders
         """
         connector = await self.get_connector_instance(account_name, connector_name)
         return {order_id: order.to_json() for order_id, order in connector.in_flight_orders.items()}
-    
+
     async def cancel_order(self, account_name: str, connector_name: str, client_order_id: str) -> str:
         """
         Cancel an active order.
-        
+
         Args:
             account_name: Name of the account
             connector_name: Name of the connector
             client_order_id: Client order ID to cancel
-            
+
         Returns:
             Client order ID that was cancelled
-            
+
         Raises:
             HTTPException: 404 if order not found, 500 if cancellation fails
         """
         connector = await self.get_connector_instance(account_name, connector_name)
-        
+
         # Check if order exists in in-flight orders
         if client_order_id not in connector.in_flight_orders:
             raise HTTPException(status_code=404, detail=f"Order '{client_order_id}' not found in active orders")
-        
+
         try:
             result = connector.cancel(trading_pair="NA", client_order_id=client_order_id)
             logger.info(f"Initiated cancellation for order {client_order_id} on {connector_name} (Account: {account_name})")
@@ -1051,9 +1060,9 @@ class AccountsService:
         except Exception as e:
             logger.error(f"Failed to initiate cancellation for order {client_order_id}: {e}")
             raise HTTPException(status_code=500, detail=f"Failed to initiate order cancellation: {str(e)}")
-    
+
     async def set_leverage(self, account_name: str, connector_name: str,
-                          trading_pair: str, leverage: int) -> Dict[str, str]:
+                           trading_pair: str, leverage: int) -> Dict[str, str]:
         """
         Set leverage for a specific trading pair on a perpetual connector.
         Delegates to PerpetualTradingService.
@@ -1061,7 +1070,7 @@ class AccountsService:
         return await self.perpetual_trading_service.set_leverage(account_name, connector_name, trading_pair, leverage)
 
     async def set_position_mode(self, account_name: str, connector_name: str,
-                               position_mode: PositionMode) -> Dict[str, str]:
+                                position_mode: PositionMode) -> Dict[str, str]:
         """
         Set position mode for a perpetual connector.
         Delegates to PerpetualTradingService.

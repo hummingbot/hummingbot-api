@@ -16,11 +16,16 @@ from services.unified_connector_service import UnifiedConnectorService
 class FakePerPairRulesConnector:
     """Mimics a connector (bybit-style throttler + XRPL-style per-pair rules)."""
 
-    def __init__(self, trading_pairs=None):
+    def __init__(self, trading_pairs=None, trading_required=True):
         self._trading_pairs = trading_pairs
         self._throttler = AsyncThrottler(rate_limits=self._build_limits(trading_pairs or []))
         self._trading_rules = {}
+        self._trading_required = trading_required
         self.rules_fetch_count = 0
+
+    @property
+    def is_trading_required(self):
+        return self._trading_required
 
     @staticmethod
     def _build_limits(trading_pairs):
@@ -85,6 +90,19 @@ def test_none_trading_pairs_initialized():
     connector = FakePerPairRulesConnector(trading_pairs=None)
     _run(UnifiedConnectorService.sync_pair_derived_state(connector, "RLUSD-XRP"))
     assert connector._trading_pairs == ["RLUSD-XRP"]
+
+
+def test_data_connector_skips_rules_but_syncs_throttler():
+    """Data connectors (trading_required=False) never place orders — no rules
+    fetch (possibly on-chain, would add latency to order-book bootstrap), but
+    their REST fetches share the throttler, so limits must still sync."""
+    connector = FakePerPairRulesConnector(trading_pairs=[], trading_required=False)
+    _run(UnifiedConnectorService.sync_pair_derived_state(connector, "BTC-USDT"))
+
+    assert connector._trading_pairs == ["BTC-USDT"]
+    assert connector.rules_fetch_count == 0
+    limit_ids = {limit.limit_id for limit in connector._throttler._rate_limits}
+    assert "order/create-BTC-USDT" in limit_ids
 
 
 def test_minimal_connector_does_not_raise():
