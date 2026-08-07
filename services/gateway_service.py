@@ -80,6 +80,46 @@ class GatewayService:
             logger.error(f"Error getting Gateway container: {e}")
             return None
 
+    def is_running(self) -> bool:
+        """True when the Gateway container exists and is running.
+
+        This is the direct signal for "is there a Gateway to talk to". Callers must not
+        infer it from cert presence: certs are generated up front so the mTLS client is
+        always usable, so their existence says nothing about whether the Gateway is up.
+        """
+        container = self._get_gateway_container()
+        return container is not None and container.status == "running"
+
+    @staticmethod
+    def _normalize_mount_source(source: str) -> str:
+        """Normalize a Docker-reported bind-mount source to a comparable host path.
+
+        Docker Desktop reports macOS/Windows host paths through a ``/host_mnt`` prefix
+        (host ``/Users/x`` surfaces as ``/host_mnt/Users/x``), so a raw string compare
+        against a configured host path would never match there.
+        """
+        normalized = os.path.normpath(source or "")
+        for prefix in ("/host_mnt", "/run/desktop/mnt/host"):
+            if normalized.startswith(prefix + os.sep):
+                normalized = normalized[len(prefix):]
+        return normalized
+
+    def _mounts_shared_certs(self, container) -> bool:
+        """True when the container mounts *this* API's shared cert set.
+
+        The Gateway reads its server cert from the directory we bind-mount at
+        ``GATEWAY_CERTS_BIND``. If that mount's source is our cert dir, the Gateway is
+        serving a cert signed by the CA our clients trust - consistent by construction.
+        A Gateway started by a different API instance (or a different checkout) mounts a
+        different source path, which is exactly the mismatch we need to detect.
+        """
+        expected = self._normalize_mount_source(gateway_certs_dir(host=True))
+        for mount in container.attrs.get("Mounts", []):
+            if mount.get("Destination") != self.GATEWAY_CERTS_BIND:
+                continue
+            return self._normalize_mount_source(mount.get("Source", "")) == expected
+        return False
+
     def _get_self_container(self) -> Optional[docker.models.containers.Container]:
         """Best-effort lookup of the container this API process is running in.
 
@@ -309,16 +349,17 @@ class GatewayService:
     def reconcile_certs(self) -> Dict[str, Any]:
         """Make a running Gateway usable by this API's mTLS client.
 
-        "Was the Gateway started with this API?" reduces to: does the API hold the shared client
-        cert set? The set lives on the bots/ volume both containers share, so a running Gateway
-        with the certs absent on the API side was not started by (or is inconsistent with) this
-        API instance — every secured request would fail the mTLS handshake.
+        "Was the Gateway started with this API?" reduces to: does the running container mount
+        *our* cert dir as its server cert source? Cert presence cannot answer this — the set is
+        generated up front at API startup, so it is present even for a Gateway this API never
+        started. A Gateway serving a cert from some other source would fail our mTLS handshake
+        on every request.
 
         Decision matrix:
-        - container not running        -> nothing (start the Gateway to generate certs)
-        - running + certs present       -> nothing (already consistent)
-        - running + certs missing       -> regenerate the cert set and restart the Gateway so it
-                                           loads the server cert that matches our client cert
+        - container not running          -> nothing (start the Gateway)
+        - running + mounts our certs     -> nothing (consistent by construction)
+        - running + mounts other/no certs-> regenerate the cert set and restart the Gateway so it
+                                            loads the server cert that matches our client cert
 
         The restart is required: the Gateway reads its server cert/key only at startup, so writing
         new certs to the shared volume has no effect on an already-running container.
@@ -331,15 +372,15 @@ class GatewayService:
                 "message": "Gateway container not running; start it to generate certs",
             }
 
-        if certs_present(gateway_certs_dir()):
+        if self._mounts_shared_certs(container) and certs_present(gateway_certs_dir()):
             return {
                 "success": True,
                 "action": "none",
-                "message": "Gateway running and shared mTLS certs present",
+                "message": "Gateway running against this API's shared mTLS cert set",
             }
 
         logger.warning(
-            "Gateway container is running but the shared mTLS certs are missing on the API side; "
+            "Gateway container is running but is not serving this API's shared mTLS cert set; "
             "regenerating the cert set and restarting the Gateway so it loads a matching server cert"
         )
         dirs = self._ensure_gateway_directories()

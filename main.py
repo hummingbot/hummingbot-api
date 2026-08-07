@@ -125,35 +125,36 @@ async def lifespan(app: FastAPI):
         )
 
     # Initialize GatewayHttpClient singleton
-    from utils.gateway_certs import certs_present, sync_client_certs_to_root
+    from utils.gateway_certs import ensure_gateway_certs
     parsed_gateway_url = urlparse(settings.gateway.url)
     gateway_use_ssl = parsed_gateway_url.scheme == "https"
     if gateway_use_ssl:
-        # SEC-048: the in-process GatewayHttpClient reads its client certs only from
-        # root_path()/certs. Mirror the shared cert set there if the Gateway was already
-        # started in a previous run (no-op when certs haven't been generated yet).
-        sync_client_certs_to_root()
+        # SEC-048: generate the shared mTLS cert set up front (idempotent; an existing CA is
+        # reused untouched) and mirror the client certs into root_path()/certs, the only place
+        # hummingbot's in-process GatewayHttpClient looks. Doing this at startup rather than
+        # lazily on Gateway start means the client can always build its SSL context — a missing
+        # ca_cert.pem used to raise FileNotFoundError on every single request.
+        try:
+            ensure_gateway_certs(settings.security.config_password)
+        except Exception as e:
+            # Non-fatal: the API must boot even if the cert dir isn't writable.
+            logging.warning(f"Could not prepare Gateway mTLS certs: {e}")
     gateway_config = GatewayConfigMap(
         gateway_api_host=parsed_gateway_url.hostname or "localhost",
         gateway_api_port=str(parsed_gateway_url.port or 15888),
         gateway_use_ssl=gateway_use_ssl
     )
-    gateway_client = GatewayHttpClient.get_instance(gateway_config)
+    GatewayHttpClient.get_instance(gateway_config)
     # Start the Gateway status monitor so Gateway's network connectors (e.g.
     # 'solana-mainnet-beta', and any newly added chain like 'ethereum-unichain') are
     # discovered from /config/chains and registered in AllConnectorSettings. Without
     # it, a Gateway network only lands in AllConnectorSettings lazily, when a connector
     # for it is first constructed; the monitor makes new chains enumerable without
     # first deploying a bot on them, and picks them up when Gateway comes online later.
-    # On a fresh install the shared mTLS certs don't exist until the Gateway is first
-    # started, and every 2s ping would fail loudly building the SSL context — defer;
-    # GatewayService.start() starts the monitor once the certs are generated.
-    if not gateway_use_ssl or certs_present():
-        gateway_client.start_monitor()
-    else:
-        logging.info(
-            "Gateway mTLS certs not generated yet; status monitor deferred until the Gateway is started"
-        )
+    # The monitor polls every 2s and logs loudly on every failure, so it is only started
+    # once there is a Gateway to poll — see the gateway_service block below, which has the
+    # Docker client needed to check. GatewayService.start() starts it when the Gateway
+    # comes up later.
     logging.info(f"Initialized GatewayHttpClient with URL: {settings.gateway.url}")
 
     # Initialize database
@@ -268,6 +269,21 @@ async def lifespan(app: FastAPI):
                 logging.info(f"Gateway cert reconciliation: {reconcile.get('message')}")
         except Exception as e:
             logging.warning(f"Gateway cert reconciliation skipped: {e}")
+
+    # Start the Gateway status monitor only when there is a Gateway to poll. Gating on the
+    # container itself (rather than on cert presence, which is now always true) keeps the 2s
+    # poll loop from spamming errors for the many deployments that never run a Gateway.
+    # Plain-HTTP setups may point at a Gateway this API doesn't manage, so keep polling there.
+    try:
+        gateway_is_running = gateway_service.is_running()
+    except Exception as e:
+        logging.warning(f"Could not determine Gateway container state: {e}")
+        gateway_is_running = False
+    if not gateway_use_ssl or gateway_is_running:
+        GatewayHttpClient.get_instance().start_monitor()
+    else:
+        logging.info("Gateway container not running; status monitor deferred until it is started")
+
     bot_archiver = BotArchiver(
         settings.aws.api_key,
         settings.aws.secret_key,
