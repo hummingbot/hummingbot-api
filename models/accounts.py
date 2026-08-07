@@ -1,5 +1,6 @@
+from typing import Any, Dict, Optional
+
 from pydantic import BaseModel, Field
-from typing import Dict, Any
 
 
 class LeverageRequest(BaseModel):
@@ -11,6 +12,11 @@ class LeverageRequest(BaseModel):
 class PositionModeRequest(BaseModel):
     """Request model for setting position mode on perpetual connectors"""
     position_mode: str = Field(description="Position mode (HEDGE or ONEWAY)")
+    trading_pair: Optional[str] = Field(
+        default=None,
+        description="Pair to register on the connector before switching. Position-mode "
+                    "implementations apply the switch through the connector's trading "
+                    "pairs, so at least one registered pair is required.")
 
 
 class CredentialRequest(BaseModel):

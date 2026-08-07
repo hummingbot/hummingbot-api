@@ -114,6 +114,53 @@ def test_minimal_connector_does_not_raise():
     assert minimal._trading_pairs == ["BTC-USDT"]
 
 
+def test_set_position_mode_refuses_empty_pairs_and_registers_provided_pair():
+    """Position-mode implementations iterate connector.trading_pairs and silently
+    no-op when the list is empty — the service must refuse loudly instead of
+    reporting success, and must register a provided pair before switching."""
+    from fastapi import HTTPException
+    from hummingbot.core.data_type.common import PositionMode
+
+    from services.perpetual_trading_service import PerpetualTradingService
+
+    class FakePerpConnector(FakePerPairRulesConnector):
+        def __init__(self):
+            super().__init__(trading_pairs=[])
+            self.mode_set = None
+
+        @property
+        def trading_pairs(self):
+            return self._trading_pairs or []
+
+        def supported_position_modes(self):
+            return [PositionMode.HEDGE, PositionMode.ONEWAY]
+
+        def set_position_mode(self, mode):
+            self.mode_set = mode
+
+    connector = FakePerpConnector()
+
+    async def provider(account_name, connector_name):
+        return connector
+
+    service = PerpetualTradingService(provider)
+
+    # No pair provided and none registered -> loud 400, exchange never touched
+    try:
+        _run(service.set_position_mode("master", "bybit_perpetual", PositionMode.HEDGE))
+        raise AssertionError("expected HTTPException for empty trading_pairs")
+    except HTTPException as e:
+        assert e.status_code == 400
+    assert connector.mode_set is None
+
+    # Pair provided -> registered (with rules/throttler synced), then switched
+    result = _run(service.set_position_mode(
+        "master", "bybit_perpetual", PositionMode.HEDGE, trading_pair="BTC-USDT"))
+    assert connector._trading_pairs == ["BTC-USDT"]
+    assert connector.mode_set == PositionMode.HEDGE
+    assert result["status"] == "success"
+
+
 def test_rules_fetch_failure_is_swallowed():
     connector = FakePerPairRulesConnector(trading_pairs=[])
 
