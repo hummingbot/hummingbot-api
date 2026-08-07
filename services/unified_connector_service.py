@@ -245,7 +245,8 @@ class UnifiedConnectorService:
 
         try:
             # Add trading pair and sync pair-derived state before starting network
-            await self.sync_pair_derived_state(connector, trading_pair)
+            # (data path: throttler only, no trading-rules fetch)
+            await self.sync_pair_derived_state(connector, trading_pair, refresh_rules=False)
 
             # Start network
             await connector.start_network()
@@ -412,7 +413,11 @@ class UnifiedConnectorService:
         return False
 
     @staticmethod
-    async def sync_pair_derived_state(connector: ConnectorBase, trading_pair: str) -> None:
+    async def sync_pair_derived_state(
+        connector: ConnectorBase,
+        trading_pair: str,
+        refresh_rules: bool = True,
+    ) -> None:
         """Sync connector state that was derived from the trading-pair list at init.
 
         Connectors are created with ``trading_pairs=[]`` and pairs are registered
@@ -487,11 +492,14 @@ class UnifiedConnectorService:
                     f"{type(connector).__name__}: {e}"
                 )
 
-        # 3. Trading rules (#208). Trading connectors only — data connectors never
-        # place orders, and for per-pair-rules connectors a refresh is a real
-        # (possibly on-chain) fetch that would add latency and warnings to every
-        # order-book bootstrap. Only refresh when the pair has no rule yet.
-        if not getattr(connector, "is_trading_required", False):
+        # 3. Trading rules (#208). Only on paths that lead to order placement
+        # (refresh_rules=True: add_market registration, place_trade) and only on
+        # trading connectors. For per-pair-rules connectors the refresh is a real
+        # (possibly on-chain) fetch — order-book/data bootstrap paths pass
+        # refresh_rules=False so market-data requests never pay for it, even when
+        # get_best_connector_for_market hands them a trading connector. Only
+        # refresh when the pair has no rule yet.
+        if not refresh_rules or not getattr(connector, "is_trading_required", False):
             return
         try:
             rules = getattr(connector, "trading_rules", None)
@@ -525,9 +533,10 @@ class UnifiedConnectorService:
         2. Otherwise, register the pair and start the tracker
         """
         try:
-            # Sync pair-derived state (throttler limits, trading rules) regardless of
-            # which path below registers the order book — see sync_pair_derived_state.
-            await self.sync_pair_derived_state(connector, trading_pair)
+            # Sync pair-derived state regardless of which path below registers the
+            # order book — throttler only: this is a market-data path, so it never
+            # pays for a trading-rules fetch even on a trading connector.
+            await self.sync_pair_derived_state(connector, trading_pair, refresh_rules=False)
 
             # Safety check - gateway/AMM connectors don't have order book trackers
             if not hasattr(connector, 'order_book_tracker') or connector.order_book_tracker is None:

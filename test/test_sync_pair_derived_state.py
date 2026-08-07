@@ -179,3 +179,53 @@ def test_rules_fetch_failure_is_swallowed():
 
     assert connector._trading_pairs == ["USDC-XRP"]  # registration still happened
     assert connector.rules_fetch_count == 1
+
+
+def test_order_book_path_skips_rules_fetch():
+    """Market-data paths pass refresh_rules=False: even on a trading connector
+    (get_best_connector_for_market prefers them), an order-book bootstrap must
+    never pay for a possibly-on-chain trading-rules fetch."""
+    connector = FakePairLimitsConnector(trading_pairs=[])
+    _run(UnifiedConnectorService.sync_pair_derived_state(
+        connector, "USDC-XRP", refresh_rules=False))
+
+    assert connector._trading_pairs == ["USDC-XRP"]
+    assert connector.rules_fetch_count == 0
+    limit_ids = {limit.limit_id for limit in connector._throttler._rate_limits}
+    assert "order/create-USDC-XRP" in limit_ids  # throttler still synced
+
+
+def test_unknown_pair_cannot_poison_rules_refresh():
+    """XRPL's rules fetch iterates ALL registered pairs and raises on the first
+    unknown one — so a single bad pair entering _trading_pairs would break rules
+    refresh for every valid pair, permanently. Validation must prevent entry."""
+
+    class XrplLikeConnector(FakePairLimitsConnector):
+        KNOWN = {"SOLO-XRP", "USDC-XRP"}
+
+        async def exchange_symbol_associated_to_pair(self, trading_pair):
+            if trading_pair not in self.KNOWN:
+                raise KeyError(trading_pair)
+            return trading_pair
+
+        async def _update_trading_rules(self):
+            self.rules_fetch_count += 1
+            for pair in self._trading_pairs or []:
+                if pair not in self.KNOWN:  # faithful: raises before ANY rule lands
+                    raise ValueError(f"Market {pair} not found in markets list")
+            for pair in self._trading_pairs or []:
+                self._trading_rules[pair] = {"min_order_size": Decimal("1")}
+
+    connector = XrplLikeConnector(trading_pairs=[])
+
+    # Typo'd pair (the reviewer's reproduction): rejected, never registered
+    try:
+        _run(UnifiedConnectorService.sync_pair_derived_state(connector, "XRP-USD"))
+        raise AssertionError("expected ValueError")
+    except ValueError:
+        pass
+    assert connector._trading_pairs == []
+
+    # Valid pairs still get rules — refresh is not poisoned
+    _run(UnifiedConnectorService.sync_pair_derived_state(connector, "SOLO-XRP"))
+    assert "SOLO-XRP" in connector.trading_rules

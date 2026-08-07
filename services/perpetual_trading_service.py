@@ -70,7 +70,7 @@ class PerpetualTradingService:
         # v5/position/set-leverage-{PAIR}); register the pair so the throttler
         # learns its rate limit before the request — see issue #207.
         from services.unified_connector_service import UnifiedConnectorService
-        await UnifiedConnectorService.sync_pair_derived_state(connector, trading_pair)
+        await UnifiedConnectorService.sync_pair_derived_state(connector, trading_pair, refresh_rules=False)
 
         try:
             await connector._execute_set_leverage(trading_pair, leverage)
