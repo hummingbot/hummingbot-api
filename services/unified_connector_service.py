@@ -268,7 +268,53 @@ class UnifiedConnectorService:
 
         except Exception as e:
             logger.error(f"Error starting data connector {connector_name}: {e}")
+            self._purge_trading_pair_registration(connector, trading_pair)
             return False
+
+    async def _is_trading_pair_supported(
+        self,
+        connector: ConnectorBase,
+        trading_pair: str
+    ) -> bool:
+        """Check that a trading pair exists in the connector's symbol map.
+
+        Registering an unknown pair poisons the order book WebSocket loop for every
+        other pair: the data source iterates over all registered pairs when
+        subscribing, so a single unknown pair raises and aborts the whole
+        subscription, which then retries and fails forever.
+        """
+        if not hasattr(connector, "exchange_symbol_associated_to_pair"):
+            return True
+        try:
+            await connector.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
+            return True
+        except KeyError:
+            return False
+        except Exception as e:
+            # Symbol map unavailable (network error, etc.) - don't block on it
+            logger.warning(f"Could not validate {trading_pair} against symbol map: {e}")
+            return True
+
+    def _purge_trading_pair_registration(
+        self,
+        connector: ConnectorBase,
+        trading_pair: str
+    ):
+        """Unregister a trading pair from the connector and its order book tracker.
+
+        Used to roll back a failed registration so a pair that never got an order
+        book cannot break the shared WebSocket subscription.
+        """
+        targets = [getattr(connector, "_trading_pairs", None)]
+        tracker = getattr(connector, "order_book_tracker", None)
+        if tracker is not None:
+            targets.append(getattr(tracker, "_trading_pairs", None))
+
+        for pairs in targets:
+            # Connector and tracker often share the same list object
+            if pairs is not None and trading_pair in pairs:
+                pairs.remove(trading_pair)
+                logger.info(f"Unregistered {trading_pair} after failed order book initialization")
 
     # =========================================================================
     # Best Connector Selection (THE KEY FIX)
@@ -372,6 +418,14 @@ class UnifiedConnectorService:
                     return True
             except Exception:
                 pass
+
+        # Reject pairs the exchange doesn't list before registering them anywhere
+        if not await self._is_trading_pair_supported(connector, trading_pair):
+            logger.error(
+                f"Trading pair {trading_pair} is not listed on {connector_name} - "
+                f"refusing to register it (check the quote asset)"
+            )
+            return False
 
         # For data connectors, ensure network is started
         if connector_name in self._data_connectors:
@@ -480,10 +534,12 @@ class UnifiedConnectorService:
                 logger.error(f"Fallback order book initialization failed: {e}")
 
             logger.error(f"Failed to add {trading_pair} to order book tracker")
+            self._purge_trading_pair_registration(connector, trading_pair)
             return False
 
         except Exception as e:
             logger.error(f"Error adding trading pair {trading_pair}: {e}", exc_info=True)
+            self._purge_trading_pair_registration(connector, trading_pair)
             return False
 
     async def remove_trading_pair(
@@ -540,9 +596,16 @@ class UnifiedConnectorService:
             tracker = connector.order_book_tracker
             if trading_pair in tracker.order_books:
                 del tracker.order_books[trading_pair]
-                if trading_pair in tracker._trading_pairs:
-                    tracker._trading_pairs.remove(trading_pair)
+                self._purge_trading_pair_registration(connector, trading_pair)
                 logger.info(f"Removed trading pair {trading_pair} via manual fallback")
+                return True
+
+            # No order book, but the pair may still be registered - a pair stuck in
+            # the subscription list with no order book is exactly what breaks the
+            # WebSocket loop, so unregister it anyway.
+            if trading_pair in getattr(tracker, "_trading_pairs", []):
+                self._purge_trading_pair_registration(connector, trading_pair)
+                logger.info(f"Unregistered untracked trading pair {trading_pair}")
                 return True
 
             logger.warning(f"Trading pair {trading_pair} not found")
