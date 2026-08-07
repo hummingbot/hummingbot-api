@@ -424,7 +424,8 @@ async def set_position_mode(
     try:
         # Convert string to PositionMode enum
         mode = PositionMode[request.position_mode.upper()]
-        result = await accounts_service.set_position_mode(account_name, connector_name, mode)
+        result = await accounts_service.set_position_mode(
+            account_name, connector_name, mode, trading_pair=request.trading_pair)
         return result
     except KeyError:
         raise HTTPException(

@@ -229,3 +229,99 @@ def test_unknown_pair_cannot_poison_rules_refresh():
     # Valid pairs still get rules — refresh is not poisoned
     _run(UnifiedConnectorService.sync_pair_derived_state(connector, "SOLO-XRP"))
     assert "SOLO-XRP" in connector.trading_rules
+
+
+def test_set_position_mode_refuses_empty_pairs_and_registers_provided_pair():
+    """Position-mode implementations iterate connector.trading_pairs and silently
+    no-op when the list is empty — the service must refuse loudly instead of
+    reporting success, and must register a provided pair before switching."""
+    from fastapi import HTTPException
+    from hummingbot.core.data_type.common import PositionMode
+
+    from services.perpetual_trading_service import PerpetualTradingService
+
+    class FakePerpConnector(FakePairLimitsConnector):
+        def __init__(self):
+            super().__init__(trading_pairs=[])
+            self.mode_set = None
+
+        @property
+        def trading_pairs(self):
+            return self._trading_pairs or []
+
+        def supported_position_modes(self):
+            return [PositionMode.HEDGE, PositionMode.ONEWAY]
+
+        def set_position_mode(self, mode):
+            self.mode_set = mode
+
+    connector = FakePerpConnector()
+
+    async def provider(account_name, connector_name):
+        return connector
+
+    service = PerpetualTradingService(provider)
+
+    # No pair provided and none registered -> loud 400, exchange never touched
+    try:
+        _run(service.set_position_mode("master", "bybit_perpetual", PositionMode.HEDGE))
+        raise AssertionError("expected HTTPException for empty trading_pairs")
+    except HTTPException as e:
+        assert e.status_code == 400
+    assert connector.mode_set is None
+
+    # Pair provided -> registered (with rules/throttler synced), then switched
+    result = _run(service.set_position_mode(
+        "master", "bybit_perpetual", PositionMode.HEDGE, trading_pair="BTC-USDT"))
+    assert connector._trading_pairs == ["BTC-USDT"]
+    assert connector.mode_set == PositionMode.HEDGE
+    assert result["status"] == "success"
+
+
+def test_adopt_exchange_position_mode():
+    """At init the exchange is the source of truth for position mode: its current
+    mode is mirrored locally (the old HEDGE-forcing call never reached any
+    exchange). Unqueryable exchanges and fetch failures keep the local default."""
+    from hummingbot.core.data_type.common import PositionMode
+
+    class FakePerpetualTrading:
+        def __init__(self):
+            self.mode = PositionMode.ONEWAY
+
+        def set_position_mode(self, mode):
+            self.mode = mode
+
+    class FakePerp:
+        def __init__(self, exchange_mode):
+            self._exchange_mode = exchange_mode
+            self._perpetual_trading = FakePerpetualTrading()
+
+        @property
+        def position_mode(self):
+            return self._perpetual_trading.mode
+
+        async def _fetch_account_position_mode(self):
+            if isinstance(self._exchange_mode, Exception):
+                raise self._exchange_mode
+            return self._exchange_mode
+
+    # Exchange in HEDGE -> local trait adopts it
+    connector = FakePerp(PositionMode.HEDGE)
+    _run(UnifiedConnectorService._adopt_exchange_position_mode(connector))
+    assert connector.position_mode == PositionMode.HEDGE
+
+    # Exchange unqueryable (base default returns None) -> local default kept
+    connector = FakePerp(None)
+    _run(UnifiedConnectorService._adopt_exchange_position_mode(connector))
+    assert connector.position_mode == PositionMode.ONEWAY
+
+    # Fetch failure -> swallowed, local default kept
+    connector = FakePerp(ConnectionError("exchange down"))
+    _run(UnifiedConnectorService._adopt_exchange_position_mode(connector))
+    assert connector.position_mode == PositionMode.ONEWAY
+
+    # Connector without the fetch hook (non py-base) -> no-op, no raise
+    class Bare:
+        pass
+
+    _run(UnifiedConnectorService._adopt_exchange_position_mode(Bare()))

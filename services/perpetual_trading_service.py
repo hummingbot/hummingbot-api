@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Any, Awaitable, Callable, Dict, List
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from fastapi import HTTPException
 from hummingbot.core.data_type.common import PositionMode
@@ -83,7 +83,8 @@ class PerpetualTradingService:
             raise HTTPException(status_code=500, detail=f"Failed to set leverage: {str(e)}")
 
     async def set_position_mode(self, account_name: str, connector_name: str,
-                                position_mode: PositionMode) -> Dict[str, str]:
+                                position_mode: PositionMode,
+                                trading_pair: Optional[str] = None) -> Dict[str, str]:
         """
         Set position mode for a perpetual connector.
 
@@ -91,6 +92,9 @@ class PerpetualTradingService:
             account_name: Name of the account
             connector_name: Name of the connector (must be perpetual)
             position_mode: PositionMode.HEDGE or PositionMode.ONEWAY
+            trading_pair: Pair to register before switching. Position-mode
+                implementations apply the switch through the connector's trading
+                pairs, so at least one registered pair is required.
 
         Returns:
             Dictionary with success status and message
@@ -107,6 +111,22 @@ class PerpetualTradingService:
             raise HTTPException(
                 status_code=400,
                 detail=f"Position mode '{position_mode.value}' not supported. Supported modes: {supported_values}"
+            )
+
+        # Position-mode implementations apply the switch through the connector's
+        # trading pairs (the py-base default and e.g. bybit both log a warning and
+        # return when the list is empty), and API connectors are created with
+        # trading_pairs=[] — so without a registered pair the exchange is never
+        # called while this endpoint would report success. Register the provided
+        # pair, then refuse to proceed with an empty list rather than lie.
+        if trading_pair:
+            from services.unified_connector_service import UnifiedConnectorService
+            await UnifiedConnectorService.sync_pair_derived_state(connector, trading_pair)
+        if not getattr(connector, "trading_pairs", None):
+            raise HTTPException(
+                status_code=400,
+                detail=f"No trading pairs registered on {connector_name}; pass trading_pair "
+                       f"so the position mode switch can be applied on the exchange"
             )
 
         try:

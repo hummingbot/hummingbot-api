@@ -24,7 +24,7 @@ from hummingbot.connector.connector_metrics_collector import TradeVolumeMetricCo
 from hummingbot.connector.exchange_py_base import ExchangePyBase
 from hummingbot.connector.gateway.gateway import Gateway
 from hummingbot.connector.perpetual_derivative_py_base import PerpetualDerivativePyBase
-from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, TradeType
+from hummingbot.core.data_type.common import OrderType, PositionAction, TradeType
 from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderState
 from hummingbot.core.utils.async_utils import safe_ensure_future
 
@@ -413,6 +413,56 @@ class UnifiedConnectorService:
         return False
 
     @staticmethod
+    async def _adopt_exchange_position_mode(connector: ConnectorBase) -> None:
+        """Adopt the exchange account's actual position mode as the local truth.
+
+        The previous init behavior called ``connector.set_position_mode(HEDGE)``
+        with ``trading_pairs=[]``, and what that did depended on the connector:
+        base-class implementations warned and returned (local trait stayed at its
+        ONEWAY default), while bybit's and bitget's per-pair overrides iterated
+        the empty list, vacuously "succeeded", and flipped the LOCAL trait to
+        HEDGE — in every case without a single exchange call. Local state was
+        guesswork either way; the exchange (account default or last manual
+        setting) is the source of truth.
+
+        So instead of mutating the exchange, read its current mode and mirror it
+        locally so ``connector.position_mode``, executors, and the position-mode
+        endpoints report reality. Exchanges that cannot be queried
+        (``_fetch_account_position_mode`` returns None — e.g. bybit has no
+        override) keep the local default and operators set the mode explicitly
+        through the endpoint. Some fetch implementations need a registered pair
+        (bitget returns None with an empty pair list), so adoption is retried
+        once on the first pair registration — see sync_pair_derived_state. #210.
+        """
+        fetch = getattr(connector, "_fetch_account_position_mode", None)
+        perpetual_trading = getattr(connector, "_perpetual_trading", None)
+        if fetch is None or perpetual_trading is None:
+            return
+        try:
+            exchange_mode = await fetch()
+        except Exception as e:
+            logger.warning(
+                f"Could not fetch position mode from exchange for "
+                f"{type(connector).__name__}: {e}"
+            )
+            return
+        if exchange_mode is None or exchange_mode == connector.position_mode:
+            return
+        supported = getattr(connector, "supported_position_modes", None)
+        if supported is not None and exchange_mode not in supported():
+            logger.warning(
+                f"Exchange reports position mode {exchange_mode} but "
+                f"{type(connector).__name__} does not support it locally — keeping "
+                f"{connector.position_mode}"
+            )
+            return
+        perpetual_trading.set_position_mode(exchange_mode)
+        logger.info(
+            f"Adopted exchange position mode {exchange_mode} for "
+            f"{type(connector).__name__} (local default was stale)"
+        )
+
+    @staticmethod
     async def sync_pair_derived_state(
         connector: ConnectorBase,
         trading_pair: str,
@@ -472,6 +522,15 @@ class UnifiedConnectorService:
             connector._trading_pairs = [trading_pair]
         elif trading_pair not in pairs:
             pairs.append(trading_pair)
+
+        # 1b. One-shot position-mode adoption retry (#210): some fetch
+        # implementations need a registered pair (bitget returns None with an
+        # empty pair list), so adoption at connector init cannot work for them.
+        # Retry exactly once now that a pair exists.
+        perpetual_trading = getattr(connector, "_perpetual_trading", None)
+        if perpetual_trading is not None and not getattr(connector, "_position_mode_adoption_done", False):
+            await UnifiedConnectorService._adopt_exchange_position_mode(connector)
+            connector._position_mode_adoption_done = True
 
         # 2. Throttler rate limits (#207). add_rate_limits() skips known limit_ids.
         # Synced on data connectors too — their REST fetches go through the same
@@ -731,8 +790,7 @@ class UnifiedConnectorService:
 
         # Perpetual-specific setup
         if self._is_perpetual_connector(connector):
-            if PositionMode.HEDGE in connector.supported_position_modes():
-                connector.set_position_mode(PositionMode.HEDGE)
+            await self._adopt_exchange_position_mode(connector)
             await connector._update_positions()
 
         # Load existing orders from database
