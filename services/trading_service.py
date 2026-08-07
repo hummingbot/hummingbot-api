@@ -128,6 +128,17 @@ class AccountTradingInterface:
         """
         await self.ensure_connector(connector_name)
 
+        connector = self.connectors.get(connector_name)
+        if not connector:
+            raise ValueError(f"Connector {connector_name} not available. Check credentials.")
+
+        # Sync pair-derived state (throttler limits, per-pair trading rules) BEFORE
+        # the early return below: a no-op when already synced, and it retries a
+        # previously failed sync even when the market is already tracked with a
+        # healthy order book — otherwise a transient failure (e.g. node outage
+        # during the rules fetch) would stick until restart (#207/#208).
+        await self._register_trading_pair_with_connector(connector, trading_pair)
+
         if connector_name not in self._markets:
             self._markets[connector_name] = set()
 
@@ -151,11 +162,6 @@ class AccountTradingInterface:
 
         self._markets[connector_name].add(trading_pair)
 
-        # Get connector from our account's connectors
-        connector = self.connectors.get(connector_name)
-        if not connector:
-            raise ValueError(f"Connector {connector_name} not available. Check credentials.")
-
         # Initialize order book via MarketDataService (uses best available connector)
         logger.info(f"Initializing order book for {connector_name}/{trading_pair}")
         success = await self._market_data_service.initialize_order_book(
@@ -169,9 +175,6 @@ class AccountTradingInterface:
             raise ValueError(f"Failed to initialize order book for {connector_name}/{trading_pair}")
 
         logger.info(f"Order book initialized successfully for {connector_name}/{trading_pair}")
-
-        # Register trading pair with connector
-        await self._register_trading_pair_with_connector(connector, trading_pair)
 
         # Update balances to include tokens from new trading pair
         if hasattr(connector, '_update_balances'):
