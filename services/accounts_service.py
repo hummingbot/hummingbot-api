@@ -902,24 +902,26 @@ class AccountsService:
         # Validate price for limit orders
         if order_type in [OrderType.LIMIT, OrderType.LIMIT_MAKER] and price is None:
             raise HTTPException(status_code=400, detail="Price is required for LIMIT and LIMIT_MAKER orders")
-        
-        # Check if trading rules are loaded
-        if not connector.trading_rules:
-            raise HTTPException(
-                status_code=503, 
-                detail=f"Trading rules not yet loaded for {connector_name}. Please try again in a moment."
-            )
-        
-        # Validate trading pair and get trading rule
+
+        # Register the pair and sync pair-derived state (throttler limits, per-pair
+        # trading rules) — without this, per-pair-rules connectors (e.g. XRPL) had
+        # no rule for dynamically requested pairs and every direct trade failed,
+        # because rules are only built for pairs known at connector init (#207/#208).
+        # An unknown pair is rejected here with 400 before anything is registered.
+        try:
+            await self._connector_service.sync_pair_derived_state(connector, trading_pair)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        # The pair was validated above, so a missing rule here means the refresh
+        # failed or is pending (e.g. node outage) — retryable, not "unsupported".
         if trading_pair not in connector.trading_rules:
-            available_pairs = list(connector.trading_rules.keys())[:10]  # Show first 10
-            more_text = f" (and {len(connector.trading_rules) - 10} more)" if len(connector.trading_rules) > 10 else ""
             raise HTTPException(
-                status_code=400, 
-                detail=f"Trading pair '{trading_pair}' not supported on {connector_name}. "
-                       f"Available pairs: {available_pairs}{more_text}"
+                status_code=503,
+                detail=f"Trading rules for '{trading_pair}' on {connector_name} are not "
+                       f"available yet (refresh failed or pending). Please retry shortly."
             )
-        
+
         trading_rule = connector.trading_rules[trading_pair]
         
         # Validate order type is supported
