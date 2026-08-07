@@ -249,6 +249,10 @@ def test_set_position_mode_refuses_empty_pairs_and_registers_provided_pair():
         def trading_pairs(self):
             return self._trading_pairs or []
 
+        @property
+        def position_mode(self):
+            return self.mode_set
+
         def supported_position_modes(self):
             return [PositionMode.HEDGE, PositionMode.ONEWAY]
 
@@ -270,12 +274,111 @@ def test_set_position_mode_refuses_empty_pairs_and_registers_provided_pair():
         assert e.status_code == 400
     assert connector.mode_set is None
 
-    # Pair provided -> registered (with rules/throttler synced), then switched
+    # Pair provided -> registered (with throttler synced), then switched
     result = _run(service.set_position_mode(
         "master", "bybit_perpetual", PositionMode.HEDGE, trading_pair="BTC-USDT"))
     assert connector._trading_pairs == ["BTC-USDT"]
     assert connector.mode_set == PositionMode.HEDGE
     assert result["status"] == "success"
+
+
+def test_set_position_mode_validates_against_post_registration_pair_set():
+    """supported_position_modes() on bybit depends on the registered pair list
+    and returns BOTH modes vacuously when it is empty. Validating before
+    registration would fake-accept HEDGE for an inverse pair; the mode check
+    must run against the post-registration pair set."""
+    from fastapi import HTTPException
+    from hummingbot.core.data_type.common import PositionMode
+
+    from services.perpetual_trading_service import PerpetualTradingService
+
+    class BybitLikePerp(FakePairLimitsConnector):
+        INVERSE = {"BTC-USD"}
+
+        def __init__(self):
+            super().__init__(trading_pairs=[])
+            self.mode_set = None
+
+        @property
+        def trading_pairs(self):
+            return self._trading_pairs or []
+
+        @property
+        def position_mode(self):
+            return self.mode_set
+
+        def supported_position_modes(self):
+            # Faithful to bybit: vacuous both-modes on empty; inverse pairs
+            # restrict to ONEWAY.
+            if not self.trading_pairs:
+                return [PositionMode.ONEWAY, PositionMode.HEDGE]
+            if any(p in self.INVERSE for p in self.trading_pairs):
+                return [PositionMode.ONEWAY]
+            return [PositionMode.ONEWAY, PositionMode.HEDGE]
+
+        def set_position_mode(self, mode):
+            self.mode_set = mode
+
+    connector = BybitLikePerp()
+
+    async def provider(account_name, connector_name):
+        return connector
+
+    service = PerpetualTradingService(provider)
+
+    # HEDGE + inverse pair: pre-fix this vacuously passed validation and then
+    # silently did nothing; now the mode check runs after registration -> 400.
+    try:
+        _run(service.set_position_mode(
+            "master", "bybit_perpetual", PositionMode.HEDGE, trading_pair="BTC-USD"))
+        raise AssertionError("expected HTTPException for unsupported mode")
+    except HTTPException as e:
+        assert e.status_code == 400
+        assert "not supported" in e.detail
+    assert connector.mode_set is None  # exchange never touched
+
+
+def test_set_position_mode_surfaces_exchange_rejection():
+    """The endpoint must await the real exchange call and fail loudly when the
+    exchange rejects the switch (e.g. open positions) — previously the call was
+    fire-and-forget and always reported success."""
+    from fastapi import HTTPException
+    from hummingbot.core.data_type.common import PositionMode
+
+    from services.perpetual_trading_service import PerpetualTradingService
+
+    class RejectingPerp(FakePairLimitsConnector):
+        def __init__(self):
+            super().__init__(trading_pairs=["BTC-USDT"])
+            self.execute_calls = 0
+
+        @property
+        def trading_pairs(self):
+            return self._trading_pairs or []
+
+        @property
+        def position_mode(self):
+            return PositionMode.ONEWAY  # local trait never updated: rejection
+
+        def supported_position_modes(self):
+            return [PositionMode.ONEWAY, PositionMode.HEDGE]
+
+        async def _execute_set_position_mode(self, mode):
+            self.execute_calls += 1  # exchange rejected; trait stays ONEWAY
+
+    connector = RejectingPerp()
+
+    async def provider(account_name, connector_name):
+        return connector
+
+    service = PerpetualTradingService(provider)
+
+    try:
+        _run(service.set_position_mode("master", "bybit_perpetual", PositionMode.HEDGE))
+        raise AssertionError("expected HTTPException for rejected switch")
+    except HTTPException as e:
+        assert e.status_code == 502
+    assert connector.execute_calls == 1  # the exchange call was actually awaited
 
 
 def test_adopt_exchange_position_mode():

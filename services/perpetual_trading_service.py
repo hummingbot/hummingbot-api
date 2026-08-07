@@ -104,7 +104,28 @@ class PerpetualTradingService:
         """
         connector = await self._get_perpetual_connector(account_name, connector_name)
 
-        # Check if the requested position mode is supported
+        # Register the provided pair FIRST. Position-mode implementations apply
+        # the switch through the connector's trading pairs (with an empty list the
+        # base implementation warns and returns; bybit/bitget overrides vacuously
+        # "succeed" without any exchange call), and supported_position_modes() on
+        # e.g. bybit depends on the registered pair list — validating against it
+        # before registration would vacuously pass modes the actual pair cannot
+        # support. Unknown pairs are rejected with 400 and never registered.
+        if trading_pair:
+            from services.unified_connector_service import UnifiedConnectorService
+            try:
+                await UnifiedConnectorService.sync_pair_derived_state(
+                    connector, trading_pair, refresh_rules=False)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+        if not getattr(connector, "trading_pairs", None):
+            raise HTTPException(
+                status_code=400,
+                detail=f"No trading pairs registered on {connector_name}; pass trading_pair "
+                       f"so the position mode switch can be applied on the exchange"
+            )
+
+        # Validate AFTER registration, against the real pair set
         supported_modes = connector.supported_position_modes()
         if position_mode not in supported_modes:
             supported_values = [mode.value for mode in supported_modes]
@@ -113,33 +134,35 @@ class PerpetualTradingService:
                 detail=f"Position mode '{position_mode.value}' not supported. Supported modes: {supported_values}"
             )
 
-        # Position-mode implementations apply the switch through the connector's
-        # trading pairs (the py-base default and e.g. bybit both log a warning and
-        # return when the list is empty), and API connectors are created with
-        # trading_pairs=[] — so without a registered pair the exchange is never
-        # called while this endpoint would report success. Register the provided
-        # pair, then refuse to proceed with an empty list rather than lie.
-        if trading_pair:
-            from services.unified_connector_service import UnifiedConnectorService
-            await UnifiedConnectorService.sync_pair_derived_state(connector, trading_pair)
-        if not getattr(connector, "trading_pairs", None):
-            raise HTTPException(
-                status_code=400,
-                detail=f"No trading pairs registered on {connector_name}; pass trading_pair "
-                       f"so the position mode switch can be applied on the exchange"
-            )
-
         try:
-            # Try to call the method - it might be sync or async
-            result = connector.set_position_mode(position_mode)
-            # If it's a coroutine, await it
-            if asyncio.iscoroutine(result):
-                await result
+            # Await the actual exchange call. connector.set_position_mode() is
+            # fire-and-forget (it spawns _execute_set_position_mode in the
+            # background and returns immediately), which would report success
+            # before the exchange ever responds — and cannot report a rejection
+            # (e.g. Binance -4068 with open positions). _execute_set_position_mode
+            # updates the local trait only on confirmed success, so the local mode
+            # is the truth test.
+            execute = getattr(connector, "_execute_set_position_mode", None)
+            if execute is not None:
+                await execute(position_mode)
+            else:
+                result = connector.set_position_mode(position_mode)
+                if asyncio.iscoroutine(result):
+                    await result
+
+            if getattr(connector, "position_mode", position_mode) != position_mode:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Exchange did not accept position mode {position_mode.value} on "
+                           f"{connector_name} — check for open positions/orders and connector logs"
+                )
 
             message = f"Position mode set to {position_mode.value} on {connector_name}"
             logger.info(f"Set position mode to {position_mode.value} on {connector_name} (Account: {account_name})")
             return {"status": "success", "message": message}
 
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Failed to set position mode to {position_mode.value}: {e}")
             raise HTTPException(status_code=500, detail=f"Failed to set position mode: {str(e)}")
