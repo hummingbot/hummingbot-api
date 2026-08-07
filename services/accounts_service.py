@@ -1063,12 +1063,14 @@ class AccountsService:
         return await self.perpetual_trading_service.set_leverage(account_name, connector_name, trading_pair, leverage)
 
     async def set_position_mode(self, account_name: str, connector_name: str,
-                               position_mode: PositionMode) -> Dict[str, str]:
+                               position_mode: PositionMode,
+                               trading_pair: Optional[str] = None) -> Dict[str, str]:
         """
         Set position mode for a perpetual connector.
         Delegates to PerpetualTradingService.
         """
-        return await self.perpetual_trading_service.set_position_mode(account_name, connector_name, position_mode)
+        return await self.perpetual_trading_service.set_position_mode(
+            account_name, connector_name, position_mode, trading_pair=trading_pair)
 
     async def get_position_mode(self, account_name: str, connector_name: str) -> Dict[str, str]:
         """

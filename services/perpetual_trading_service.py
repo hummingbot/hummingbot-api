@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Any, Awaitable, Callable, Dict, List
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from fastapi import HTTPException
 from hummingbot.core.data_type.common import PositionMode
@@ -83,7 +83,8 @@ class PerpetualTradingService:
             raise HTTPException(status_code=500, detail=f"Failed to set leverage: {str(e)}")
 
     async def set_position_mode(self, account_name: str, connector_name: str,
-                                position_mode: PositionMode) -> Dict[str, str]:
+                                position_mode: PositionMode,
+                                trading_pair: Optional[str] = None) -> Dict[str, str]:
         """
         Set position mode for a perpetual connector.
 
@@ -91,6 +92,9 @@ class PerpetualTradingService:
             account_name: Name of the account
             connector_name: Name of the connector (must be perpetual)
             position_mode: PositionMode.HEDGE or PositionMode.ONEWAY
+            trading_pair: Pair to register before switching. Position-mode
+                implementations apply the switch through the connector's trading
+                pairs, so at least one registered pair is required.
 
         Returns:
             Dictionary with success status and message
@@ -100,7 +104,28 @@ class PerpetualTradingService:
         """
         connector = await self._get_perpetual_connector(account_name, connector_name)
 
-        # Check if the requested position mode is supported
+        # Register the provided pair FIRST. Position-mode implementations apply
+        # the switch through the connector's trading pairs (with an empty list the
+        # base implementation warns and returns; bybit/bitget overrides vacuously
+        # "succeed" without any exchange call), and supported_position_modes() on
+        # e.g. bybit depends on the registered pair list — validating against it
+        # before registration would vacuously pass modes the actual pair cannot
+        # support. Unknown pairs are rejected with 400 and never registered.
+        if trading_pair:
+            from services.unified_connector_service import UnifiedConnectorService
+            try:
+                await UnifiedConnectorService.sync_pair_derived_state(
+                    connector, trading_pair, refresh_rules=False)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+        if not getattr(connector, "trading_pairs", None):
+            raise HTTPException(
+                status_code=400,
+                detail=f"No trading pairs registered on {connector_name}; pass trading_pair "
+                       f"so the position mode switch can be applied on the exchange"
+            )
+
+        # Validate AFTER registration, against the real pair set
         supported_modes = connector.supported_position_modes()
         if position_mode not in supported_modes:
             supported_values = [mode.value for mode in supported_modes]
@@ -110,16 +135,34 @@ class PerpetualTradingService:
             )
 
         try:
-            # Try to call the method - it might be sync or async
-            result = connector.set_position_mode(position_mode)
-            # If it's a coroutine, await it
-            if asyncio.iscoroutine(result):
-                await result
+            # Await the actual exchange call. connector.set_position_mode() is
+            # fire-and-forget (it spawns _execute_set_position_mode in the
+            # background and returns immediately), which would report success
+            # before the exchange ever responds — and cannot report a rejection
+            # (e.g. Binance -4068 with open positions). _execute_set_position_mode
+            # updates the local trait only on confirmed success, so the local mode
+            # is the truth test.
+            execute = getattr(connector, "_execute_set_position_mode", None)
+            if execute is not None:
+                await execute(position_mode)
+            else:
+                result = connector.set_position_mode(position_mode)
+                if asyncio.iscoroutine(result):
+                    await result
+
+            if getattr(connector, "position_mode", position_mode) != position_mode:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Exchange did not accept position mode {position_mode.value} on "
+                           f"{connector_name} — check for open positions/orders and connector logs"
+                )
 
             message = f"Position mode set to {position_mode.value} on {connector_name}"
             logger.info(f"Set position mode to {position_mode.value} on {connector_name} (Account: {account_name})")
             return {"status": "success", "message": message}
 
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Failed to set position mode to {position_mode.value}: {e}")
             raise HTTPException(status_code=500, detail=f"Failed to set position mode: {str(e)}")
