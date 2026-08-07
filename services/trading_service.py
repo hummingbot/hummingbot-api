@@ -132,11 +132,11 @@ class AccountTradingInterface:
         if not connector:
             raise ValueError(f"Connector {connector_name} not available. Check credentials.")
 
-        # Sync pair-derived state (throttler limits, per-pair trading rules) BEFORE
-        # the early return below: a no-op when already synced, and it retries a
-        # previously failed sync even when the market is already tracked with a
-        # healthy order book — otherwise a transient failure (e.g. node outage
-        # during the rules fetch) would stick until restart (#207/#208).
+        # Register the pair and sync pair-derived state (throttler limits) BEFORE
+        # the early return below: a no-op when already synced, and running it here
+        # means an already-tracked market still re-syncs any state a previous
+        # attempt failed to apply (#207). Raises ValueError for pairs the
+        # connector does not recognize — nothing is registered in that case.
         await self._register_trading_pair_with_connector(connector, trading_pair)
 
         if connector_name not in self._markets:
@@ -230,7 +230,7 @@ class AccountTradingInterface:
 
         Delegates to UnifiedConnectorService.sync_pair_derived_state so that state
         built from the pair list at connector init (throttler pair-templated rate
-        limits, per-pair trading rules) is refreshed too — see issues #207 / #208.
+        limits) is refreshed too — see issue #207.
 
         Args:
             connector: The connector instance (ExchangePyBase)

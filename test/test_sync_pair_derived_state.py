@@ -77,3 +77,43 @@ def test_minimal_connector_does_not_raise():
     minimal = Minimal()
     _run(UnifiedConnectorService.sync_pair_derived_state(minimal, "BTC-USDT"))
     assert minimal._trading_pairs == ["BTC-USDT"]
+
+
+def test_unknown_pair_rejected_and_not_registered():
+    """A pair the connector's symbol map cannot resolve must never enter
+    _trading_pairs: there is no rollback, and a poisoned entry breaks per-pair
+    status polling and rules rebuilds for the connector's lifetime."""
+
+    class ValidatingConnector(FakePairLimitsConnector):
+        KNOWN = {"BTC-USDT"}
+
+        async def exchange_symbol_associated_to_pair(self, trading_pair):
+            if trading_pair not in self.KNOWN:
+                raise KeyError(trading_pair)
+            return trading_pair.replace("-", "")
+
+    connector = ValidatingConnector(trading_pairs=[])
+
+    try:
+        _run(UnifiedConnectorService.sync_pair_derived_state(connector, "BTC-USD"))
+        raise AssertionError("expected ValueError for unknown pair")
+    except ValueError:
+        pass
+    assert connector._trading_pairs == []  # nothing registered, nothing to roll back
+
+    # A valid pair still registers normally afterwards
+    _run(UnifiedConnectorService.sync_pair_derived_state(connector, "BTC-USDT"))
+    assert connector._trading_pairs == ["BTC-USDT"]
+
+
+def test_already_registered_pair_skips_validation():
+    """Re-syncing an already-registered pair must not re-validate — the symbol
+    map may be temporarily unavailable, and the pair was validated on entry."""
+
+    class BrokenResolverConnector(FakePairLimitsConnector):
+        async def exchange_symbol_associated_to_pair(self, trading_pair):
+            raise ConnectionError("symbol map fetch failed")
+
+    connector = BrokenResolverConnector(trading_pairs=["BTC-USDT"])
+    _run(UnifiedConnectorService.sync_pair_derived_state(connector, "BTC-USDT"))
+    assert connector._trading_pairs == ["BTC-USDT"]

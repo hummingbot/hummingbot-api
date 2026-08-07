@@ -427,7 +427,34 @@ class UnifiedConnectorService:
 
         Idempotent — safe to call on every dynamic pair registration, including
         pairs that arrive via the data-connector bootstrap path.
+
+        Raises ValueError when the connector's symbol map does not know the pair:
+        an unresolvable pair must never enter ``_trading_pairs``. There is no
+        rollback path, and a poisoned entry breaks every consumer that iterates
+        the list — per-pair status polling raises ``KeyError`` on the symbol map
+        inside gathers without ``return_exceptions`` (killing balance/position
+        updates until restart), and per-pair trading-rules rebuilds fail for ALL
+        pairs. Registered pairs are also enrolled in per-pair status polling —
+        deliberate for pairs about to be traded, but callers should not register
+        speculatively.
         """
+        # 0. Validate BEFORE registering. exchange_symbol_associated_to_pair
+        # raises for pairs the exchange does not know; connectors without a
+        # symbol map (Gateway, minimal test doubles) skip validation.
+        already_registered = trading_pair in (getattr(connector, "_trading_pairs", None) or [])
+        if not already_registered:
+            resolver = getattr(connector, "exchange_symbol_associated_to_pair", None)
+            if resolver is not None:
+                try:
+                    await resolver(trading_pair)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    raise ValueError(
+                        f"Cannot register '{trading_pair}' on {type(connector).__name__}: "
+                        f"the connector does not recognize this trading pair ({e})"
+                    ) from e
+
         # 1. The pair list itself — everything below derives from it.
         pairs = getattr(connector, "_trading_pairs", None)
         if pairs is None:
@@ -437,15 +464,17 @@ class UnifiedConnectorService:
 
         # 2. Throttler rate limits (#207). add_rate_limits() skips known limit_ids.
         # Synced on data connectors too — their REST fetches go through the same
-        # throttler and can hit pair-templated limit_ids.
+        # throttler and can hit pair-templated limit_ids. rate_limits_rules is
+        # evaluated inside the try: it is a property that can itself raise, and a
+        # failed sync must degrade to a warning, never abort registration.
         throttler = getattr(connector, "_throttler", None)
-        if (
-            throttler is not None
-            and hasattr(throttler, "add_rate_limits")
-            and hasattr(connector, "rate_limits_rules")
-        ):
+        if throttler is not None and hasattr(throttler, "add_rate_limits"):
             try:
                 throttler.add_rate_limits(connector.rate_limits_rules)
+            except AttributeError:
+                logger.debug(
+                    f"{type(connector).__name__} has no rate_limits_rules; throttler sync skipped"
+                )
             except Exception as e:
                 logger.warning(
                     f"Could not sync throttler rate limits for {trading_pair} on "
