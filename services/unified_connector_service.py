@@ -416,14 +416,20 @@ class UnifiedConnectorService:
         """Sync connector state that was derived from the trading-pair list at init.
 
         Connectors are created with ``trading_pairs=[]`` and pairs are registered
-        dynamically, but state built FROM that list during ``__init__`` is never
-        refreshed afterwards. ``AsyncThrottler`` pair-templated rate limits (issue
-        #207): connectors like bybit_perpetual build ``rate_limits_rules`` from
-        ``trading_pairs``, so a pair added later has no rate limit and pair-scoped
-        requests crash with ``AttributeError: 'NoneType' object has no attribute
-        'weight'``. The throttler must be mutated in place —
-        ``WebAssistantsFactory`` captured the instance at connector init, so
-        reassigning ``connector._throttler`` has no effect.
+        dynamically, but several pieces of state are built FROM that list during
+        ``__init__`` and never refreshed afterwards:
+
+        - ``AsyncThrottler`` pair-templated rate limits (issue #207): connectors like
+          bybit_perpetual build ``rate_limits_rules`` from ``trading_pairs``, so a
+          pair added later has no rate limit and pair-scoped requests crash with
+          ``AttributeError: 'NoneType' object has no attribute 'weight'``. The
+          throttler must be mutated in place — ``WebAssistantsFactory`` captured the
+          instance at connector init, so reassigning ``connector._throttler`` has no
+          effect.
+        - Trading rules on connectors that build them per pair (issue #208): XRPL
+          fetches rules on-ledger for each pair in ``_trading_pairs``, so a pair
+          added later has no trading rule and any executor for it dies at startup
+          with ``KeyError`` before placing an order.
 
         Idempotent — safe to call on every dynamic pair registration, including
         pairs that arrive via the data-connector bootstrap path.
@@ -480,6 +486,28 @@ class UnifiedConnectorService:
                     f"Could not sync throttler rate limits for {trading_pair} on "
                     f"{type(connector).__name__}: {e}"
                 )
+
+        # 3. Trading rules (#208). Trading connectors only — data connectors never
+        # place orders, and for per-pair-rules connectors a refresh is a real
+        # (possibly on-chain) fetch that would add latency and warnings to every
+        # order-book bootstrap. Only refresh when the pair has no rule yet.
+        if not getattr(connector, "is_trading_required", False):
+            return
+        try:
+            rules = getattr(connector, "trading_rules", None)
+            if rules is not None and trading_pair not in rules and hasattr(connector, "_update_trading_rules"):
+                await connector._update_trading_rules()
+                if trading_pair not in connector.trading_rules:
+                    logger.warning(
+                        f"Trading rules still missing for {trading_pair} on "
+                        f"{type(connector).__name__} after refresh — orders for this "
+                        f"pair will fail"
+                    )
+        except Exception as e:
+            logger.warning(
+                f"Could not refresh trading rules for {trading_pair} on "
+                f"{type(connector).__name__}: {e}"
+            )
 
     async def _add_trading_pair_to_tracker(
         self,

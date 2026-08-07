@@ -902,7 +902,13 @@ class AccountsService:
         # Validate price for limit orders
         if order_type in [OrderType.LIMIT, OrderType.LIMIT_MAKER] and price is None:
             raise HTTPException(status_code=400, detail="Price is required for LIMIT and LIMIT_MAKER orders")
-        
+
+        # Register the pair and sync pair-derived state (throttler limits, per-pair
+        # trading rules) — without this, per-pair-rules connectors (e.g. XRPL) 503
+        # forever on the empty-rules check below and 400 on the pair check after it,
+        # because rules are only built for pairs known at connector init (#207/#208).
+        await self._connector_service.sync_pair_derived_state(connector, trading_pair)
+
         # Check if trading rules are loaded
         if not connector.trading_rules:
             raise HTTPException(
