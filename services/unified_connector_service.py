@@ -244,9 +244,8 @@ class UnifiedConnectorService:
         connector = self.get_data_connector(connector_name)
 
         try:
-            # Add trading pair before starting network
-            if trading_pair not in connector._trading_pairs:
-                connector._trading_pairs.append(trading_pair)
+            # Add trading pair and sync pair-derived state before starting network
+            await self.sync_pair_derived_state(connector, trading_pair)
 
             # Start network
             await connector.start_network()
@@ -412,6 +411,47 @@ class UnifiedConnectorService:
             return True
         return False
 
+    @staticmethod
+    async def sync_pair_derived_state(connector: ConnectorBase, trading_pair: str) -> None:
+        """Sync connector state that was derived from the trading-pair list at init.
+
+        Connectors are created with ``trading_pairs=[]`` and pairs are registered
+        dynamically, but state built FROM that list during ``__init__`` is never
+        refreshed afterwards. ``AsyncThrottler`` pair-templated rate limits (issue
+        #207): connectors like bybit_perpetual build ``rate_limits_rules`` from
+        ``trading_pairs``, so a pair added later has no rate limit and pair-scoped
+        requests crash with ``AttributeError: 'NoneType' object has no attribute
+        'weight'``. The throttler must be mutated in place —
+        ``WebAssistantsFactory`` captured the instance at connector init, so
+        reassigning ``connector._throttler`` has no effect.
+
+        Idempotent — safe to call on every dynamic pair registration, including
+        pairs that arrive via the data-connector bootstrap path.
+        """
+        # 1. The pair list itself — everything below derives from it.
+        pairs = getattr(connector, "_trading_pairs", None)
+        if pairs is None:
+            connector._trading_pairs = [trading_pair]
+        elif trading_pair not in pairs:
+            pairs.append(trading_pair)
+
+        # 2. Throttler rate limits (#207). add_rate_limits() skips known limit_ids.
+        # Synced on data connectors too — their REST fetches go through the same
+        # throttler and can hit pair-templated limit_ids.
+        throttler = getattr(connector, "_throttler", None)
+        if (
+            throttler is not None
+            and hasattr(throttler, "add_rate_limits")
+            and hasattr(connector, "rate_limits_rules")
+        ):
+            try:
+                throttler.add_rate_limits(connector.rate_limits_rules)
+            except Exception as e:
+                logger.warning(
+                    f"Could not sync throttler rate limits for {trading_pair} on "
+                    f"{type(connector).__name__}: {e}"
+                )
+
     async def _add_trading_pair_to_tracker(
         self,
         connector: ExchangePyBase,
@@ -428,6 +468,10 @@ class UnifiedConnectorService:
         2. Otherwise, register the pair and start the tracker
         """
         try:
+            # Sync pair-derived state (throttler limits, trading rules) regardless of
+            # which path below registers the order book — see sync_pair_derived_state.
+            await self.sync_pair_derived_state(connector, trading_pair)
+
             # Safety check - gateway/AMM connectors don't have order book trackers
             if not hasattr(connector, 'order_book_tracker') or connector.order_book_tracker is None:
                 logger.debug(f"Connector {type(connector).__name__} doesn't have order book tracker")
