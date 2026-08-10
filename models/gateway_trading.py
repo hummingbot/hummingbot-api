@@ -236,6 +236,183 @@ class CLMMPoolInfoResponse(BaseModel):
 
 
 # ============================================
+# AMM Liquidity Models (Meteora DAMM v2, Raydium CPMM, Uniswap/Pancakeswap V2)
+# ============================================
+# Re-added deliberately as a separate surface from CLMM. Unlike classic fungible-LP AMMs,
+# Meteora DAMM v2 positions are NFTs (a wallet may hold several per pool), so the AMM routes
+# are position-addressed: remove requires position_address (meteora), add takes it optionally
+# (omit = new position), position-info returns a positions[] breakdown, and positions-owned
+# lists all of a wallet's positions. Fungible-LP AMMs ignore position_address.
+
+class AMMPoolInfoResponse(BaseModel):
+    """Response with AMM pool information (constant-product / DAMM v2)."""
+    address: str = Field(description="Pool address")
+    base_token_address: str = Field(alias="baseTokenAddress", description="Base token contract address")
+    quote_token_address: str = Field(alias="quoteTokenAddress", description="Quote token contract address")
+    fee_pct: Decimal = Field(alias="feePct", description="Pool base fee percentage")
+    price: Decimal = Field(description="Current pool price (quote per base)")
+    base_token_amount: Decimal = Field(alias="baseTokenAmount", description="Total base token liquidity")
+    quote_token_amount: Decimal = Field(alias="quoteTokenAmount", description="Total quote token liquidity")
+
+    model_config = {"populate_by_name": True}
+
+
+class AMMPositionDetail(BaseModel):
+    """Per-position breakdown entry (one NFT position). Non-fungible-LP AMMs only."""
+    position_address: str = Field(alias="positionAddress", description="Individual position (NFT) address")
+    lp_token_amount: Decimal = Field(alias="lpTokenAmount", description="Liquidity held by this position (LP units)")
+    base_token_amount: Decimal = Field(alias="baseTokenAmount", description="Base token amount in this position")
+    quote_token_amount: Decimal = Field(alias="quoteTokenAmount", description="Quote token amount in this position")
+
+    model_config = {"populate_by_name": True}
+
+
+class AMMPositionInfoResponse(BaseModel):
+    """Wallet's aggregate liquidity in an AMM pool, plus a per-position breakdown (DAMM v2)."""
+    pool_address: str = Field(alias="poolAddress", description="Pool address")
+    wallet_address: str = Field(alias="walletAddress", description="Wallet address")
+    base_token_address: str = Field(alias="baseTokenAddress", description="Base token contract address")
+    quote_token_address: str = Field(alias="quoteTokenAddress", description="Quote token contract address")
+    lp_token_amount: Decimal = Field(alias="lpTokenAmount", description="Aggregate LP units across positions")
+    base_token_amount: Decimal = Field(alias="baseTokenAmount", description="Aggregate base token amount")
+    quote_token_amount: Decimal = Field(alias="quoteTokenAmount", description="Aggregate quote token amount")
+    price: Decimal = Field(description="Current pool price (quote per base)")
+    # Per-position breakdown; populated by Meteora DAMM v2, omitted by fungible-LP AMMs.
+    positions: Optional[List[AMMPositionDetail]] = Field(default=None, description="Per-NFT position breakdown")
+
+    model_config = {"populate_by_name": True}
+
+
+class AMMQuoteSwapRequest(BaseModel):
+    """Request to quote a swap against a specific AMM pool."""
+    connector: str = Field(description="AMM connector (e.g., 'meteora', 'raydium', 'uniswap')")
+    network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta')")
+    pool_address: str = Field(description="Pool contract address")
+    base_token: str = Field(description="Token that defines the swap direction (symbol or address)")
+    side: str = Field(description="Trade direction: BUY or SELL")
+    amount: Decimal = Field(description="Amount to swap (of base for SELL, of base to receive for BUY)")
+    slippage_pct: Optional[Decimal] = Field(default=None, description="Maximum slippage percentage")
+
+
+class AMMQuoteSwapResponse(BaseModel):
+    """Response with an AMM swap quote."""
+    pool_address: str = Field(alias="poolAddress", description="Pool address")
+    token_in: str = Field(alias="tokenIn", description="Input token address")
+    token_out: str = Field(alias="tokenOut", description="Output token address")
+    amount_in: Decimal = Field(alias="amountIn", description="Input amount")
+    amount_out: Decimal = Field(alias="amountOut", description="Output amount")
+    price: Decimal = Field(description="Execution price")
+    min_amount_out: Decimal = Field(alias="minAmountOut", description="Minimum output after slippage")
+    max_amount_in: Decimal = Field(alias="maxAmountIn", description="Maximum input after slippage")
+    price_impact_pct: Decimal = Field(alias="priceImpactPct", description="Price impact percentage")
+    slippage_pct: Optional[Decimal] = Field(default=None, alias="slippagePct", description="Slippage percentage used")
+
+    model_config = {"populate_by_name": True}
+
+
+class AMMExecuteSwapRequest(BaseModel):
+    """Request to execute a swap against a specific AMM pool."""
+    connector: str = Field(description="AMM connector (e.g., 'meteora', 'raydium', 'uniswap')")
+    network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta')")
+    pool_address: str = Field(description="Pool contract address")
+    base_token: str = Field(description="Token that defines the swap direction (symbol or address)")
+    side: str = Field(description="Trade direction: BUY or SELL")
+    amount: Decimal = Field(description="Amount to swap")
+    slippage_pct: Optional[Decimal] = Field(default=1.0, description="Maximum slippage percentage (default: 1.0)")
+    wallet_address: Optional[str] = Field(default=None, description="Wallet address (optional, uses default)")
+
+
+class AMMTransactionResponse(BaseModel):
+    """Chain-neutral write response. `signature` holds the tx signature (Solana) or tx hash (EVM)."""
+    signature: str = Field(description="Transaction signature (Solana) or transaction hash (EVM)")
+    status: int = Field(description="TransactionStatus enum value from Gateway")
+    data: Optional[Dict[str, Any]] = Field(default=None, description="Connector-specific confirmed-tx details")
+
+    model_config = {"populate_by_name": True}
+
+
+class AMMQuoteLiquidityRequest(BaseModel):
+    """Request to quote a two-sided liquidity deposit."""
+    connector: str = Field(description="AMM connector (e.g., 'meteora', 'raydium', 'uniswap')")
+    network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta')")
+    pool_address: str = Field(description="Pool contract address")
+    base_token_amount: Decimal = Field(description="Amount of base token to deposit")
+    quote_token_amount: Decimal = Field(description="Amount of quote token to deposit")
+    slippage_pct: Optional[Decimal] = Field(default=None, description="Maximum slippage percentage")
+
+
+class AMMQuoteLiquidityResponse(BaseModel):
+    """Response with a two-sided deposit quote."""
+    base_limited: bool = Field(alias="baseLimited", description="Whether the base side is the limiting side")
+    base_token_amount: Decimal = Field(alias="baseTokenAmount", description="Base token amount to deposit")
+    quote_token_amount: Decimal = Field(alias="quoteTokenAmount", description="Quote token amount to deposit")
+    base_token_amount_max: Decimal = Field(alias="baseTokenAmountMax", description="Max base token amount")
+    quote_token_amount_max: Decimal = Field(alias="quoteTokenAmountMax", description="Max quote token amount")
+
+    model_config = {"populate_by_name": True}
+
+
+class AMMAddLiquidityRequest(BaseModel):
+    """Request to add two-sided liquidity to an AMM pool."""
+    connector: str = Field(description="AMM connector (e.g., 'meteora', 'raydium', 'uniswap')")
+    network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta')")
+    pool_address: str = Field(description="Pool contract address")
+    base_token_amount: Decimal = Field(description="Amount of base token to add")
+    quote_token_amount: Decimal = Field(description="Amount of quote token to add")
+    slippage_pct: Optional[Decimal] = Field(default=1.0, description="Maximum slippage percentage (default: 1.0)")
+    wallet_address: Optional[str] = Field(default=None, description="Wallet address (optional, uses default)")
+    # Meteora DAMM v2: add to this specific NFT position; omit to open a NEW position. Ignored by fungible-LP AMMs.
+    position_address: Optional[str] = Field(default=None, description="Meteora position to add to (omit = new position)")
+
+
+class AMMRemoveLiquidityRequest(BaseModel):
+    """Request to remove liquidity from an AMM pool."""
+    connector: str = Field(description="AMM connector (e.g., 'meteora', 'raydium', 'uniswap')")
+    network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta')")
+    pool_address: str = Field(description="Pool contract address")
+    percentage_to_remove: Decimal = Field(description="Percentage of liquidity to remove (0-100)")
+    slippage_pct: Optional[Decimal] = Field(default=None, description="Maximum slippage percentage")
+    wallet_address: Optional[str] = Field(default=None, description="Wallet address (optional, uses default)")
+    # Required for meteora (DAMM v2 positions are NFTs). Ignored by fungible-LP AMMs.
+    position_address: Optional[str] = Field(default=None, description="Meteora position to remove from (required for meteora)")
+
+
+class AMMCreatePoolRequest(BaseModel):
+    """Request to create and seed a new AMM pool."""
+    connector: str = Field(description="AMM connector (e.g., 'meteora', 'raydium', 'uniswap')")
+    network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta')")
+    base_token: str = Field(description="Base token symbol or address (becomes the pool base)")
+    quote_token: str = Field(description="Quote token symbol or address (becomes the pool quote)")
+    base_token_amount: Decimal = Field(description="Amount of base token to seed the pool with")
+    quote_token_amount: Optional[Decimal] = Field(default=None, description="Amount of quote to seed (sets price if given)")
+    initial_price: Optional[Decimal] = Field(default=None, description="Initial price (quote per base); overrides quote amount")
+    wallet_address: Optional[str] = Field(default=None, description="Wallet address (optional, uses default)")
+    # Connector-specific create-pool extras (only consumed by their owning connector):
+    config_address: Optional[str] = Field(default=None, description="Meteora DAMM v2 config account (required for meteora)")
+    fee_config_index: Optional[int] = Field(default=None, description="Raydium CPMM fee config index (optional)")
+    gas_price: Optional[Decimal] = Field(default=None, description="Uniswap (EVM) gas price in gwei (optional)")
+    max_gas: Optional[int] = Field(default=None, description="Uniswap (EVM) max gas limit (optional)")
+
+
+class AMMCreatePoolResponse(BaseModel):
+    """Response after creating an AMM pool."""
+    signature: str = Field(description="Transaction signature (Solana) or transaction hash (EVM)")
+    status: int = Field(description="TransactionStatus enum value from Gateway")
+    pool_address: str = Field(alias="poolAddress", description="Address of the newly created pool")
+    price: Optional[Decimal] = Field(default=None, description="Initial price the pool was seeded at (quote per base)")
+    data: Optional[Dict[str, Any]] = Field(default=None, description="Connector-specific confirmed-tx details")
+
+    model_config = {"populate_by_name": True}
+
+
+class AMMPositionsOwnedRequest(BaseModel):
+    """Request to list all of a wallet's AMM positions across pools (Meteora only)."""
+    connector: str = Field(description="AMM connector (meteora only; fungible-LP AMMs rejected)")
+    network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta')")
+    wallet_address: Optional[str] = Field(default=None, description="Wallet address (optional, uses default)")
+
+
+# ============================================
 # Pool Information Models
 # ============================================
 

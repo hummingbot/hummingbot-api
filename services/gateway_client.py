@@ -713,6 +713,201 @@ class GatewayClient:
         return await self._request("GET", f"connectors/{connector}/clmm/fetch-pools", params=params)
 
     # ============================================
+    # AMM Liquidity (Meteora DAMM v2, Raydium CPMM, Uniswap/Pancakeswap V2)
+    # ============================================
+    # All go through the unified trading/amm/* surface (camelCase body/query with connector +
+    # chainNetwork). Meteora DAMM v2 positions are NFTs, so remove requires positionAddress and
+    # add takes it optionally; fungible-LP AMMs ignore it. positions-owned is meteora-only.
+
+    async def amm_pool_info(self, connector: str, chain_network: str, pool_address: str) -> Dict:
+        """Get AMM pool information (reserves, price, base fee)."""
+        return await self._request("GET", "trading/amm/pool-info", params={
+            "connector": connector,
+            "chainNetwork": chain_network,
+            "poolAddress": pool_address,
+        })
+
+    async def amm_position_info(
+        self, connector: str, chain_network: str, pool_address: str, wallet_address: str
+    ) -> Dict:
+        """Get a wallet's aggregate liquidity in an AMM pool plus a per-position breakdown (DAMM v2)."""
+        return await self._request("GET", "trading/amm/position-info", params={
+            "connector": connector,
+            "chainNetwork": chain_network,
+            "poolAddress": pool_address,
+            "walletAddress": wallet_address,
+        })
+
+    async def amm_positions_owned(
+        self, connector: str, chain_network: str, wallet_address: str
+    ) -> List[Dict]:
+        """List all of a wallet's AMM positions across pools (meteora only; fungible-LP → Gateway 400)."""
+        return await self._request("GET", "trading/amm/positions-owned", params={
+            "connector": connector,
+            "chainNetwork": chain_network,
+            "walletAddress": wallet_address,
+        })
+
+    async def amm_quote_swap(
+        self,
+        connector: str,
+        chain_network: str,
+        pool_address: str,
+        base_token: str,
+        side: str,
+        amount: float,
+        slippage_pct: Optional[float] = None,
+    ) -> Dict:
+        """Quote a swap against a specific AMM pool."""
+        params = {
+            "connector": connector,
+            "chainNetwork": chain_network,
+            "poolAddress": pool_address,
+            "baseToken": base_token,
+            "side": side,
+            "amount": amount,
+        }
+        if slippage_pct is not None:
+            params["slippagePct"] = slippage_pct
+        return await self._request("GET", "trading/amm/quote-swap", params=params)
+
+    async def amm_execute_swap(
+        self,
+        connector: str,
+        chain_network: str,
+        wallet_address: str,
+        pool_address: str,
+        base_token: str,
+        side: str,
+        amount: float,
+        slippage_pct: Optional[float] = None,
+    ) -> Dict:
+        """Execute a swap against a specific AMM pool."""
+        payload = {
+            "connector": connector,
+            "chainNetwork": chain_network,
+            "walletAddress": wallet_address,
+            "poolAddress": pool_address,
+            "baseToken": base_token,
+            "side": side,
+            "amount": amount,
+        }
+        if slippage_pct is not None:
+            payload["slippagePct"] = slippage_pct
+        return await self._request("POST", "trading/amm/execute-swap", json=payload)
+
+    async def amm_quote_liquidity(
+        self,
+        connector: str,
+        chain_network: str,
+        pool_address: str,
+        base_token_amount: float,
+        quote_token_amount: float,
+        slippage_pct: Optional[float] = None,
+    ) -> Dict:
+        """Quote a two-sided liquidity deposit."""
+        payload = {
+            "connector": connector,
+            "chainNetwork": chain_network,
+            "poolAddress": pool_address,
+            "baseTokenAmount": base_token_amount,
+            "quoteTokenAmount": quote_token_amount,
+        }
+        if slippage_pct is not None:
+            payload["slippagePct"] = slippage_pct
+        return await self._request("GET", "trading/amm/quote-liquidity", params=payload)
+
+    async def amm_add_liquidity(
+        self,
+        connector: str,
+        chain_network: str,
+        wallet_address: str,
+        pool_address: str,
+        base_token_amount: float,
+        quote_token_amount: float,
+        slippage_pct: Optional[float] = None,
+        position_address: Optional[str] = None,
+    ) -> Dict:
+        """Add two-sided liquidity. For meteora, position_address adds to that NFT position (omit = new)."""
+        payload = {
+            "connector": connector,
+            "chainNetwork": chain_network,
+            "walletAddress": wallet_address,
+            "poolAddress": pool_address,
+            "baseTokenAmount": base_token_amount,
+            "quoteTokenAmount": quote_token_amount,
+        }
+        if slippage_pct is not None:
+            payload["slippagePct"] = slippage_pct
+        if position_address is not None:
+            payload["positionAddress"] = position_address
+        return await self._request("POST", "trading/amm/add-liquidity", json=payload)
+
+    async def amm_remove_liquidity(
+        self,
+        connector: str,
+        chain_network: str,
+        wallet_address: str,
+        pool_address: str,
+        percentage_to_remove: float,
+        slippage_pct: Optional[float] = None,
+        position_address: Optional[str] = None,
+    ) -> Dict:
+        """Remove liquidity. Gateway requires position_address for meteora (DAMM v2 NFT positions)."""
+        payload = {
+            "connector": connector,
+            "chainNetwork": chain_network,
+            "walletAddress": wallet_address,
+            "poolAddress": pool_address,
+            "percentageToRemove": percentage_to_remove,
+        }
+        if slippage_pct is not None:
+            payload["slippagePct"] = slippage_pct
+        if position_address is not None:
+            payload["positionAddress"] = position_address
+        return await self._request("POST", "trading/amm/remove-liquidity", json=payload)
+
+    async def amm_create_pool(
+        self,
+        connector: str,
+        chain_network: str,
+        wallet_address: str,
+        base_token: str,
+        quote_token: str,
+        base_token_amount: float,
+        quote_token_amount: Optional[float] = None,
+        initial_price: Optional[float] = None,
+        config_address: Optional[str] = None,
+        fee_config_index: Optional[int] = None,
+        gas_price: Optional[float] = None,
+        max_gas: Optional[int] = None,
+    ) -> Dict:
+        """Create and seed a new AMM pool. Connector extras are sent only when provided."""
+        payload = {
+            "connector": connector,
+            "chainNetwork": chain_network,
+            "walletAddress": wallet_address,
+            "baseToken": base_token,
+            "quoteToken": quote_token,
+            "baseTokenAmount": base_token_amount,
+        }
+        # Seed price: at most one of quoteTokenAmount / initialPrice; Gateway falls back to market price.
+        if quote_token_amount is not None:
+            payload["quoteTokenAmount"] = quote_token_amount
+        if initial_price is not None:
+            payload["initialPrice"] = initial_price
+        # Connector-specific extras (each consumed only by its owning connector):
+        if config_address is not None:
+            payload["configAddress"] = config_address
+        if fee_config_index is not None:
+            payload["feeConfigIndex"] = fee_config_index
+        if gas_price is not None:
+            payload["gasPrice"] = gas_price
+        if max_gas is not None:
+            payload["maxGas"] = max_gas
+        return await self._request("POST", "trading/amm/create-pool", json=payload)
+
+    # ============================================
     # Transaction Polling
     # ============================================
 
