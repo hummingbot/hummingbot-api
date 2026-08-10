@@ -19,7 +19,7 @@ class GatewayConfig(BaseModel):
       clients (which use ``CONFIG_PASSWORD``). The passphrase is therefore always
       ``CONFIG_PASSWORD``; a separate value would only break the API<->Gateway mTLS chain.
     """
-    image: str = Field(default="hummingbot/gateway:latest", description="Docker image for Gateway")
+    image: str = Field(default="hummingbot/gateway:development", description="Docker image for Gateway")
     port: int = Field(default=15888, description="Port for Gateway API")
 
 
