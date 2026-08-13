@@ -629,6 +629,31 @@ class ExecutorService:
         """
         executor = self._active_executors.get(executor_id)
         if not executor:
+            # Terminal executors are popped from memory within one control-loop tick,
+            # so "not in memory" usually means "already terminated", not "unknown".
+            # Fall back to the DB and answer with the final state as a no-op success.
+            # This deliberately includes rows still marked RUNNING in the DB: an
+            # executor known to the DB but absent from memory is dead regardless of
+            # its stored status (completion race, failed persist, restart window),
+            # and answering 404 there is the gateway#678 dead end. 404 is reserved
+            # for executor ids the DB has never seen (or a DB outage, which
+            # get_executor logs and swallows to None).
+            db_record = await self.get_executor(executor_id)
+            if db_record:
+                custom_info = db_record.get("custom_info") or {}
+                logger.info(
+                    f"Stop requested for already-terminated executor {executor_id} "
+                    f"(db status: {db_record.get('status')}, close_type: {db_record.get('close_type')}) - no-op"
+                )
+                return {
+                    "executor_id": executor_id,
+                    "status": "already_terminated",
+                    "keep_position": keep_position,
+                    "close_type": db_record.get("close_type"),
+                    "position_address": custom_info.get("position_address"),
+                    "orphaned_position": bool(custom_info.get("orphaned_position", False)),
+                    "hold_reason": custom_info.get("hold_reason"),
+                }
             raise HTTPException(status_code=404, detail=f"Executor {executor_id} not found")
 
         if executor.is_closed:
@@ -648,6 +673,116 @@ class ExecutorService:
             "status": "stopping",
             "keep_position": keep_position
         }
+
+    async def get_orphaned_positions(self) -> List[Dict[str, Any]]:
+        """
+        List executors that terminated while potentially still owning an on-chain position.
+
+        Covers both orphan classes:
+        - close_type FAILED with a position_address in the persisted final state
+          (e.g. an LP close that exhausted retries - gateway#678)
+        - close_type SYSTEM_CLEANUP (RUNNING rows rewritten after an API restart);
+          these have no final state, so the position address is unknown and the
+          on-chain state must be reconciled externally
+
+        This listing is DB-side only: cross-check candidates against on-chain reality
+        (gateway CLMM/AMM positions-owned endpoints) before recovering. Recovered
+        orphans are silenced with resolve_orphaned_position().
+
+        Raises on DB errors rather than returning [] - "no orphans" from a broken DB
+        would read as all-clear on a safety endpoint.
+        """
+        if not self.db_manager:
+            raise RuntimeError("Orphan listing unavailable: no database configured")
+
+        # lp_executor is the only executor type that owns an on-chain position
+        # account; filtering in SQL keeps the limit meaningful (a Python-side filter
+        # over the newest N mixed candidates can silently drop older real orphans).
+        async with self.db_manager.get_session_context() as session:
+            repo = ExecutorRepository(session)
+            records = await repo.get_executors_by_close_types(
+                ["FAILED", "SYSTEM_CLEANUP", "POSITION_HOLD"], executor_type="lp_executor"
+            )
+
+        orphans: List[Dict[str, Any]] = []
+        for record in records:
+            final_state: Dict[str, Any] = {}
+            if record.final_state:
+                try:
+                    final_state = json.loads(record.final_state)
+                except (json.JSONDecodeError, TypeError):
+                    final_state = {}
+
+            if final_state.get("orphan_resolved"):
+                continue
+
+            position_address = final_state.get("position_address")
+            if record.close_type == "FAILED" and not position_address:
+                # Failed without on-chain exposure - not an orphan
+                continue
+            if record.close_type == "POSITION_HOLD" and not (
+                final_state.get("orphaned_position") or final_state.get("hold_reason")
+            ):
+                # Voluntary hold (keep_position=True stop) - position was closed on-chain
+                continue
+
+            orphans.append({
+                "executor_id": record.executor_id,
+                "executor_type": record.executor_type,
+                "account_name": record.account_name,
+                "connector_name": record.connector_name,
+                "trading_pair": record.trading_pair,
+                "controller_id": record.controller_id or "main",
+                "close_type": record.close_type,
+                "closed_at": record.closed_at.isoformat() if record.closed_at else None,
+                "position_address": position_address,
+                "state": final_state.get("state"),
+                "hold_reason": final_state.get("hold_reason"),
+                "needs_onchain_reconciliation": position_address is None,
+            })
+
+        return orphans
+
+    async def resolve_orphaned_position(self, executor_id: str) -> Dict[str, Any]:
+        """
+        Mark an orphaned position as recovered so it stops surfacing.
+
+        Call this after the stranded on-chain position has been closed (or adopted)
+        externally. Sets orphan_resolved in the persisted final state, which removes
+        the record from get_orphaned_positions() and from agent-facing warnings.
+        """
+        if not self.db_manager:
+            raise HTTPException(status_code=503, detail="No database configured")
+
+        async with self.db_manager.get_session_context() as session:
+            repo = ExecutorRepository(session)
+            record = await repo.get_executor_by_id(executor_id)
+            if not record:
+                raise HTTPException(status_code=404, detail=f"Executor {executor_id} not found")
+            if record.status == "RUNNING":
+                raise HTTPException(status_code=400, detail=f"Executor {executor_id} is still running")
+
+            final_state: Dict[str, Any] = {}
+            if record.final_state:
+                try:
+                    final_state = json.loads(record.final_state)
+                except (json.JSONDecodeError, TypeError):
+                    final_state = {}
+
+            is_involuntary_hold = record.close_type == "POSITION_HOLD" and (
+                final_state.get("orphaned_position") or final_state.get("hold_reason")
+            )
+            if record.close_type not in ("FAILED", "SYSTEM_CLEANUP") and not is_involuntary_hold:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Executor {executor_id} (close_type: {record.close_type}) is not an orphan candidate",
+                )
+            final_state["orphaned_position"] = False
+            final_state["orphan_resolved"] = True
+            await repo.update_executor(executor_id=executor_id, final_state=json.dumps(final_state))
+
+        logger.info(f"Orphaned position for executor {executor_id} marked resolved")
+        return {"executor_id": executor_id, "orphan_resolved": True}
 
     async def _handle_executor_completion(self, executor_id: str):
         """Handle cleanup when an executor completes."""
@@ -678,6 +813,24 @@ class ExecutorService:
 
         close_type = executor.close_type.name if executor.close_type else "UNKNOWN"
         logger.info(f"Executor {executor_id} completed with close_type: {close_type}")
+
+        # Surface stranded on-chain exposure loudly: a live position address on an
+        # involuntary hold (hold_reason set) or a legacy FAILED means the position
+        # has no automated owner from this point on.
+        if executor.close_type in (CloseType.FAILED, CloseType.POSITION_HOLD):
+            try:
+                completion_info = executor.get_custom_info()
+                position_address = completion_info.get("position_address")
+                hold_reason = completion_info.get("hold_reason")
+            except Exception:
+                position_address = None
+                hold_reason = None
+            if position_address and (hold_reason or executor.close_type == CloseType.FAILED):
+                logger.error(
+                    f"Executor {executor_id} ended {close_type} with position {position_address} "
+                    f"still open on-chain (hold_reason: {hold_reason}) - orphaned position requires "
+                    "recovery (flagged in DB record; see /executors/positions/orphaned)"
+                )
 
     def _format_executor_info(
         self,
@@ -996,6 +1149,17 @@ class ExecutorService:
             # Get custom_info directly from executor to avoid Pydantic serialization issues
             # with TrackedOrder and other complex types
             custom_info = executor.get_custom_info()
+
+            # A stranded live on-chain position: an involuntary hold (close retries
+            # exhausted -> POSITION_HOLD with hold_reason set, gateway#678) or a legacy
+            # FAILED-with-position (force-stop straggler, older wheel). Flag it in the
+            # persisted final_state so /executors/positions/orphaned, dashboards, and
+            # agents can find and recover it. Voluntary holds never match: a successful
+            # close clears position_address before the executor terminates.
+            if custom_info.get("position_address") and (
+                custom_info.get("hold_reason") or close_type == "FAILED"
+            ):
+                custom_info["orphaned_position"] = True
             # Serialize custom_info, fallback to None if serialization fails
             final_state_json = None
             metadata = self._executor_metadata.get(executor_id, {})

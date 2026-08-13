@@ -18,6 +18,7 @@ from models.executors import (
     ExecutorFilterRequest,
     ExecutorLogsResponse,
     ExecutorsSummaryResponse,
+    OrphanedPositionsResponse,
     PerformanceReportResponse,
     PositionHoldResponse,
     PositionsSummaryResponse,
@@ -356,6 +357,57 @@ async def stop_executor(
 # ========================================
 # Position Hold Endpoints
 # ========================================
+
+@router.get("/positions/orphaned", response_model=OrphanedPositionsResponse)
+async def get_orphaned_positions(
+    executor_service: ExecutorService = Depends(get_executor_service)
+):
+    """
+    List terminated executors that may still own an on-chain position.
+
+    Covers three orphan classes:
+    - Involuntary holds: close_type POSITION_HOLD with hold_reason set (an LP close
+      that exhausted its retries): the position is live on-chain with no automated
+      owner.
+    - Legacy FAILED records whose final state still reported a position_address
+      (force-stop stragglers, records persisted by older executors).
+    - Executors terminated by SYSTEM_CLEANUP after an API restart: their on-chain
+      state was never persisted, so they need external reconciliation.
+
+    This is a DB-side listing. Before recovering, cross-check candidates against
+    on-chain reality via the gateway positions-owned endpoints
+    (/trading/clmm/positions-owned, /trading/amm/positions-owned).
+    """
+    try:
+        orphans = await executor_service.get_orphaned_positions()
+        return OrphanedPositionsResponse(count=len(orphans), orphans=orphans)
+    except Exception as e:
+        logger.error(f"Error listing orphaned positions: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error listing orphaned positions: {str(e)}")
+
+
+@router.post("/{executor_id}/resolve-orphan")
+async def resolve_orphaned_position(
+    executor_id: str,
+    executor_service: ExecutorService = Depends(get_executor_service)
+):
+    """
+    Mark an orphaned position as recovered.
+
+    Call after the stranded on-chain position has been closed (or adopted)
+    externally. Removes the executor from /executors/positions/orphaned and from
+    agent-facing orphan warnings. Only valid for terminated executors that are
+    orphan candidates: an involuntary hold (POSITION_HOLD with hold_reason or the
+    orphaned_position flag), FAILED, or SYSTEM_CLEANUP.
+    """
+    try:
+        return await executor_service.resolve_orphaned_position(executor_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error resolving orphaned position for {executor_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error resolving orphaned position: {str(e)}")
+
 
 @router.get("/positions/summary", response_model=PositionsSummaryResponse)
 async def get_positions_summary(

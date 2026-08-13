@@ -70,6 +70,8 @@ from .executors import (
     ExecutorFilterRequest,
     ExecutorResponse,
     ExecutorsSummaryResponse,
+    OrphanedPositionRecord,
+    OrphanedPositionsResponse,
     StopExecutorRequest,
     StopExecutorResponse,
 )
@@ -384,4 +386,6 @@ __all__ = [
     "ExecutorResponse",
     "ExecutorDetailResponse",
     "ExecutorsSummaryResponse",
+    "OrphanedPositionRecord",
+    "OrphanedPositionsResponse",
 ]

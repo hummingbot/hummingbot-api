@@ -421,8 +421,52 @@ class CreateExecutorResponse(BaseModel):
 class StopExecutorResponse(BaseModel):
     """Response after stopping an executor."""
     executor_id: str = Field(description="Executor identifier")
-    status: str = Field(description="New status (usually 'stopping')")
+    status: str = Field(description="New status: 'stopping', or 'already_terminated' when the stop was a no-op")
     keep_position: bool = Field(description="Whether position was kept open")
+    close_type: Optional[str] = Field(default=None, description="Final close_type when already terminated")
+    position_address: Optional[str] = Field(
+        default=None, description="On-chain position address from the executor's final state, if any"
+    )
+    orphaned_position: bool = Field(
+        default=False,
+        description="True when the executor terminated with a live on-chain position that needs recovery"
+    )
+    hold_reason: Optional[str] = Field(
+        default=None,
+        description="Why a POSITION_HOLD terminal was involuntary (e.g. close_retries_exhausted); None for voluntary holds"
+    )
+
+
+class OrphanedPositionRecord(BaseModel):
+    """A terminated executor that may still own an on-chain position."""
+    executor_id: str = Field(description="Executor identifier")
+    executor_type: str = Field(description="Executor type (e.g. lp_executor)")
+    account_name: Optional[str] = Field(default=None, description="Account name")
+    connector_name: Optional[str] = Field(default=None, description="Connector name")
+    trading_pair: Optional[str] = Field(default=None, description="Trading pair")
+    controller_id: str = Field(default="main", description="Controller/agent grouping label")
+    close_type: Optional[str] = Field(
+        default=None, description="POSITION_HOLD (involuntary hold), FAILED, or SYSTEM_CLEANUP"
+    )
+    closed_at: Optional[str] = Field(default=None, description="Termination timestamp (ISO format)")
+    position_address: Optional[str] = Field(
+        default=None, description="On-chain position address (None for restart cleanups, which never persisted state)"
+    )
+    state: Optional[str] = Field(default=None, description="Executor state at termination (e.g. FAILED, CLOSING)")
+    hold_reason: Optional[str] = Field(
+        default=None,
+        description="Why the hold was involuntary (e.g. close_retries_exhausted); None for legacy FAILED/SYSTEM_CLEANUP records"
+    )
+    needs_onchain_reconciliation: bool = Field(
+        default=False,
+        description="True when the position address is unknown and on-chain state must be checked externally"
+    )
+
+
+class OrphanedPositionsResponse(BaseModel):
+    """Terminated executors that may have stranded on-chain positions."""
+    count: int = Field(description="Number of orphan candidates")
+    orphans: List[OrphanedPositionRecord] = Field(description="Orphan candidate records")
 
 
 class ExecutorsSummaryResponse(BaseModel):
