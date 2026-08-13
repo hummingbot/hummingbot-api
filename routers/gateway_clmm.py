@@ -26,7 +26,6 @@ from models import (
     CLMMPositionInfo,
     CLMMPositionsOwnedRequest,
     CLMMRemoveLiquidityRequest,
-    TimeBasedMetrics,
 )
 from services.accounts_service import AccountsService
 from services.gateway_client import GatewayError, check_gateway_error
@@ -258,7 +257,7 @@ async def _refresh_position_data(position, accounts_service: AccountsService, cl
             )
 
         logger.debug(f"Refreshed position {position.position_address}: price={current_price}, in_range={in_range}, "
-                    f"base={base_token_amount}, quote={quote_token_amount}")
+                     f"base={base_token_amount}, quote={quote_token_amount}")
 
     except Exception as e:
         logger.error(f"Error refreshing position {position.position_address}: {e}", exc_info=True)
@@ -270,6 +269,7 @@ async def get_clmm_pool_info(
     connector: str,
     network: str,
     pool_address: str,
+    bin_count: int = 0,
     accounts_service: AccountsService = Depends(get_accounts_service)
 ):
     """
@@ -279,20 +279,27 @@ async def get_clmm_pool_info(
         connector: CLMM connector (e.g., 'meteora', 'raydium')
         network: Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta')
         pool_address: Pool contract address
+        bin_count: If > 0, include the per-tick liquidity distribution (`bins`)
+            around the active tick. Meteora always returns its bins and ignores
+            this; orca, raydium, uniswap and pancakeswap honour it.
 
     Example:
-        GET /gateway/clmm/pool-info?connector=meteora&network=solana-mainnet-beta&pool_address=2sf5NYcY4zUPXUSmG6f66mskb24t5F8S11pC1Nz5nQT3
+        GET /gateway/clmm/pool-info?connector=meteora&network=solana-mainnet-beta
+            &pool_address=2sf5NYcY4zUPXUSmG6f66mskb24t5F8S11pC1Nz5nQT3
 
     Returns:
         Pool information including liquidity, price, bins (for Meteora), etc.
         All field names are returned in snake_case format.
 
     Note:
-        For Raydium connector, uses Raydium API directly instead of Gateway.
+        For Raydium connector, uses Raydium API directly instead of Gateway,
+        except when bin_count > 0 — the Raydium API returns no bin distribution,
+        so those requests go to Gateway, which computes it from on-chain ticks.
     """
     try:
-        # Special handling for Raydium - use Raydium API directly (not Gateway)
-        if connector.lower() == "raydium":
+        # Special handling for Raydium - use Raydium API directly (not Gateway).
+        # Skipped when bins are requested: only Gateway can produce them.
+        if connector.lower() == "raydium" and not bin_count:
             logger.info(f"Using Raydium API directly for pool info: {pool_address}")
 
             # Fetch from Raydium API
@@ -323,7 +330,8 @@ async def get_clmm_pool_info(
         result = check_gateway_error(await accounts_service.gateway_client.clmm_pool_info(
             connector=connector,
             chain_network=network,
-            pool_address=pool_address
+            pool_address=pool_address,
+            bin_count=bin_count
         ))
 
         # Parse the camelCase Gateway response into snake_case Pydantic model
@@ -520,7 +528,8 @@ async def open_clmm_position(
 
         # Position address can be at root level or nested in data object
         data = result.get("data", {})
-        position_address = result.get("positionAddress") or result.get("position") or data.get("positionAddress") or data.get("position")
+        position_address = (result.get("positionAddress") or result.get("position")
+                            or data.get("positionAddress") or data.get("position"))
 
         # Extract position rent (SOL locked for position NFT)
         position_rent = data.get("positionRent")
@@ -590,7 +599,8 @@ async def open_clmm_position(
                 }
 
                 await clmm_repo.create_event(event_data)
-                logger.info(f"Recorded CLMM OPEN event in database: {transaction_hash} (status: {tx_status}, gas: {gas_fee} {gas_token})")
+                logger.info(f"Recorded CLMM OPEN event in database: {transaction_hash} "
+                            f"(status: {tx_status}, gas: {gas_fee} {gas_token})")
         except Exception as db_error:
             # Log but don't fail the operation - it was submitted successfully
             logger.error(f"Error recording CLMM position in database: {db_error}", exc_info=True)
@@ -692,7 +702,8 @@ async def add_liquidity_to_clmm_position(
                         "status": tx_status
                     }
                     await clmm_repo.create_event(event_data)
-                    logger.info(f"Recorded CLMM ADD_LIQUIDITY event: {transaction_hash} (status: {tx_status}, gas: {gas_fee} {gas_token})")
+                    logger.info(f"Recorded CLMM ADD_LIQUIDITY event: {transaction_hash} "
+                                f"(status: {tx_status}, gas: {gas_fee} {gas_token})")
         except Exception as db_error:
             logger.error(f"Error recording ADD_LIQUIDITY event: {db_error}", exc_info=True)
 
@@ -784,7 +795,8 @@ async def remove_liquidity_from_clmm_position(
                         "status": tx_status
                     }
                     await clmm_repo.create_event(event_data)
-                    logger.info(f"Recorded CLMM REMOVE_LIQUIDITY event: {transaction_hash} (status: {tx_status}, gas: {gas_fee} {gas_token})")
+                    logger.info(f"Recorded CLMM REMOVE_LIQUIDITY event: {transaction_hash} "
+                                f"(status: {tx_status}, gas: {gas_fee} {gas_token})")
         except Exception as db_error:
             logger.error(f"Error recording REMOVE_LIQUIDITY event: {db_error}", exc_info=True)
 
@@ -876,7 +888,8 @@ async def close_clmm_position(
                         base_fee_to_collect = Decimal(str(pos.get("baseFeeAmount", 0)))
                         quote_fee_to_collect = Decimal(str(pos.get("quoteFeeAmount", 0)))
                         close_price = float(pos.get("price", 0)) if pos.get("price") else None
-                        logger.info(f"Before closing: price={close_price}, pending fees base={base_fee_to_collect}, quote={quote_fee_to_collect}")
+                        logger.info(f"Before closing: price={close_price}, pending fees "
+                                    f"base={base_fee_to_collect}, quote={quote_fee_to_collect}")
                         break
             else:
                 logger.warning(f"Could not find position {request.position_address} in positions_owned response")
@@ -909,7 +922,8 @@ async def close_clmm_position(
 
         # Use response values if available, otherwise use pre-fetched values
         base_fee_collected = Decimal(str(base_fee_from_response)) if base_fee_from_response is not None else base_fee_to_collect
-        quote_fee_collected = Decimal(str(quote_fee_from_response)) if quote_fee_from_response is not None else quote_fee_to_collect
+        quote_fee_collected = (Decimal(str(quote_fee_from_response))
+                               if quote_fee_from_response is not None else quote_fee_to_collect)
 
         logger.info(f"Collected fees on close: base={base_fee_collected}, quote={quote_fee_collected}")
 
@@ -933,7 +947,8 @@ async def close_clmm_position(
                         "status": tx_status
                     }
                     await clmm_repo.create_event(event_data)
-                    logger.info(f"Recorded CLMM CLOSE event: {transaction_hash} (status: {tx_status}, gas: {gas_fee} {gas_token})")
+                    logger.info(f"Recorded CLMM CLOSE event: {transaction_hash} "
+                                f"(status: {tx_status}, gas: {gas_fee} {gas_token})")
 
                     # Update position: add to collected, reset pending to 0, mark as CLOSED
                     new_base_collected = Decimal(str(position.base_fee_collected)) + base_fee_collected
@@ -972,14 +987,16 @@ async def close_clmm_position(
                             status_code = verify_result.get("status")
                             if status_code in (404, 500):
                                 await clmm_repo.close_position(request.position_address)
-                                logger.info(f"Position {request.position_address} verified as closed (Gateway returned {status_code})")
+                                logger.info(f"Position {request.position_address} verified as closed "
+                                            f"(Gateway returned {status_code})")
                             else:
                                 logger.warning(f"Unexpected error verifying position close: {verify_result}")
                         elif verify_result and "address" in verify_result:
                             # Position still exists - might be a failed close or delayed propagation
-                            logger.warning(f"Position {request.position_address} still exists after close transaction. Will be handled by poller.")
+                            logger.warning(f"Position {request.position_address} still exists after close "
+                                           "transaction. Will be handled by poller.")
                         else:
-                            logger.debug(f"Could not verify position close status, will be handled by poller")
+                            logger.debug("Could not verify position close status, will be handled by poller")
 
                     except Exception as verify_error:
                         logger.warning(f"Error verifying position close: {verify_error}. Will be handled by poller.")
@@ -1104,7 +1121,8 @@ async def collect_fees_from_clmm_position(
 
         # Use response values if available, otherwise use pre-fetched values
         base_fee_collected = Decimal(str(base_fee_from_response)) if base_fee_from_response is not None else base_fee_to_collect
-        quote_fee_collected = Decimal(str(quote_fee_from_response)) if quote_fee_from_response is not None else quote_fee_to_collect
+        quote_fee_collected = (Decimal(str(quote_fee_from_response))
+                               if quote_fee_from_response is not None else quote_fee_to_collect)
 
         # Extract gas fee from Gateway response
         gas_fee = data.get("fee")
@@ -1132,7 +1150,8 @@ async def collect_fees_from_clmm_position(
                         "status": tx_status
                     }
                     await clmm_repo.create_event(event_data)
-                    logger.info(f"Recorded CLMM COLLECT_FEES event: {transaction_hash} (status: {tx_status}, gas: {gas_fee} {gas_token})")
+                    logger.info(f"Recorded CLMM COLLECT_FEES event: {transaction_hash} "
+                                f"(status: {tx_status}, gas: {gas_fee} {gas_token})")
 
                     # Update position: add to collected, reset pending to 0
                     new_base_collected = Decimal(str(position.base_fee_collected)) + base_fee_collected
@@ -1405,5 +1424,3 @@ async def search_clmm_positions(
     except Exception as e:
         logger.error(f"Error searching CLMM positions: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error searching CLMM positions: {str(e)}")
-
-

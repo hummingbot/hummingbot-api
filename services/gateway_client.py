@@ -672,14 +672,23 @@ class GatewayClient:
         self,
         connector: str,
         chain_network: str,
-        pool_address: str
+        pool_address: str,
+        bin_count: int = 0
     ) -> Dict:
-        """Get detailed CLMM pool information by pool address"""
-        return await self._request("GET", "trading/clmm/pool-info", params={
+        """Get detailed CLMM pool information by pool address.
+
+        bin_count > 0 asks Gateway for the per-tick liquidity distribution
+        (`bins`) around the active tick. Meteora always returns its bins and
+        ignores the parameter; orca, raydium, uniswap and pancakeswap honour it.
+        """
+        params = {
             "connector": connector,
             "chainNetwork": chain_network,
             "poolAddress": pool_address
-        })
+        }
+        if bin_count:
+            params["binCount"] = bin_count
+        return await self._request("GET", "trading/clmm/pool-info", params=params)
 
     async def clmm_fetch_pools(
         self,
