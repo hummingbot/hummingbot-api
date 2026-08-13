@@ -7,7 +7,6 @@ import logging
 from decimal import Decimal
 from typing import List, Optional
 
-import aiohttp
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from database import AsyncDatabaseManager
@@ -33,94 +32,6 @@ from services.gateway_client import GatewayError, check_gateway_error
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Gateway CLMM"], prefix="/gateway")
-
-
-async def fetch_raydium_pool_info(pool_address: str) -> Optional[dict]:
-    """
-    Fetch pool info from Raydium API.
-
-    Args:
-        pool_address: Pool contract address
-
-    Returns:
-        Dictionary with pool info from Raydium API, or None if failed
-    """
-    try:
-        url = f"https://api-v3.raydium.io/pools/info/ids?ids={pool_address}"
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers={"accept": "application/json"}) as response:
-                response.raise_for_status()
-                data = await response.json()
-
-                if not data.get("success"):
-                    logger.error(f"Raydium API returned unsuccessful response: {data}")
-                    return None
-
-                # Extract the first pool from the data list
-                pools_data = data.get("data", [])
-                if not pools_data:
-                    logger.error(f"Raydium API returned empty data for pool: {pool_address}")
-                    return None
-
-                # Return the pool data directly (not wrapped in data key)
-                return pools_data[0]
-    except aiohttp.ClientError as e:
-        logger.error(f"Failed to fetch pool info from Raydium API: {e}")
-        return None
-    except Exception as e:
-        logger.error(f"Error fetching Raydium pool info: {e}", exc_info=True)
-        return None
-
-
-def transform_raydium_to_clmm_response(raydium_data: dict, pool_address: str) -> dict:
-    """
-    Transform Raydium API response to match Gateway's CLMMPoolInfoResponse format.
-
-    Args:
-        raydium_data: Pool data from Raydium API (pools/info/ids endpoint)
-        pool_address: Pool contract address
-
-    Returns:
-        Dictionary matching Gateway's pool info structure
-    """
-    # Extract token info
-    mint_a = raydium_data.get("mintA", {})
-    mint_b = raydium_data.get("mintB", {})
-
-    base_token_address = mint_a.get("address", "")
-    quote_token_address = mint_b.get("address", "")
-
-    # Get current price
-    current_price = Decimal(str(raydium_data.get("price", 0)))
-
-    # Get token amounts
-    base_amount = Decimal(str(raydium_data.get("mintAmountA", 0)))
-    quote_amount = Decimal(str(raydium_data.get("mintAmountB", 0)))
-
-    # Get fee rate (convert from decimal to percentage, e.g., 0.0025 -> 0.25%)
-    fee_rate = raydium_data.get("feeRate", 0.0025)
-    fee_pct = Decimal(str(fee_rate * 100))
-
-    # Check if this is a CLMM (Concentrated) pool
-    pool_type = raydium_data.get("type", "Standard")
-    is_clmm = pool_type == "Concentrated"
-
-    # Return in Gateway-compatible format
-    return {
-        "address": pool_address,
-        "baseTokenAddress": base_token_address,
-        "quoteTokenAddress": quote_token_address,
-        "binStep": 1 if is_clmm else None,  # CLMM pools have tick spacing
-        "feePct": fee_pct,
-        "price": current_price,
-        "baseTokenAmount": base_amount,
-        "quoteTokenAmount": quote_amount,
-        "activeBinId": None,  # Not available from this endpoint
-        "dynamicFeePct": None,
-        "minBinId": None,
-        "maxBinId": None,
-        "bins": []  # Bin data not available from pool info endpoint
-    }
 
 
 def get_transaction_status_from_response(gateway_response: dict) -> str:
@@ -291,38 +202,8 @@ async def get_clmm_pool_info(
         Pool information including liquidity, price, bins (for Meteora), etc.
         All field names are returned in snake_case format.
 
-    Note:
-        For Raydium connector, uses Raydium API directly instead of Gateway,
-        except when bin_count > 0 — the Raydium API returns no bin distribution,
-        so those requests go to Gateway, which computes it from on-chain ticks.
     """
     try:
-        # Special handling for Raydium - use Raydium API directly (not Gateway).
-        # Skipped when bins are requested: only Gateway can produce them.
-        if connector.lower() == "raydium" and not bin_count:
-            logger.info(f"Using Raydium API directly for pool info: {pool_address}")
-
-            # Fetch from Raydium API
-            raydium_data = await fetch_raydium_pool_info(pool_address)
-            if raydium_data is None:
-                raise HTTPException(status_code=503, detail="Failed to get pool info from Raydium API")
-
-            # Check if this is a CLMM pool - Standard AMM pools are not supported on this endpoint
-            pool_type = raydium_data.get("type", "Standard")
-            if pool_type != "Concentrated":
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Pool {pool_address} is a Raydium {pool_type} AMM pool, not a CLMM pool. "
-                           f"This endpoint only supports Concentrated Liquidity (CLMM) pools."
-                )
-
-            # Transform to Gateway-compatible format
-            result = transform_raydium_to_clmm_response(raydium_data, pool_address)
-
-            # Parse into response model
-            return CLMMPoolInfoResponse(**result)
-
-        # Default behavior for other connectors: use Gateway
         if not await accounts_service.gateway_client.ping():
             raise HTTPException(status_code=503, detail="Gateway service is not available")
 
