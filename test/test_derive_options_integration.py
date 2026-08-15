@@ -12,6 +12,10 @@ pytest.importorskip("hummingbot")
 
 from hummingbot.connector.exchange.derive.derive_exchange import DeriveExchange
 from services.accounts_service import AccountsService
+from utils.patch_derive_connector import apply_derive_options_patch
+
+# Ensure Derive options patch is applied to DeriveExchange before tests run
+apply_derive_options_patch()
 
 # Scrubbed test credentials (can be overridden via env vars for integration testing)
 TEST_DERIVE_API_KEY = os.getenv("TEST_DERIVE_API_KEY", "test_derive_api_key")
@@ -21,6 +25,7 @@ TEST_DERIVE_SUB_ID = int(os.getenv("TEST_DERIVE_SUB_ID", "10000"))
 
 def create_test_derive_connector() -> DeriveExchange:
     """Helper to instantiate DeriveExchange with scrubbed test credentials."""
+    apply_derive_options_patch()
     return DeriveExchange(
         derive_api_key=TEST_DERIVE_API_KEY,
         derive_api_secret=TEST_DERIVE_API_SECRET,
