@@ -28,6 +28,7 @@ def create_test_derive_connector() -> DeriveExchange:
     )
 
 
+@pytest.mark.asyncio
 async def test_derive_exchange_positions_parsing():
     print("Testing DeriveExchange positions parsing...")
     connector = create_test_derive_connector()
@@ -95,6 +96,7 @@ async def test_derive_exchange_positions_parsing():
     print("DeriveExchange positions parsing test passed successfully!")
 
 
+@pytest.mark.asyncio
 async def test_accounts_service_token_info():
     print("Testing AccountsService token info for options...")
     db_manager = MagicMock()
