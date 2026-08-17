@@ -442,8 +442,22 @@ class OrphanedPositionRecord(BaseModel):
     executor_id: str = Field(description="Executor identifier")
     executor_type: str = Field(description="Executor type (e.g. lp_executor)")
     account_name: Optional[str] = Field(default=None, description="Account name")
-    connector_name: Optional[str] = Field(default=None, description="Connector name")
+    connector_name: Optional[str] = Field(
+        default=None,
+        description="Connector name. For lp_executor this is the network id (e.g. 'solana-mainnet-beta'), "
+                    "not the DEX - see lp_provider for the DEX"
+    )
     trading_pair: Optional[str] = Field(default=None, description="Trading pair")
+    lp_provider: Optional[str] = Field(
+        default=None,
+        description="DEX connector that holds the position (e.g. 'orca/clmm'), read from the executor config. "
+                    "Pass its base name to the CLMM close endpoint"
+    )
+    pool_address: Optional[str] = Field(
+        default=None,
+        description="Pool the position was opened against, read from the executor config. Required to close a "
+                    "position that was never recorded in the API database (LP-executor positions never are)"
+    )
     controller_id: str = Field(default="main", description="Controller/agent grouping label")
     close_type: Optional[str] = Field(
         default=None, description="POSITION_HOLD (involuntary hold), FAILED, or SYSTEM_CLEANUP"

@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 # Swap Models (Router: Jupiter, 0x)
 # ============================================
 
+
 class SwapQuoteRequest(BaseModel):
     """Request for swap price quote"""
     connector: str = Field(description="DEX router connector (e.g., 'jupiter', '0x')")
@@ -29,8 +30,12 @@ class SwapQuoteResponse(BaseModel):
     quote: str = Field(description="Quote token symbol")
     price: Decimal = Field(description="Quoted price (base/quote)")
     amount: Decimal = Field(description="Amount specified in request (BUY: base amount to receive, SELL: base amount to sell)")
-    amount_in: Optional[Decimal] = Field(default=None, description="Actual input amount (BUY: quote to spend, SELL: base to sell)")
-    amount_out: Optional[Decimal] = Field(default=None, description="Actual output amount (BUY: base to receive, SELL: quote to receive)")
+    amount_in: Optional[Decimal] = Field(
+        default=None, description="Actual input amount (BUY: quote to spend, SELL: base to sell)"
+    )
+    amount_out: Optional[Decimal] = Field(
+        default=None, description="Actual output amount (BUY: base to receive, SELL: quote to receive)"
+    )
     expected_amount: Optional[Decimal] = Field(default=None, description="Deprecated: use amount_out instead")
     slippage_pct: Decimal = Field(description="Applied slippage percentage")
     gas_estimate: Optional[Decimal] = Field(default=None, description="Estimated gas cost")
@@ -116,6 +121,11 @@ class CLMMClosePositionRequest(BaseModel):
     connector: str = Field(description="CLMM connector (e.g., 'meteora', 'raydium', 'uniswap')")
     network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta')")
     position_address: str = Field(description="Position address to close")
+    pool_address: Optional[str] = Field(
+        default=None,
+        description="Pool the position belongs to. Only needed for positions this API never recorded "
+                    "(e.g. opened by an lp_executor straight against Gateway); otherwise read from the database"
+    )
     wallet_address: Optional[str] = Field(default=None, description="Wallet address (optional, uses default if not provided)")
 
 
@@ -124,6 +134,11 @@ class CLMMCollectFeesRequest(BaseModel):
     connector: str = Field(description="CLMM connector (e.g., 'meteora', 'raydium', 'uniswap')")
     network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta')")
     position_address: str = Field(description="Position address to collect fees from")
+    pool_address: Optional[str] = Field(
+        default=None,
+        description="Pool the position belongs to. Only needed for positions this API never recorded "
+                    "(e.g. opened by an lp_executor straight against Gateway); otherwise read from the database"
+    )
     wallet_address: Optional[str] = Field(default=None, description="Wallet address (optional, uses default if not provided)")
 
 

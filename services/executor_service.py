@@ -726,12 +726,25 @@ class ExecutorService:
                 # Voluntary hold (keep_position=True stop) - position was closed on-chain
                 continue
 
+            # The DEX and pool live in the executor config, not in any column: for lp_executor the
+            # connector_name column carries the network id. Both are needed to close the position,
+            # and LP-executor positions are opened by the bot straight against Gateway so they are
+            # never in the API's own CLMM position table to be looked up there.
+            config: Dict[str, Any] = {}
+            if record.config:
+                try:
+                    config = json.loads(record.config)
+                except (json.JSONDecodeError, TypeError):
+                    config = {}
+
             orphans.append({
                 "executor_id": record.executor_id,
                 "executor_type": record.executor_type,
                 "account_name": record.account_name,
                 "connector_name": record.connector_name,
                 "trading_pair": record.trading_pair,
+                "lp_provider": config.get("lp_provider"),
+                "pool_address": config.get("pool_address"),
                 "controller_id": record.controller_id or "main",
                 "close_type": record.close_type,
                 "closed_at": record.closed_at.isoformat() if record.closed_at else None,

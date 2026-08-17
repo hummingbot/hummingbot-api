@@ -742,11 +742,19 @@ async def close_clmm_position(
                 wallet_address=request.wallet_address
             )
 
-        # If no pool_address from database, we can't query Gateway
+        # Positions this API never recorded (an lp_executor opens straight against Gateway) have no
+        # row to read the pool from, so accept it on the request. Gateway's close needs only
+        # position_address - pool_address is for the pre-close fee snapshot below.
+        pool_address = pool_address or request.pool_address
+
         if not pool_address:
             raise HTTPException(
-                status_code=404,
-                detail=f"Position {request.position_address} not found in database. Pool address is required."
+                status_code=400,
+                detail=(
+                    f"Position {request.position_address} is not in the database, so its pool is unknown. "
+                    "Pass pool_address explicitly - LP-executor positions are never recorded here, and "
+                    "/executors/positions/orphaned reports the pool for each orphan."
+                )
             )
 
         # Fetch pending fees and current price BEFORE closing (Gateway doesn't always return these in response)
@@ -948,11 +956,18 @@ async def collect_fees_from_clmm_position(
                 wallet_address=request.wallet_address
             )
 
-        # If no pool_address from database, we can't query Gateway
+        # Positions this API never recorded (an lp_executor opens straight against Gateway) have no
+        # row to read the pool from, so accept it on the request.
+        pool_address = pool_address or request.pool_address
+
         if not pool_address:
             raise HTTPException(
-                status_code=404,
-                detail=f"Position {request.position_address} not found in database. Pool address is required."
+                status_code=400,
+                detail=(
+                    f"Position {request.position_address} is not in the database, so its pool is unknown. "
+                    "Pass pool_address explicitly - LP-executor positions are never recorded here, and "
+                    "/executors/positions/orphaned reports the pool for each orphan."
+                )
             )
 
         # Fetch pending fees BEFORE collecting (Gateway doesn't always return collected amounts in response)
