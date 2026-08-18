@@ -152,10 +152,14 @@ class CLMMCollectFeesResponse(BaseModel):
 
 
 class CLMMPositionsOwnedRequest(BaseModel):
-    """Request to get all CLMM positions owned by a wallet for a specific pool"""
+    """Request to get all CLMM positions owned by a wallet.
+
+    Mirrors Gateway's /trading/clmm/positions-owned, which takes no pool filter —
+    every CLMM position the wallet owns on the connector is returned, each row
+    carrying its own pool_address.
+    """
     connector: str = Field(description="CLMM connector (e.g., 'meteora', 'raydium', 'uniswap')")
     network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta')")
-    pool_address: str = Field(description="Pool contract address to filter positions")
     wallet_address: Optional[str] = Field(default=None, description="Wallet address (optional, uses default if not provided)")
 
 

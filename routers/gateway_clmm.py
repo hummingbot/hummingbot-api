@@ -101,8 +101,7 @@ async def _refresh_position_data(position, accounts_service: AccountsService, cl
             positions_list = check_gateway_error(await accounts_service.gateway_client.clmm_positions_owned(
                 connector=position.connector,
                 chain_network=position.network,  # position.network is already in 'chain-network' format
-                wallet_address=wallet_address,
-                pool_address=position.pool_address
+                wallet_address=wallet_address
             ))
 
             # Find our specific position in the list
@@ -373,8 +372,7 @@ async def open_clmm_position(
         # opening a position without knowing its tokens would corrupt the position record.
         pool_info = check_gateway_error(await accounts_service.gateway_client.clmm_pool_info(
             connector=request.connector,
-            chain_network=request.network,
-            pool_address=request.pool_address
+            chain_network=request.network
         ))
 
         # Extract tokens from pool info
@@ -766,8 +764,7 @@ async def close_clmm_position(
             positions_list = check_gateway_error(await accounts_service.gateway_client.clmm_positions_owned(
                 connector=request.connector,
                 chain_network=request.network,  # request.network is already in 'chain-network' format
-                wallet_address=wallet_address,
-                pool_address=pool_address
+                wallet_address=wallet_address
             ))
 
             # Find our specific position and get pending fees and current price
@@ -978,8 +975,7 @@ async def collect_fees_from_clmm_position(
             positions_list = check_gateway_error(await accounts_service.gateway_client.clmm_positions_owned(
                 connector=request.connector,
                 chain_network=request.network,  # request.network is already in 'chain-network' format
-                wallet_address=wallet_address,
-                pool_address=pool_address
+                wallet_address=wallet_address
             ))
 
             # Find our specific position and get pending fees
@@ -1089,16 +1085,20 @@ async def get_clmm_positions_owned(
     accounts_service: AccountsService = Depends(get_accounts_service)
 ):
     """
-    Get all CLMM liquidity positions owned by a wallet for a specific pool.
+    Get all CLMM liquidity positions owned by a wallet.
+
+    Mirrors Gateway's /trading/clmm/positions-owned, which takes no pool filter:
+    every CLMM position the wallet owns on the connector is returned, each row
+    carrying its own pool_address. (The old pool_address request field was a
+    silent no-op — Gateway never read it and the response was never filtered.)
 
     Example:
         connector: 'meteora'
         network: 'solana-mainnet-beta'
-        pool_address: '2sf5NYcY4zUPXUSmG6f66mskb24t5F8S11pC1Nz5nQT3'
         wallet_address: (optional, uses default if not provided)
 
     Returns:
-        List of CLMM position information for the specified pool
+        List of CLMM position information
     """
     try:
         if not await accounts_service.gateway_client.ping():
@@ -1113,12 +1113,10 @@ async def get_clmm_positions_owned(
             wallet_address=request.wallet_address
         )
 
-        # Get positions for the specified pool
         result = check_gateway_error(await accounts_service.gateway_client.clmm_positions_owned(
             connector=request.connector,
             chain_network=request.network,  # request.network is already in 'chain-network' format
-            wallet_address=wallet_address,
-            pool_address=request.pool_address
+            wallet_address=wallet_address
         ))
 
         # Gateway returns a list directly

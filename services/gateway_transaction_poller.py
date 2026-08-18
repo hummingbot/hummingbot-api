@@ -480,8 +480,7 @@ class GatewayTransactionPoller:
                         gateway_positions = await self.gateway_client.clmm_positions_owned(
                             connector=connector,
                             chain_network=chain_network,
-                            wallet_address=wallet_address,
-                            pool_address=None  # Get all positions across all pools
+                            wallet_address=wallet_address
                         )
 
                         if not gateway_positions or not isinstance(gateway_positions, list):
@@ -509,7 +508,7 @@ class GatewayTransactionPoller:
                                         closed_positions.discard(position_address)
                                         open_positions.add(position_address)
                                         logger.warning(f"Reopened position {position_address} - "
-                                                      f"was CLOSED in DB but still exists on-chain")
+                                                       f"was CLOSED in DB but still exists on-chain")
                                 continue
 
                             # Create new position in database
@@ -525,7 +524,7 @@ class GatewayTransactionPoller:
                                 discovered_count += 1
                                 open_positions.add(position_address)
                                 logger.info(f"Discovered new position: {position_address} "
-                                           f"(pool: {pos_data.get('poolAddress', 'unknown')[:16]}...)")
+                                            f"(pool: {pos_data.get('poolAddress', 'unknown')[:16]}...)")
 
                     except Exception as e:
                         logger.warning(f"Error discovering positions for {connector}/{chain}/{wallet_address}: {e}")
@@ -731,11 +730,13 @@ class GatewayTransactionPoller:
                     # Gateway returns 500 instead of 404 when position doesn't exist (closed)
                     # Treat any error (404 or 500) on position-info as "position closed"
                     if status_code in (404, 500):
-                        logger.info(f"Position {position.position_address} not found on Gateway (status: {status_code}), marking as CLOSED")
+                        logger.info(f"Position {position.position_address} not found on Gateway "
+                                    f"(status: {status_code}), marking as CLOSED")
                         await clmm_repo.close_position(position.position_address)
                         return
                     # Other errors → skip update, don't close
-                    logger.debug(f"Gateway error for position {position.position_address}: {result.get('error')} (status: {status_code})")
+                    logger.debug(f"Gateway error for position {position.position_address}: "
+                                 f"{result.get('error')} (status: {status_code})")
                     return
 
                 # Validate response has required fields
@@ -798,8 +799,8 @@ class GatewayTransactionPoller:
             )
 
             logger.debug(f"Refreshed position {position.position_address}: price={current_price}, in_range={in_range}, "
-                        f"base={base_token_amount}, quote={quote_token_amount}, "
-                        f"base_fee={base_fee_pending}, quote_fee={quote_fee_pending}")
+                         f"base={base_token_amount}, quote={quote_token_amount}, "
+                         f"base_fee={base_fee_pending}, quote_fee={quote_fee_pending}")
 
         except Exception as e:
             logger.error(f"Error refreshing position state {position.position_address}: {e}", exc_info=True)

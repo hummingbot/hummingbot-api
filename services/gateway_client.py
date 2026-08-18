@@ -618,18 +618,19 @@ class GatewayClient:
         self,
         connector: str,
         chain_network: str,
-        wallet_address: str,
-        pool_address: Optional[str] = None
+        wallet_address: str
     ) -> List[Dict]:
         """
-        Get CLMM positions owned by a wallet.
+        Get ALL CLMM positions owned by a wallet on a connector.
+
+        Gateway's /trading/clmm/positions-owned takes no pool filter (its handler
+        reads only connector, chainNetwork and walletAddress); callers that care
+        about one pool filter the returned rows by their poolAddress field.
 
         Args:
             connector: CLMM connector (e.g., 'meteora', 'raydium')
             chain_network: Chain and network in format 'chain-network' (e.g., 'solana-mainnet-beta')
             wallet_address: Wallet address to query
-            pool_address: Optional pool address to filter positions.
-                         If not provided, returns ALL positions across all pools.
 
         Returns:
             List of position dictionaries with fields like:
@@ -646,11 +647,6 @@ class GatewayClient:
             "chainNetwork": chain_network,
             "walletAddress": wallet_address,
         }
-
-        # Only add poolAddress if specified (allows fetching all positions)
-        if pool_address:
-            params["poolAddress"] = pool_address
-
         return await self._request("GET", "trading/clmm/positions-owned", params=params)
 
     async def clmm_collect_fees(
