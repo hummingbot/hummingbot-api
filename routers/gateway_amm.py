@@ -290,10 +290,33 @@ async def create_amm_pool(
     Create and seed a new AMM pool.
 
     Seed price priority: initial_price → quote_token_amount ratio → live market price (anti-snipe).
-    Connector extras are sent only when provided (config_address for meteora, fee_config_index for
-    raydium, gas_price/max_gas for uniswap).
+    Connector-specific params ride extra_params under Gateway's own names (configAddress for
+    meteora — required there, feeConfigIndex/openTime for raydium, gasPrice/maxGas/slippagePct
+    for uniswap) — the same contract as clmm open's extra_params.
     """
     try:
+        # Gateway's unified create-pool destructures exactly these; anything else
+        # would be silently ignored there, so reject it loudly here.
+        supported_extra_params = {
+            "configAddress", "feeConfigIndex", "openTime", "gasPrice", "maxGas", "slippagePct",
+        }
+        extra_params = request.extra_params or {}
+        unknown = set(extra_params) - supported_extra_params
+        if unknown:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Unsupported extra_params {sorted(unknown)}: Gateway's unified "
+                    f"/trading/amm/create-pool honors only {sorted(supported_extra_params)}."
+                )
+            )
+        if request.connector == "meteora" and not extra_params.get("configAddress"):
+            raise HTTPException(
+                status_code=400,
+                detail="extra_params.configAddress is required for meteora create-pool "
+                       "(DAMM v2 pools are created against a config account)."
+            )
+
         await _require_gateway(accounts_service)
         wallet_address = await _resolve_wallet(accounts_service, request.network, request.wallet_address)
         result = check_gateway_error(await accounts_service.gateway_client.amm_create_pool(
@@ -302,12 +325,7 @@ async def create_amm_pool(
             base_token_amount=float(request.base_token_amount),
             quote_token_amount=float(request.quote_token_amount) if request.quote_token_amount is not None else None,
             initial_price=float(request.initial_price) if request.initial_price is not None else None,
-            config_address=request.config_address,
-            fee_config_index=request.fee_config_index,
-            open_time=request.open_time,
-            gas_price=float(request.gas_price) if request.gas_price is not None else None,
-            max_gas=request.max_gas,
-            slippage_pct=float(request.slippage_pct) if request.slippage_pct is not None else None,
+            extra_params=request.extra_params,
         ))
         return AMMCreatePoolResponse(**result)
     except HTTPException:

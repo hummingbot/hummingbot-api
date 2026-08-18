@@ -1,8 +1,8 @@
 """
-Models for Gateway DEX trading operations.
-Supports swaps via routers (Jupiter, 0x) and CLMM liquidity positions (Meteora, Raydium, Uniswap V3).
-
-Note: AMM support has been removed. Use Router for simple swaps, CLMM for liquidity provision.
+Models for Gateway DEX trading operations, mirroring Gateway's unified /trading routes:
+swaps (routers like Jupiter and pool-scoped AMM swaps), CLMM liquidity positions
+(Meteora, Raydium, Orca, Uniswap V3, PancakeSwap), and AMM liquidity/pool creation
+(Meteora DAMM v2, Raydium CPMM, Uniswap V2).
 """
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
@@ -25,7 +25,12 @@ class SwapQuoteRequest(BaseModel):
 
 
 class SwapQuoteResponse(BaseModel):
-    """Response with swap quote details"""
+    """Swap quote, re-framed from Gateway's token-flow response into trading-pair terms.
+
+    Gateway's /trading/swap/quote speaks tokenIn/tokenOut; this keeps the base/quote +
+    side framing bots use and passes Gateway's execution-safety fields through in
+    snake_case. No gas estimate: Gateway's quote does not return one.
+    """
     base: str = Field(description="Base token symbol")
     quote: str = Field(description="Quote token symbol")
     price: Decimal = Field(description="Quoted price (base/quote)")
@@ -36,9 +41,15 @@ class SwapQuoteResponse(BaseModel):
     amount_out: Optional[Decimal] = Field(
         default=None, description="Actual output amount (BUY: base to receive, SELL: quote to receive)"
     )
-    expected_amount: Optional[Decimal] = Field(default=None, description="Deprecated: use amount_out instead")
-    slippage_pct: Decimal = Field(description="Applied slippage percentage")
-    gas_estimate: Optional[Decimal] = Field(default=None, description="Estimated gas cost")
+    min_amount_out: Optional[Decimal] = Field(
+        default=None, description="Minimum output the transaction will accept after slippage")
+    max_amount_in: Optional[Decimal] = Field(
+        default=None, description="Maximum input the transaction will spend after slippage")
+    price_impact_pct: Optional[Decimal] = Field(
+        default=None, description="Price impact of this trade size on the route")
+    pool_address: Optional[str] = Field(default=None, description="Pool the quote was priced against")
+    route_path: Optional[str] = Field(default=None, description="Route taken (router connectors)")
+    slippage_pct: Decimal = Field(description="Slippage percentage Gateway applied to the quote")
 
 
 class SwapExecuteRequest(BaseModel):
@@ -214,15 +225,11 @@ class CLMMCreatePoolRequest(BaseModel):
     initial_price: Optional[Decimal] = Field(
         default=None, description="Initial price (quote per base); market price when omitted")
     wallet_address: Optional[str] = Field(default=None, description="Wallet address (optional, uses default)")
-    # Connector-specific create-pool extras:
-    bin_step: Optional[int] = Field(default=None, description="Meteora DLMM bin step (bps)")
-    fee_bps: Optional[int] = Field(default=None, description="Meteora DLMM base fee (bps)")
-    amm_config_index: Optional[int] = Field(default=None, description="Raydium CLMM AMM config index (fee tier)")
-    fee: Optional[Decimal] = Field(default=None, description="Orca/EVM fee parameter (connector-specific)")
-    tick_spacing: Optional[int] = Field(default=None, description="Orca Whirlpool tick spacing (fee tier)")
-    amm_config: Optional[str] = Field(default=None, description="pancakeswap-sol CLMM amm_config account address")
-    gas_price: Optional[Decimal] = Field(default=None, description="EVM gas price in gwei (uniswap/pancakeswap)")
-    max_gas: Optional[int] = Field(default=None, description="EVM max gas limit (uniswap/pancakeswap)")
+    extra_params: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Connector-specific create params, passed through to Gateway under its own "
+        "names: binStep/feeBps (meteora), ammConfigIndex (raydium), fee/tickSpacing (orca), "
+        "ammConfig (pancakeswap-sol), gasPrice/maxGas (EVM connectors). Unknown keys are rejected.")
 
 
 class CLMMPositionsOwnedRequest(BaseModel):
@@ -253,10 +260,6 @@ class CLMMPositionInfo(BaseModel):
     quote_fee_amount: Optional[Decimal] = Field(default=None, description="Quote token uncollected fees")
     lower_bin_id: Optional[int] = Field(default=None, description="Lower bin ID (Meteora)")
     upper_bin_id: Optional[int] = Field(default=None, description="Upper bin ID (Meteora)")
-    reward_token_address: Optional[str] = Field(
-        default=None, description="Reward token contract address (farm rewards, where the connector reports them)")
-    reward_amount: Optional[Decimal] = Field(
-        default=None, description="Unclaimed reward-token amount (farm rewards)")
     in_range: bool = Field(description="Whether position is currently in range")
 
 
@@ -272,6 +275,11 @@ class CLMMPoolInfoRequest(BaseModel):
     connector: str = Field(description="CLMM connector (e.g., 'meteora', 'raydium')")
     network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta')")
     pool_address: str = Field(description="Pool contract address")
+    bin_count: int = Field(
+        default=0,
+        description="If > 0, include the per-tick liquidity distribution (bins) around the active "
+        "price — Gateway's binCount. Meteora always returns its bins and ignores this; orca, "
+        "raydium, uniswap and pancakeswap compute them on request.")
 
 
 class CLMMPoolBin(BaseModel):
@@ -481,13 +489,11 @@ class AMMCreatePoolRequest(BaseModel):
     quote_token_amount: Optional[Decimal] = Field(default=None, description="Amount of quote to seed (sets price if given)")
     initial_price: Optional[Decimal] = Field(default=None, description="Initial price (quote per base); overrides quote amount")
     wallet_address: Optional[str] = Field(default=None, description="Wallet address (optional, uses default)")
-    # Connector-specific create-pool extras (only consumed by their owning connector):
-    config_address: Optional[str] = Field(default=None, description="Meteora DAMM v2 config account (required for meteora)")
-    fee_config_index: Optional[int] = Field(default=None, description="Raydium CPMM fee config index (optional)")
-    open_time: Optional[int] = Field(default=None, description="Raydium CPMM pool open time (unix seconds; optional)")
-    gas_price: Optional[Decimal] = Field(default=None, description="Uniswap (EVM) gas price in gwei (optional)")
-    max_gas: Optional[int] = Field(default=None, description="Uniswap (EVM) max gas limit (optional)")
-    slippage_pct: Optional[Decimal] = Field(default=None, description="Uniswap seeding slippage percentage (optional)")
+    extra_params: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Connector-specific create params, passed through to Gateway under its own "
+        "names: configAddress (meteora DAMM v2, required there), feeConfigIndex/openTime (raydium "
+        "CPMM), gasPrice/maxGas/slippagePct (uniswap/EVM). Unknown keys are rejected.")
 
 
 class AMMCreatePoolResponse(BaseModel):

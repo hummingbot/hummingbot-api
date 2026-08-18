@@ -81,27 +81,26 @@ async def get_swap_quote(
             slippage_pct=float(request.slippage_pct) if request.slippage_pct is not None else 1.0
         ))
 
-        # Extract amounts from Gateway response (snake_case for consistency)
-        amount_in_raw = result.get("amountIn") or result.get("amount_in")
-        amount_out_raw = result.get("amountOut") or result.get("amount_out")
-
-        amount_in = Decimal(str(amount_in_raw)) if amount_in_raw else None
-        amount_out = Decimal(str(amount_out_raw)) if amount_out_raw else None
-
-        # Extract gas estimate (try both camelCase and snake_case)
-        gas_estimate = result.get("gasEstimate") or result.get("gas_estimate")
-        gas_estimate_value = Decimal(str(gas_estimate)) if gas_estimate else None
+        # Re-frame Gateway's token-flow response (tokenIn/tokenOut) into pair terms,
+        # passing its execution-safety fields through in snake_case.
+        def _dec(key):
+            value = result.get(key)
+            return Decimal(str(value)) if value is not None else None
 
         return SwapQuoteResponse(
             base=base,
             quote=quote,
             price=Decimal(str(result.get("price", 0))),
             amount=request.amount,
-            amount_in=amount_in,
-            amount_out=amount_out,
-            expected_amount=amount_out,  # Deprecated, kept for backward compatibility
-            slippage_pct=request.slippage_pct if request.slippage_pct is not None else Decimal("1.0"),
-            gas_estimate=gas_estimate_value
+            amount_in=_dec("amountIn"),
+            amount_out=_dec("amountOut"),
+            min_amount_out=_dec("minAmountOut"),
+            max_amount_in=_dec("maxAmountIn"),
+            price_impact_pct=_dec("priceImpactPct"),
+            pool_address=result.get("poolAddress"),
+            route_path=result.get("routePath"),
+            slippage_pct=(_dec("slippagePct")
+                          or (request.slippage_pct if request.slippage_pct is not None else Decimal("1.0"))),
         )
 
     except HTTPException:

@@ -1233,8 +1233,6 @@ async def get_clmm_positions_owned(
                 quote_fee_amount=Decimal(str(pos.get("quoteFeeAmount", 0))) if pos.get("quoteFeeAmount") else None,
                 lower_bin_id=pos.get("lowerBinId"),
                 upper_bin_id=pos.get("upperBinId"),
-                reward_token_address=pos.get("rewardTokenAddress"),
-                reward_amount=Decimal(str(pos.get("rewardAmount"))) if pos.get("rewardAmount") is not None else None,
                 in_range=in_range
             ))
 
@@ -1299,9 +1297,27 @@ async def create_clmm_pool(
     Create a new (empty) CLMM pool — liquidity is added afterwards by opening positions.
 
     Mirrors Gateway's POST /trading/clmm/create-pool (which shares the AMM
-    create-pool response shape). Connector extras are sent only when provided.
+    create-pool response shape). Connector-specific params ride extra_params
+    under Gateway's own names — the same contract as open's extra_params.
     """
     try:
+        # Gateway's unified create-pool destructures exactly these; anything else
+        # would be silently ignored there, so reject it loudly here.
+        supported_extra_params = {
+            "binStep", "feeBps", "ammConfigIndex", "fee", "tickSpacing",
+            "ammConfig", "gasPrice", "maxGas",
+        }
+        if request.extra_params:
+            unknown = set(request.extra_params) - supported_extra_params
+            if unknown:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Unsupported extra_params {sorted(unknown)}: Gateway's unified "
+                        f"/trading/clmm/create-pool honors only {sorted(supported_extra_params)}."
+                    )
+                )
+
         if not await accounts_service.gateway_client.ping():
             raise HTTPException(status_code=503, detail="Gateway service is not available")
 
@@ -1318,14 +1334,7 @@ async def create_clmm_pool(
             base_token=request.base_token,
             quote_token=request.quote_token,
             initial_price=float(request.initial_price) if request.initial_price is not None else None,
-            bin_step=request.bin_step,
-            fee_bps=request.fee_bps,
-            amm_config_index=request.amm_config_index,
-            fee=float(request.fee) if request.fee is not None else None,
-            tick_spacing=request.tick_spacing,
-            amm_config=request.amm_config,
-            gas_price=float(request.gas_price) if request.gas_price is not None else None,
-            max_gas=request.max_gas,
+            extra_params=request.extra_params,
         ))
         return AMMCreatePoolResponse(**result)
 
@@ -1393,8 +1402,6 @@ async def get_clmm_position_info(
             quote_fee_amount=Decimal(str(pos.get("quoteFeeAmount", 0))) if pos.get("quoteFeeAmount") else None,
             lower_bin_id=pos.get("lowerBinId"),
             upper_bin_id=pos.get("upperBinId"),
-            reward_token_address=pos.get("rewardTokenAddress"),
-            reward_amount=Decimal(str(pos.get("rewardAmount"))) if pos.get("rewardAmount") is not None else None,
             in_range=in_range
         )
 

@@ -344,7 +344,7 @@ async def test_amm_create_pool_meteora_extras(client_and_calls):
     client, calls = client_and_calls
     await client.amm_create_pool(connector="meteora", chain_network=NET, wallet_address=WALLET,
                                  base_token="SOL", quote_token="USDC", base_token_amount=1.0,
-                                 config_address="CFG123")
+                                 extra_params={"configAddress": "CFG123"})
     c = calls[0]
     assert (c["method"], c["path"]) == ("POST", "trading/amm/create-pool")
     assert c["json"]["configAddress"] == "CFG123"
@@ -358,7 +358,7 @@ async def test_amm_create_pool_raydium_fee_config_index(client_and_calls):
     client, calls = client_and_calls
     await client.amm_create_pool(connector="raydium", chain_network=NET, wallet_address=WALLET,
                                  base_token="SOL", quote_token="USDC", base_token_amount=1.0,
-                                 fee_config_index=0, quote_token_amount=100.0)
+                                 extra_params={"feeConfigIndex": 0}, quote_token_amount=100.0)
     c = calls[0]
     assert c["json"]["feeConfigIndex"] == 0
     assert c["json"]["quoteTokenAmount"] == 100.0
@@ -370,7 +370,8 @@ async def test_amm_create_pool_uniswap_gas_extras(client_and_calls):
     client, calls = client_and_calls
     await client.amm_create_pool(connector="uniswap", chain_network="ethereum-mainnet", wallet_address=WALLET,
                                  base_token="WETH", quote_token="USDC", base_token_amount=1.0,
-                                 initial_price=3000.0, gas_price=20.0, max_gas=500000)
+                                 initial_price=3000.0,
+                                 extra_params={"gasPrice": 20.0, "maxGas": 500000})
     c = calls[0]
     assert c["json"]["gasPrice"] == 20.0
     assert c["json"]["maxGas"] == 500000

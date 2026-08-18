@@ -684,16 +684,15 @@ class GatewayClient:
         base_token: str,
         quote_token: str,
         initial_price: Optional[float] = None,
-        bin_step: Optional[int] = None,
-        fee_bps: Optional[int] = None,
-        amm_config_index: Optional[int] = None,
-        fee: Optional[float] = None,
-        tick_spacing: Optional[int] = None,
-        amm_config: Optional[str] = None,
-        gas_price: Optional[float] = None,
-        max_gas: Optional[int] = None,
+        extra_params: Optional[Dict] = None,
     ) -> Dict:
-        """Create a new (empty) CLMM pool. Connector extras are sent only when provided."""
+        """Create a new (empty) CLMM pool.
+
+        extra_params carries the connector-specific create params under Gateway's own
+        names (binStep, feeBps, ammConfigIndex, fee, tickSpacing, ammConfig, gasPrice,
+        maxGas) and is spread into the payload — the same contract as clmm open's
+        extra_params. The router validates keys before this is called.
+        """
         payload = {
             "connector": connector,
             "chainNetwork": chain_network,
@@ -703,23 +702,8 @@ class GatewayClient:
         }
         if initial_price is not None:
             payload["initialPrice"] = initial_price
-        # Connector-specific extras (each consumed only by its owning connector):
-        if bin_step is not None:
-            payload["binStep"] = bin_step
-        if fee_bps is not None:
-            payload["feeBps"] = fee_bps
-        if amm_config_index is not None:
-            payload["ammConfigIndex"] = amm_config_index
-        if fee is not None:
-            payload["fee"] = fee
-        if tick_spacing is not None:
-            payload["tickSpacing"] = tick_spacing
-        if amm_config is not None:
-            payload["ammConfig"] = amm_config
-        if gas_price is not None:
-            payload["gasPrice"] = gas_price
-        if max_gas is not None:
-            payload["maxGas"] = max_gas
+        if extra_params:
+            payload.update(extra_params)
         return await self._request("POST", "trading/clmm/create-pool", json=payload)
 
     async def clmm_collect_fees(
@@ -955,14 +939,15 @@ class GatewayClient:
         base_token_amount: float,
         quote_token_amount: Optional[float] = None,
         initial_price: Optional[float] = None,
-        config_address: Optional[str] = None,
-        fee_config_index: Optional[int] = None,
-        open_time: Optional[int] = None,
-        gas_price: Optional[float] = None,
-        max_gas: Optional[int] = None,
-        slippage_pct: Optional[float] = None,
+        extra_params: Optional[Dict] = None,
     ) -> Dict:
-        """Create and seed a new AMM pool. Connector extras are sent only when provided."""
+        """Create and seed a new AMM pool.
+
+        extra_params carries the connector-specific create params under Gateway's own
+        names (configAddress, feeConfigIndex, openTime, gasPrice, maxGas, slippagePct)
+        and is spread into the payload — the same contract as clmm open's extra_params.
+        The router validates keys before this is called.
+        """
         payload = {
             "connector": connector,
             "chainNetwork": chain_network,
@@ -976,19 +961,8 @@ class GatewayClient:
             payload["quoteTokenAmount"] = quote_token_amount
         if initial_price is not None:
             payload["initialPrice"] = initial_price
-        # Connector-specific extras (each consumed only by its owning connector):
-        if config_address is not None:
-            payload["configAddress"] = config_address
-        if fee_config_index is not None:
-            payload["feeConfigIndex"] = fee_config_index
-        if open_time is not None:
-            payload["openTime"] = open_time
-        if gas_price is not None:
-            payload["gasPrice"] = gas_price
-        if max_gas is not None:
-            payload["maxGas"] = max_gas
-        if slippage_pct is not None:
-            payload["slippagePct"] = slippage_pct
+        if extra_params:
+            payload.update(extra_params)
         return await self._request("POST", "trading/amm/create-pool", json=payload)
 
     # ============================================
