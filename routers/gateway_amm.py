@@ -304,8 +304,10 @@ async def create_amm_pool(
             initial_price=float(request.initial_price) if request.initial_price is not None else None,
             config_address=request.config_address,
             fee_config_index=request.fee_config_index,
+            open_time=request.open_time,
             gas_price=float(request.gas_price) if request.gas_price is not None else None,
             max_gas=request.max_gas,
+            slippage_pct=float(request.slippage_pct) if request.slippage_pct is not None else None,
         ))
         return AMMCreatePoolResponse(**result)
     except HTTPException:

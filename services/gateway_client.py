@@ -649,6 +649,79 @@ class GatewayClient:
         }
         return await self._request("GET", "trading/clmm/positions-owned", params=params)
 
+    async def clmm_quote_position(
+        self,
+        connector: str,
+        chain_network: str,
+        pool_address: str,
+        lower_price: float,
+        upper_price: float,
+        base_token_amount: Optional[float] = None,
+        quote_token_amount: Optional[float] = None,
+        slippage_pct: Optional[float] = None,
+    ) -> Dict:
+        """Quote the base/quote split a candidate position would take, without signing anything."""
+        params = {
+            "connector": connector,
+            "chainNetwork": chain_network,
+            "poolAddress": pool_address,
+            "lowerPrice": lower_price,
+            "upperPrice": upper_price,
+        }
+        if base_token_amount is not None:
+            params["baseTokenAmount"] = base_token_amount
+        if quote_token_amount is not None:
+            params["quoteTokenAmount"] = quote_token_amount
+        if slippage_pct is not None:
+            params["slippagePct"] = slippage_pct
+        return await self._request("GET", "trading/clmm/quote-position", params=params)
+
+    async def clmm_create_pool(
+        self,
+        connector: str,
+        chain_network: str,
+        wallet_address: str,
+        base_token: str,
+        quote_token: str,
+        initial_price: Optional[float] = None,
+        bin_step: Optional[int] = None,
+        fee_bps: Optional[int] = None,
+        amm_config_index: Optional[int] = None,
+        fee: Optional[float] = None,
+        tick_spacing: Optional[int] = None,
+        amm_config: Optional[str] = None,
+        gas_price: Optional[float] = None,
+        max_gas: Optional[int] = None,
+    ) -> Dict:
+        """Create a new (empty) CLMM pool. Connector extras are sent only when provided."""
+        payload = {
+            "connector": connector,
+            "chainNetwork": chain_network,
+            "walletAddress": wallet_address,
+            "baseToken": base_token,
+            "quoteToken": quote_token,
+        }
+        if initial_price is not None:
+            payload["initialPrice"] = initial_price
+        # Connector-specific extras (each consumed only by its owning connector):
+        if bin_step is not None:
+            payload["binStep"] = bin_step
+        if fee_bps is not None:
+            payload["feeBps"] = fee_bps
+        if amm_config_index is not None:
+            payload["ammConfigIndex"] = amm_config_index
+        if fee is not None:
+            payload["fee"] = fee
+        if tick_spacing is not None:
+            payload["tickSpacing"] = tick_spacing
+        if amm_config is not None:
+            payload["ammConfig"] = amm_config
+        if gas_price is not None:
+            payload["gasPrice"] = gas_price
+        if max_gas is not None:
+            payload["maxGas"] = max_gas
+        return await self._request("POST", "trading/clmm/create-pool", json=payload)
+
     async def clmm_collect_fees(
         self,
         connector: str,
@@ -884,8 +957,10 @@ class GatewayClient:
         initial_price: Optional[float] = None,
         config_address: Optional[str] = None,
         fee_config_index: Optional[int] = None,
+        open_time: Optional[int] = None,
         gas_price: Optional[float] = None,
         max_gas: Optional[int] = None,
+        slippage_pct: Optional[float] = None,
     ) -> Dict:
         """Create and seed a new AMM pool. Connector extras are sent only when provided."""
         payload = {
@@ -906,10 +981,14 @@ class GatewayClient:
             payload["configAddress"] = config_address
         if fee_config_index is not None:
             payload["feeConfigIndex"] = fee_config_index
+        if open_time is not None:
+            payload["openTime"] = open_time
         if gas_price is not None:
             payload["gasPrice"] = gas_price
         if max_gas is not None:
             payload["maxGas"] = max_gas
+        if slippage_pct is not None:
+            payload["slippagePct"] = slippage_pct
         return await self._request("POST", "trading/amm/create-pool", json=payload)
 
     # ============================================

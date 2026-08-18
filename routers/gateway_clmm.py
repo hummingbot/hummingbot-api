@@ -13,10 +13,13 @@ from database import AsyncDatabaseManager
 from database.repositories import GatewayCLMMRepository
 from deps import get_accounts_service, get_database_manager
 from models import (
+    AMMCreatePoolResponse,
     CLMMAddLiquidityRequest,
     CLMMClosePositionRequest,
+    CLMMClosePositionResponse,
     CLMMCollectFeesRequest,
     CLMMCollectFeesResponse,
+    CLMMCreatePoolRequest,
     CLMMOpenPositionRequest,
     CLMMOpenPositionResponse,
     CLMMPoolInfoResponse,
@@ -24,6 +27,8 @@ from models import (
     CLMMPoolListResponse,
     CLMMPositionInfo,
     CLMMPositionsOwnedRequest,
+    CLMMQuotePositionRequest,
+    CLMMQuotePositionResponse,
     CLMMRemoveLiquidityRequest,
 )
 from services.accounts_service import AccountsService
@@ -319,7 +324,7 @@ async def get_clmm_pools(
             pools=pools,
             total=total,
             page=page,
-            pageSize=limit
+            page_size=limit
         )
 
     except HTTPException:
@@ -356,6 +361,23 @@ async def open_clmm_position(
         Transaction hash and position address
     """
     try:
+        # Gateway's unified open destructures ONLY strategyType from the body; any other
+        # extra_params key is silently dropped there. Reject unknown keys here so a typo
+        # (or a connector param the unified route does not carry) fails loudly instead of
+        # opening a position with the parameter ignored.
+        supported_extra_params = {"strategyType"}
+        if request.extra_params:
+            unknown = set(request.extra_params) - supported_extra_params
+            if unknown:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Unsupported extra_params {sorted(unknown)}: Gateway's unified "
+                        f"/trading/clmm/open honors only {sorted(supported_extra_params)} "
+                        "and silently ignores everything else."
+                    )
+                )
+
         if not await accounts_service.gateway_client.ping():
             raise HTTPException(status_code=503, detail="Gateway service is not available")
 
@@ -415,6 +437,18 @@ async def open_clmm_position(
         if position_rent:
             logger.info(f"Position rent: {position_rent} SOL")
 
+        # Prefer the CONFIRMED on-chain amounts over the requested ones: slippage and
+        # rounding make them differ, and persisting the request silently diverges the
+        # DB from the chain. data is only present when Gateway confirmed the tx, so
+        # the requested amounts remain the fallback for submitted-not-confirmed
+        # (reconciled later by the poller).
+        base_amount_added = data.get("baseTokenAmountAdded")
+        if base_amount_added is None:
+            base_amount_added = float(request.base_token_amount) if request.base_token_amount else 0
+        quote_amount_added = data.get("quoteTokenAmountAdded")
+        if quote_amount_added is None:
+            quote_amount_added = float(request.quote_token_amount) if request.quote_token_amount else 0
+
         if not transaction_hash:
             raise HTTPException(status_code=500, detail="No transaction hash returned from Gateway")
         if not position_address:
@@ -454,11 +488,11 @@ async def open_clmm_position(
                     "percentage": percentage,
                     "entry_price": entry_price,  # Pool price when position opened
                     "current_price": entry_price,  # Same as entry at open time, updated by poller
-                    "initial_base_token_amount": float(request.base_token_amount) if request.base_token_amount else 0,
-                    "initial_quote_token_amount": float(request.quote_token_amount) if request.quote_token_amount else 0,
+                    "initial_base_token_amount": float(base_amount_added),
+                    "initial_quote_token_amount": float(quote_amount_added),
                     "position_rent": float(position_rent) if position_rent else None,
-                    "base_token_amount": float(request.base_token_amount) if request.base_token_amount else 0,
-                    "quote_token_amount": float(request.quote_token_amount) if request.quote_token_amount else 0,
+                    "base_token_amount": float(base_amount_added),
+                    "quote_token_amount": float(quote_amount_added),
                     "in_range": "UNKNOWN"  # Will be updated by poller
                 }
 
@@ -470,8 +504,8 @@ async def open_clmm_position(
                     "position_id": position.id,
                     "transaction_hash": transaction_hash,
                     "event_type": "OPEN",
-                    "base_token_amount": float(request.base_token_amount) if request.base_token_amount else None,
-                    "quote_token_amount": float(request.quote_token_amount) if request.quote_token_amount else None,
+                    "base_token_amount": float(base_amount_added) if base_amount_added else None,
+                    "quote_token_amount": float(quote_amount_added) if quote_amount_added else None,
                     "gas_fee": float(gas_fee) if gas_fee else None,
                     "gas_token": gas_token,
                     "status": tx_status
@@ -491,6 +525,9 @@ async def open_clmm_position(
             pool_address=request.pool_address,
             lower_price=request.lower_price,
             upper_price=request.upper_price,
+            base_token_amount_added=Decimal(str(base_amount_added)) if base_amount_added else None,
+            quote_token_amount_added=Decimal(str(quote_amount_added)) if quote_amount_added else None,
+            position_rent=Decimal(str(position_rent)) if position_rent else None,
             status="submitted"
         )
 
@@ -562,6 +599,16 @@ async def add_liquidity_to_clmm_position(
         gas_fee = data.get("fee")
         gas_token = "SOL" if chain == "solana" else "ETH" if chain == "ethereum" else None
 
+        # Prefer the CONFIRMED on-chain amounts (data is only present when Gateway
+        # confirmed the tx); the requested amounts are the submitted-not-confirmed
+        # fallback, reconciled later by the poller.
+        base_amount_added = data.get("baseTokenAmountAdded")
+        if base_amount_added is None:
+            base_amount_added = float(request.base_token_amount) if request.base_token_amount else None
+        quote_amount_added = data.get("quoteTokenAmountAdded")
+        if quote_amount_added is None:
+            quote_amount_added = float(request.quote_token_amount) if request.quote_token_amount else None
+
         # Store ADD_LIQUIDITY event in database
         try:
             async with db_manager.get_session_context() as session:
@@ -574,8 +621,8 @@ async def add_liquidity_to_clmm_position(
                         "position_id": position.id,
                         "transaction_hash": transaction_hash,
                         "event_type": "ADD_LIQUIDITY",
-                        "base_token_amount": float(request.base_token_amount) if request.base_token_amount else None,
-                        "quote_token_amount": float(request.quote_token_amount) if request.quote_token_amount else None,
+                        "base_token_amount": float(base_amount_added) if base_amount_added else None,
+                        "quote_token_amount": float(quote_amount_added) if quote_amount_added else None,
                         "gas_fee": float(gas_fee) if gas_fee else None,
                         "gas_token": gas_token,
                         "status": tx_status
@@ -589,6 +636,9 @@ async def add_liquidity_to_clmm_position(
         return {
             "transaction_hash": transaction_hash,
             "position_address": request.position_address,
+            "base_token_amount_added": base_amount_added,
+            "quote_token_amount_added": quote_amount_added,
+            "gas_fee": gas_fee,
             "status": "submitted"
         }
 
@@ -656,6 +706,11 @@ async def remove_liquidity_from_clmm_position(
         gas_fee = data.get("fee")
         gas_token = "SOL" if chain == "solana" else "ETH" if chain == "ethereum" else None
 
+        # The CONFIRMED on-chain amounts (data is only present when Gateway confirmed
+        # the tx). A percentage alone says nothing about what actually left the pool.
+        base_amount_removed = data.get("baseTokenAmountRemoved")
+        quote_amount_removed = data.get("quoteTokenAmountRemoved")
+
         # Store REMOVE_LIQUIDITY event in database
         try:
             async with db_manager.get_session_context() as session:
@@ -664,11 +719,15 @@ async def remove_liquidity_from_clmm_position(
                 # Get position to link event
                 position = await clmm_repo.get_position_by_address(request.position_address)
                 if position:
+                    # No "percentage" key: GatewayCLMMEvent has no such column, and the
+                    # stray kwarg made create_event raise — silently losing every
+                    # REMOVE_LIQUIDITY event to the log-and-continue handler below.
                     event_data = {
                         "position_id": position.id,
                         "transaction_hash": transaction_hash,
                         "event_type": "REMOVE_LIQUIDITY",
-                        "percentage": float(request.percentage),
+                        "base_token_amount": float(base_amount_removed) if base_amount_removed is not None else None,
+                        "quote_token_amount": float(quote_amount_removed) if quote_amount_removed is not None else None,
                         "gas_fee": float(gas_fee) if gas_fee else None,
                         "gas_token": gas_token,
                         "status": tx_status
@@ -683,6 +742,9 @@ async def remove_liquidity_from_clmm_position(
             "transaction_hash": transaction_hash,
             "position_address": request.position_address,
             "percentage": float(request.percentage),
+            "base_token_amount_removed": base_amount_removed,
+            "quote_token_amount_removed": quote_amount_removed,
+            "gas_fee": gas_fee,
             "status": "submitted"
         }
 
@@ -697,7 +759,7 @@ async def remove_liquidity_from_clmm_position(
         raise HTTPException(status_code=500, detail=f"Error removing liquidity from CLMM position: {str(e)}")
 
 
-@router.post("/clmm/close", response_model=CLMMCollectFeesResponse)
+@router.post("/clmm/close", response_model=CLMMClosePositionResponse)
 async def close_clmm_position(
     request: CLMMClosePositionRequest,
     accounts_service: AccountsService = Depends(get_accounts_service),
@@ -811,7 +873,16 @@ async def close_clmm_position(
         quote_fee_collected = (Decimal(str(quote_fee_from_response))
                                if quote_fee_from_response is not None else quote_fee_to_collect)
 
-        logger.info(f"Collected fees on close: base={base_fee_collected}, quote={quote_fee_collected}")
+        # Confirmed-close accounting: what actually left the pool, and the rent the
+        # chain refunded for the closed position account (tracked as locked at open
+        # via position_rent). None until the transaction confirms.
+        base_amount_removed = data.get("baseTokenAmountRemoved")
+        quote_amount_removed = data.get("quoteTokenAmountRemoved")
+        position_rent_refunded = data.get("positionRentRefunded")
+
+        logger.info(f"Collected fees on close: base={base_fee_collected}, quote={quote_fee_collected}; "
+                    f"removed base={base_amount_removed}, quote={quote_amount_removed}; "
+                    f"rent refunded={position_rent_refunded}")
 
         # Store CLOSE event in database and update position
         try:
@@ -826,6 +897,8 @@ async def close_clmm_position(
                         "position_id": position.id,
                         "transaction_hash": transaction_hash,
                         "event_type": "CLOSE",
+                        "base_token_amount": float(base_amount_removed) if base_amount_removed is not None else None,
+                        "quote_token_amount": float(quote_amount_removed) if quote_amount_removed is not None else None,
                         "base_fee_collected": float(base_fee_collected) if base_fee_collected else None,
                         "quote_fee_collected": float(quote_fee_collected) if quote_fee_collected else None,
                         "gas_fee": float(gas_fee) if gas_fee else None,
@@ -891,11 +964,14 @@ async def close_clmm_position(
         except Exception as db_error:
             logger.error(f"Error recording CLOSE event: {db_error}", exc_info=True)
 
-        return CLMMCollectFeesResponse(
+        return CLMMClosePositionResponse(
             transaction_hash=transaction_hash,
             position_address=request.position_address,
             base_fee_collected=Decimal(str(base_fee_collected)) if base_fee_collected else None,
             quote_fee_collected=Decimal(str(quote_fee_collected)) if quote_fee_collected else None,
+            base_token_amount_removed=Decimal(str(base_amount_removed)) if base_amount_removed is not None else None,
+            quote_token_amount_removed=Decimal(str(quote_amount_removed)) if quote_amount_removed is not None else None,
+            position_rent_refunded=Decimal(str(position_rent_refunded)) if position_rent_refunded is not None else None,
             status="submitted"
         )
 
@@ -1157,6 +1233,8 @@ async def get_clmm_positions_owned(
                 quote_fee_amount=Decimal(str(pos.get("quoteFeeAmount", 0))) if pos.get("quoteFeeAmount") else None,
                 lower_bin_id=pos.get("lowerBinId"),
                 upper_bin_id=pos.get("upperBinId"),
+                reward_token_address=pos.get("rewardTokenAddress"),
+                reward_amount=Decimal(str(pos.get("rewardAmount"))) if pos.get("rewardAmount") is not None else None,
                 in_range=in_range
             ))
 
@@ -1171,6 +1249,162 @@ async def get_clmm_positions_owned(
     except Exception as e:
         logger.error(f"Error getting CLMM positions owned: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error getting CLMM positions owned: {str(e)}")
+
+
+@router.post("/clmm/quote-position", response_model=CLMMQuotePositionResponse, response_model_by_alias=False)
+async def quote_clmm_position(
+    request: CLMMQuotePositionRequest,
+    accounts_service: AccountsService = Depends(get_accounts_service)
+):
+    """
+    Quote a candidate CLMM position before opening or adding liquidity.
+
+    Mirrors Gateway's GET /trading/clmm/quote-position: returns the base/quote
+    split the pool would actually take for the given range and deposit amounts
+    (and which side limits it), without signing or submitting anything.
+    """
+    try:
+        if not await accounts_service.gateway_client.ping():
+            raise HTTPException(status_code=503, detail="Gateway service is not available")
+
+        result = check_gateway_error(await accounts_service.gateway_client.clmm_quote_position(
+            connector=request.connector,
+            chain_network=request.network,
+            pool_address=request.pool_address,
+            lower_price=float(request.lower_price),
+            upper_price=float(request.upper_price),
+            base_token_amount=float(request.base_token_amount) if request.base_token_amount is not None else None,
+            quote_token_amount=float(request.quote_token_amount) if request.quote_token_amount is not None else None,
+            slippage_pct=float(request.slippage_pct) if request.slippage_pct is not None else None,
+        ))
+        return CLMMQuotePositionResponse(**result)
+
+    except HTTPException:
+        raise
+    except GatewayError as e:
+        raise HTTPException(status_code=e.status, detail=f"Gateway error quoting CLMM position: {e}")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error quoting CLMM position: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error quoting CLMM position: {str(e)}")
+
+
+@router.post("/clmm/create-pool", response_model=AMMCreatePoolResponse, response_model_by_alias=False)
+async def create_clmm_pool(
+    request: CLMMCreatePoolRequest,
+    accounts_service: AccountsService = Depends(get_accounts_service)
+):
+    """
+    Create a new (empty) CLMM pool — liquidity is added afterwards by opening positions.
+
+    Mirrors Gateway's POST /trading/clmm/create-pool (which shares the AMM
+    create-pool response shape). Connector extras are sent only when provided.
+    """
+    try:
+        if not await accounts_service.gateway_client.ping():
+            raise HTTPException(status_code=503, detail="Gateway service is not available")
+
+        chain, _ = accounts_service.gateway_client.parse_network_id(request.network)
+        wallet_address = await accounts_service.gateway_client.get_wallet_address_or_default(
+            chain=chain,
+            wallet_address=request.wallet_address
+        )
+
+        result = check_gateway_error(await accounts_service.gateway_client.clmm_create_pool(
+            connector=request.connector,
+            chain_network=request.network,
+            wallet_address=wallet_address,
+            base_token=request.base_token,
+            quote_token=request.quote_token,
+            initial_price=float(request.initial_price) if request.initial_price is not None else None,
+            bin_step=request.bin_step,
+            fee_bps=request.fee_bps,
+            amm_config_index=request.amm_config_index,
+            fee=float(request.fee) if request.fee is not None else None,
+            tick_spacing=request.tick_spacing,
+            amm_config=request.amm_config,
+            gas_price=float(request.gas_price) if request.gas_price is not None else None,
+            max_gas=request.max_gas,
+        ))
+        return AMMCreatePoolResponse(**result)
+
+    except HTTPException:
+        raise
+    except GatewayError as e:
+        raise HTTPException(status_code=e.status, detail=f"Gateway error creating CLMM pool: {e}")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error creating CLMM pool: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error creating CLMM pool: {str(e)}")
+
+
+@router.get("/clmm/position-info", response_model=CLMMPositionInfo)
+async def get_clmm_position_info(
+    connector: str,
+    network: str,
+    position_address: str,
+    accounts_service: AccountsService = Depends(get_accounts_service)
+):
+    """
+    Get a single CLMM position by its address.
+
+    Mirrors Gateway's GET /trading/clmm/position-info. Gateway reports a missing
+    or closed position as an error (500/404), surfaced here as 404.
+    """
+    try:
+        if not await accounts_service.gateway_client.ping():
+            raise HTTPException(status_code=503, detail="Gateway service is not available")
+
+        pos = await accounts_service.gateway_client.clmm_position_info(
+            connector=connector,
+            chain_network=network,
+            position_address=position_address
+        )
+        if isinstance(pos, dict) and "error" in pos:
+            status_code = pos.get("status")
+            if status_code in (404, 500):
+                raise HTTPException(status_code=404, detail=f"Position {position_address} not found or closed")
+            raise HTTPException(status_code=status_code or 502, detail=str(pos.get("error")))
+
+        base_token_address = pos.get("baseTokenAddress", "")
+        quote_token_address = pos.get("quoteTokenAddress", "")
+        base_token = base_token_address[-8:] if base_token_address else ""
+        quote_token = quote_token_address[-8:] if quote_token_address else ""
+        current_price = Decimal(str(pos.get("price", 0)))
+        lower_price = Decimal(str(pos.get("lowerPrice", 0))) if pos.get("lowerPrice") else Decimal("0")
+        upper_price = Decimal(str(pos.get("upperPrice", 0))) if pos.get("upperPrice") else Decimal("0")
+        in_range = bool(current_price > 0 and lower_price > 0 and upper_price > 0
+                        and lower_price <= current_price <= upper_price)
+
+        return CLMMPositionInfo(
+            position_address=pos.get("address", position_address),
+            pool_address=pos.get("poolAddress", ""),
+            trading_pair=f"{base_token}-{quote_token}" if base_token and quote_token else "",
+            base_token=base_token,
+            quote_token=quote_token,
+            base_token_amount=Decimal(str(pos.get("baseTokenAmount", 0))),
+            quote_token_amount=Decimal(str(pos.get("quoteTokenAmount", 0))),
+            current_price=current_price,
+            lower_price=lower_price,
+            upper_price=upper_price,
+            base_fee_amount=Decimal(str(pos.get("baseFeeAmount", 0))) if pos.get("baseFeeAmount") else None,
+            quote_fee_amount=Decimal(str(pos.get("quoteFeeAmount", 0))) if pos.get("quoteFeeAmount") else None,
+            lower_bin_id=pos.get("lowerBinId"),
+            upper_bin_id=pos.get("upperBinId"),
+            reward_token_address=pos.get("rewardTokenAddress"),
+            reward_amount=Decimal(str(pos.get("rewardAmount"))) if pos.get("rewardAmount") is not None else None,
+            in_range=in_range
+        )
+
+    except HTTPException:
+        raise
+    except GatewayError as e:
+        raise HTTPException(status_code=e.status, detail=f"Gateway error getting CLMM position: {e}")
+    except Exception as e:
+        logger.error(f"Error getting CLMM position info: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error getting CLMM position info: {str(e)}")
 
 
 @router.get("/clmm/positions/{position_address}/events")

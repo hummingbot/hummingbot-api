@@ -93,6 +93,14 @@ class CLMMOpenPositionResponse(BaseModel):
     pool_address: str = Field(description="Pool address")
     lower_price: Decimal = Field(description="Lower price bound")
     upper_price: Decimal = Field(description="Upper price bound")
+    base_token_amount_added: Optional[Decimal] = Field(
+        default=None,
+        description="Base amount actually added on-chain (confirmed txs only; the requested amount otherwise)")
+    quote_token_amount_added: Optional[Decimal] = Field(
+        default=None,
+        description="Quote amount actually added on-chain (confirmed txs only; the requested amount otherwise)")
+    position_rent: Optional[Decimal] = Field(
+        default=None, description="Native token locked as rent for the position account (refunded on close)")
     status: str = Field(default="submitted", description="Transaction status")
 
 
@@ -151,6 +159,72 @@ class CLMMCollectFeesResponse(BaseModel):
     status: str = Field(default="submitted", description="Transaction status")
 
 
+class CLMMClosePositionResponse(CLMMCollectFeesResponse):
+    """Response after closing a position: fees collected plus what the close returned.
+
+    The removed amounts and rent refund come from Gateway's confirmed transaction data,
+    so they are None for submitted-not-confirmed transactions.
+    """
+    base_token_amount_removed: Optional[Decimal] = Field(
+        default=None, description="Base liquidity actually withdrawn on-chain")
+    quote_token_amount_removed: Optional[Decimal] = Field(
+        default=None, description="Quote liquidity actually withdrawn on-chain")
+    position_rent_refunded: Optional[Decimal] = Field(
+        default=None, description="Native token rent refunded when the position account closed")
+
+
+class CLMMQuotePositionRequest(BaseModel):
+    """Request to quote a candidate CLMM position before opening or adding.
+
+    Mirrors Gateway's GET /trading/clmm/quote-position: given the price range and
+    one or both deposit amounts, returns the actual base/quote split the pool
+    would take (and which side limits it) without signing anything.
+    """
+    connector: str = Field(description="CLMM connector (e.g., 'meteora', 'raydium', 'orca')")
+    network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta')")
+    pool_address: str = Field(description="Pool contract address")
+    lower_price: Decimal = Field(description="Lower price bound")
+    upper_price: Decimal = Field(description="Upper price bound")
+    base_token_amount: Optional[Decimal] = Field(default=None, description="Base amount to deposit (one side may be omitted)")
+    quote_token_amount: Optional[Decimal] = Field(default=None, description="Quote amount to deposit (one side may be omitted)")
+    slippage_pct: Optional[Decimal] = Field(default=None, description="Max acceptable slippage percentage")
+
+
+class CLMMQuotePositionResponse(BaseModel):
+    """Gateway's position quote: the deposit split the pool would actually take."""
+    base_limited: bool = Field(alias="baseLimited", description="True when the base side limits the deposit")
+    base_token_amount: Decimal = Field(alias="baseTokenAmount", description="Base amount the position would take")
+    quote_token_amount: Decimal = Field(alias="quoteTokenAmount", description="Quote amount the position would take")
+    base_token_amount_max: Decimal = Field(alias="baseTokenAmountMax", description="Base ceiling after slippage")
+    quote_token_amount_max: Decimal = Field(alias="quoteTokenAmountMax", description="Quote ceiling after slippage")
+
+    model_config = {"populate_by_name": True}
+
+
+class CLMMCreatePoolRequest(BaseModel):
+    """Request to create a new (empty) CLMM pool — liquidity is added by opening positions.
+
+    Mirrors Gateway's POST /trading/clmm/create-pool. Connector extras are consumed
+    only by their owning connector.
+    """
+    connector: str = Field(description="CLMM connector (e.g., 'meteora', 'raydium', 'orca', 'uniswap')")
+    network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta')")
+    base_token: str = Field(description="Base token symbol or address")
+    quote_token: str = Field(description="Quote token symbol or address")
+    initial_price: Optional[Decimal] = Field(
+        default=None, description="Initial price (quote per base); market price when omitted")
+    wallet_address: Optional[str] = Field(default=None, description="Wallet address (optional, uses default)")
+    # Connector-specific create-pool extras:
+    bin_step: Optional[int] = Field(default=None, description="Meteora DLMM bin step (bps)")
+    fee_bps: Optional[int] = Field(default=None, description="Meteora DLMM base fee (bps)")
+    amm_config_index: Optional[int] = Field(default=None, description="Raydium CLMM AMM config index (fee tier)")
+    fee: Optional[Decimal] = Field(default=None, description="Orca/EVM fee parameter (connector-specific)")
+    tick_spacing: Optional[int] = Field(default=None, description="Orca Whirlpool tick spacing (fee tier)")
+    amm_config: Optional[str] = Field(default=None, description="pancakeswap-sol CLMM amm_config account address")
+    gas_price: Optional[Decimal] = Field(default=None, description="EVM gas price in gwei (uniswap/pancakeswap)")
+    max_gas: Optional[int] = Field(default=None, description="EVM max gas limit (uniswap/pancakeswap)")
+
+
 class CLMMPositionsOwnedRequest(BaseModel):
     """Request to get all CLMM positions owned by a wallet.
 
@@ -179,6 +253,10 @@ class CLMMPositionInfo(BaseModel):
     quote_fee_amount: Optional[Decimal] = Field(default=None, description="Quote token uncollected fees")
     lower_bin_id: Optional[int] = Field(default=None, description="Lower bin ID (Meteora)")
     upper_bin_id: Optional[int] = Field(default=None, description="Upper bin ID (Meteora)")
+    reward_token_address: Optional[str] = Field(
+        default=None, description="Reward token contract address (farm rewards, where the connector reports them)")
+    reward_amount: Optional[Decimal] = Field(
+        default=None, description="Unclaimed reward-token amount (farm rewards)")
     in_range: bool = Field(description="Whether position is currently in range")
 
 
@@ -227,9 +305,9 @@ class CLMMPoolInfoResponse(BaseModel):
     base_token_amount: Decimal = Field(alias="baseTokenAmount", description="Total base token liquidity")
     quote_token_amount: Decimal = Field(alias="quoteTokenAmount", description="Total quote token liquidity")
     active_bin_id: Optional[int] = Field(None, alias="activeBinId", description="Currently active bin ID (Meteora DLMM only)")
-    dynamic_fee_pct: Optional[Decimal] = Field(None, alias="dynamicFeePct", description="Dynamic fee percentage")
-    min_bin_id: Optional[int] = Field(None, alias="minBinId", description="Minimum bin ID (Meteora-specific)")
-    max_bin_id: Optional[int] = Field(None, alias="maxBinId", description="Maximum bin ID (Meteora-specific)")
+    # No dynamicFeePct/minBinId/maxBinId: those are Meteora connector extensions that
+    # Gateway's unified /trading/clmm/pool-info response schema strips before serialization,
+    # so they can never arrive here — and nothing downstream consumes them.
     bins: List[CLMMPoolBin] = Field(default_factory=list, description="List of bins with liquidity")
 
     model_config = {
@@ -245,9 +323,6 @@ class CLMMPoolInfoResponse(BaseModel):
                 "base_token_amount": 8645709.142366,
                 "quote_token_amount": 1095942.335132,
                 "active_bin_id": -374,
-                "dynamic_fee_pct": 0.2,
-                "min_bin_id": -21835,
-                "max_bin_id": 21835,
                 "bins": []
             }
         }
@@ -409,8 +484,10 @@ class AMMCreatePoolRequest(BaseModel):
     # Connector-specific create-pool extras (only consumed by their owning connector):
     config_address: Optional[str] = Field(default=None, description="Meteora DAMM v2 config account (required for meteora)")
     fee_config_index: Optional[int] = Field(default=None, description="Raydium CPMM fee config index (optional)")
+    open_time: Optional[int] = Field(default=None, description="Raydium CPMM pool open time (unix seconds; optional)")
     gas_price: Optional[Decimal] = Field(default=None, description="Uniswap (EVM) gas price in gwei (optional)")
     max_gas: Optional[int] = Field(default=None, description="Uniswap (EVM) max gas limit (optional)")
+    slippage_pct: Optional[Decimal] = Field(default=None, description="Uniswap seeding slippage percentage (optional)")
 
 
 class AMMCreatePoolResponse(BaseModel):
@@ -495,4 +572,4 @@ class CLMMPoolListResponse(BaseModel):
     pools: List[CLMMPoolListItem] = Field(description="List of available pools")
     total: int = Field(description="Total number of matching pools")
     page: int = Field(description="Current page number")
-    pageSize: int = Field(description="Number of pools per page")
+    page_size: int = Field(description="Number of pools per page")
