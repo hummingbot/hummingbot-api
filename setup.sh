@@ -436,6 +436,15 @@ if prompt_yes_no "Use Tailscale for secure private networking? [y/N]: " "n"; the
   TAILSCALE_ENABLED=true
 fi
 
+# Docker Compose reads this same .env for interpolation (it auto-loads a
+# file literally named .env from the project directory) — so setting this
+# here is what makes docker-compose.yml bind hummingbot-api's port 8000 to
+# loopback instead of every interface once Tailscale is handling access.
+API_BIND_HOST="0.0.0.0"
+if [ "$TAILSCALE_ENABLED" = true ]; then
+  API_BIND_HOST="127.0.0.1"
+fi
+
 cat > .env << EOF
 # Hummingbot API Configuration
 USERNAME=$USERNAME
@@ -463,6 +472,11 @@ BOTS_PATH=$(pwd)
 TAILSCALE_ENABLED=$TAILSCALE_ENABLED
 TAILSCALE_AUTH_KEY=$TAILSCALE_AUTH_KEY
 TAILSCALE_HOSTNAME=$TAILSCALE_HOSTNAME
+
+# Docker port binding for hummingbot-api:8000 — 127.0.0.1 when Tailscale is
+# enabled (tailscale serve then proxies the tailnet to it), 0.0.0.0 otherwise.
+# See docker-compose.yml / docker-compose.tailscale.yml.
+API_BIND_HOST=$API_BIND_HOST
 EOF
 
 touch .setup-complete

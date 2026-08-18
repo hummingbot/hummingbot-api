@@ -4,7 +4,13 @@ services:
     image: hummingbot/hummingbot-api:latest
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      # Bound to 127.0.0.1 automatically when Tailscale is enabled (setup.sh
+      # writes API_BIND_HOST=127.0.0.1 to .env) — the tailnet sidecar's
+      # `tailscale serve` (docker-compose.tailscale.yml) then forwards the
+      # tailnet's port 8000 to this loopback bind, so the API is never on a
+      # public interface at the same time. Left as 0.0.0.0 by default so a
+      # non-Tailscale deploy is unaffected.
+      - "${API_BIND_HOST:-0.0.0.0}:8000:8000"
     volumes:
       - ./bots:/hummingbot-api/bots
       - /var/run/docker.sock:/var/run/docker.sock
@@ -57,14 +63,18 @@ services:
       - emqx-data:/opt/emqx/data
       - emqx-log:/opt/emqx/log
       - emqx-etc:/opt/emqx/etc
+    # Loopback-only: hummingbot-api reaches emqx over the emqx-bridge docker
+    # network, and bot containers (launched with network_mode=host) reach
+    # 127.0.0.1 just as well as 0.0.0.0 — nothing external ever needs these,
+    # including the admin dashboard on 18083 (default creds admin/public).
     ports:
-      - "1883:1883"  # mqtt:tcp
-      - "8883:8883"  # mqtt:tcp:ssl
-      - "8083:8083"  # mqtt:ws
-      - "8084:8084"  # mqtt:ws:ssl
-      - "8081:8081"  # http:management
-      - "18083:18083"  # http:dashboard
-      - "61613:61613"  # web-stomp gateway
+      - "127.0.0.1:1883:1883"  # mqtt:tcp
+      - "127.0.0.1:8883:8883"  # mqtt:tcp:ssl
+      - "127.0.0.1:8083:8083"  # mqtt:ws
+      - "127.0.0.1:8084:8084"  # mqtt:ws:ssl
+      - "127.0.0.1:8081:8081"  # http:management
+      - "127.0.0.1:18083:18083"  # http:dashboard
+      - "127.0.0.1:61613:61613"  # web-stomp gateway
     networks:
       emqx-bridge:
         aliases:
@@ -89,8 +99,10 @@ services:
       - postgres-data:/var/lib/postgresql/data
       # Init script as safety net - only runs on first initialization
       - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    # Loopback-only: only the hummingbot-api container talks to postgres,
+    # and it does so over the emqx-bridge docker network, not this port.
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     networks:
       - emqx-bridge
     healthcheck:

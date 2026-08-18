@@ -50,9 +50,15 @@ tailscale-status:
 	@if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx '$(TAILSCALE_CONTAINER)'; then \
 		echo "[INFO] Tailscale sidecar (Docker)"; \
 		docker exec $(TAILSCALE_CONTAINER) tailscale status; \
+		echo ""; \
+		echo "[INFO] Serve status (confirms port 8000 is proxied, not just tailnet-joined):"; \
+		docker exec $(TAILSCALE_CONTAINER) tailscale serve status; \
 	elif command -v tailscale >/dev/null 2>&1; then \
 		echo "[INFO] Tailscale (local)"; \
 		tailscale status; \
+		echo ""; \
+		echo "[INFO] Serve status:"; \
+		tailscale serve status; \
 	else \
 		echo "Tailscale is not available."; \
 		echo "  Docker deploy: ensure TAILSCALE_ENABLED=true and run 'make deploy'"; \

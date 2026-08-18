@@ -60,7 +60,7 @@ Use your API username and password for all requests. **Do not open port 8000 on 
 | `make run` | Run API locally in dev mode |
 | `make install` | Install conda environment for development |
 | `make build` | Build Docker image |
-| `make tailscale-status` | Show Tailscale connection status |
+| `make tailscale-status` | Show Tailscale connection + serve (proxy) status |
 
 ## Services
 
@@ -73,6 +73,11 @@ After hummingbot-api is running, these services are available:
 | **PostgreSQL** | localhost:5432 | — | Database |
 | **EMQX** | localhost:1883 | — | MQTT broker |
 | **EMQX Dashboard** | http://localhost:18083 | — | Broker admin (admin/public) |
+
+PostgreSQL and EMQX are bound to `127.0.0.1` only — they're never reachable
+from another machine, on the tailnet or otherwise. Bot containers still reach
+them fine (they run with `network_mode: host`, so `127.0.0.1` is their host's
+loopback too).
 
 ## Connect AI Assistant (MCP)
 
@@ -145,6 +150,11 @@ GATEWAY_URL=...             # Gateway URL (for DEX)
 TAILSCALE_ENABLED=true
 TAILSCALE_AUTH_KEY=tskey-auth-...
 TAILSCALE_HOSTNAME=hummingbot-api   # MagicDNS hostname on your tailnet
+
+# Docker port binding for hummingbot-api:8000 (set automatically by setup.sh:
+# 127.0.0.1 when Tailscale is enabled, 0.0.0.0 otherwise) — see
+# docker-compose.yml / docker-compose.tailscale.yml
+API_BIND_HOST=0.0.0.0
 ```
 
 Edit `.env` and restart with `make deploy` to apply changes.
@@ -189,7 +199,7 @@ When `TAILSCALE_ENABLED=true`, this automatically runs:
 docker compose -f docker-compose.yml -f docker-compose.tailscale.yml up -d
 ```
 
-A Tailscale sidecar container joins your tailnet using `network_mode: host`. The API is then reachable at `http://hummingbot-api:8000` from any device on the same tailnet — port 8000 is not exposed publicly.
+A Tailscale sidecar container joins your tailnet using `network_mode: host`. `setup.sh` also writes `API_BIND_HOST=127.0.0.1` to `.env`, so `hummingbot-api`'s port 8000 is bound to loopback only — it does not sit on any public interface. The sidecar's `tailscale serve` config (`tailscale-serve.json`) is what makes it reachable again: it forwards the tailnet IP's `:8000` to `127.0.0.1:8000`, so the API ends up reachable at `http://hummingbot-api:8000` from any device on the same tailnet, and *only* from the tailnet.
 
 ### Connecting MCP tools via Tailscale
 
@@ -213,10 +223,13 @@ When `TAILSCALE_ENABLED=true`, `make run` will automatically install Tailscale i
 make tailscale-status
 ```
 
+This shows both tailnet peer status and `tailscale serve status` — confirm
+port 8000 shows up as forwarded, not just that the node joined the tailnet.
+
 From another device on your tailnet:
 
 ```bash
-curl -u YOUR_USERNAME:YOUR_PASSWORD http://hummingbot-api:8000/health
+curl -u YOUR_USERNAME:YOUR_PASSWORD http://hummingbot-api:8000/
 ```
 
 ## API Features
