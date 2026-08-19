@@ -877,54 +877,6 @@ class GatewayClient:
             "walletAddress": wallet_address,
         })
 
-    async def amm_quote_swap(
-        self,
-        connector: str,
-        chain_network: str,
-        pool_address: str,
-        base_token: str,
-        side: str,
-        amount: float,
-        slippage_pct: Optional[float] = None,
-    ) -> Dict:
-        """Quote a swap against a specific AMM pool."""
-        params = {
-            "connector": connector,
-            "chainNetwork": chain_network,
-            "poolAddress": pool_address,
-            "baseToken": base_token,
-            "side": side.upper(),
-            "amount": amount,
-        }
-        if slippage_pct is not None:
-            params["slippagePct"] = slippage_pct
-        return await self._request("GET", "trading/amm/quote-swap", params=params)
-
-    async def amm_execute_swap(
-        self,
-        connector: str,
-        chain_network: str,
-        wallet_address: str,
-        pool_address: str,
-        base_token: str,
-        side: str,
-        amount: float,
-        slippage_pct: Optional[float] = None,
-    ) -> Dict:
-        """Execute a swap against a specific AMM pool."""
-        payload = {
-            "connector": connector,
-            "chainNetwork": chain_network,
-            "walletAddress": wallet_address,
-            "poolAddress": pool_address,
-            "baseToken": base_token,
-            "side": side.upper(),
-            "amount": amount,
-        }
-        if slippage_pct is not None:
-            payload["slippagePct"] = slippage_pct
-        return await self._request("POST", "trading/amm/execute-swap", json=payload)
-
     async def amm_quote_liquidity(
         self,
         connector: str,

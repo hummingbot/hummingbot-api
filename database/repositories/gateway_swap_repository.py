@@ -169,7 +169,8 @@ class GatewaySwapRepository:
             "trading_pair": swap.trading_pair,
             "base_token": swap.base_token,
             "quote_token": swap.quote_token,
-            "side": swap.side,
+            # Legacy rows written before normalization may hold lowercase; serve uppercase
+            "side": (swap.side or "").upper(),
             "input_amount": float(swap.input_amount),
             "output_amount": float(swap.output_amount),
             "price": float(swap.price),

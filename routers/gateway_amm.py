@@ -21,14 +21,11 @@ from models import (
     AMMAddLiquidityRequest,
     AMMCreatePoolRequest,
     AMMCreatePoolResponse,
-    AMMExecuteSwapRequest,
     AMMPoolInfoResponse,
     AMMPositionInfoResponse,
     AMMPositionsOwnedRequest,
     AMMQuoteLiquidityRequest,
     AMMQuoteLiquidityResponse,
-    AMMQuoteSwapRequest,
-    AMMQuoteSwapResponse,
     AMMRemoveLiquidityRequest,
     AMMTransactionResponse,
 )
@@ -146,31 +143,6 @@ async def get_amm_positions_owned(
         raise HTTPException(status_code=500, detail=f"Error getting AMM positions owned: {str(e)}")
 
 
-@router.post("/amm/quote-swap", response_model=AMMQuoteSwapResponse, response_model_by_alias=False)
-async def quote_amm_swap(
-    request: AMMQuoteSwapRequest,
-    accounts_service: AccountsService = Depends(get_accounts_service),
-):
-    """Quote a swap against a specific AMM pool (pool-scoped, not router)."""
-    try:
-        await _require_gateway(accounts_service)
-        result = check_gateway_error(await accounts_service.gateway_client.amm_quote_swap(
-            connector=request.connector, chain_network=request.network, pool_address=request.pool_address,
-            base_token=request.base_token, side=request.side, amount=float(request.amount),
-            slippage_pct=float(request.slippage_pct) if request.slippage_pct is not None else None,
-        ))
-        return AMMQuoteSwapResponse(**result)
-    except HTTPException:
-        raise
-    except GatewayError as e:
-        raise HTTPException(status_code=e.status, detail=f"Gateway error quoting AMM swap: {e}")
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(f"Error quoting AMM swap: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error quoting AMM swap: {str(e)}")
-
-
 @router.post("/amm/quote-liquidity", response_model=AMMQuoteLiquidityResponse, response_model_by_alias=False)
 async def quote_amm_liquidity(
     request: AMMQuoteLiquidityRequest,
@@ -197,33 +169,6 @@ async def quote_amm_liquidity(
 
 
 # ----------------------------- Writes -----------------------------
-
-@router.post("/amm/execute-swap", response_model=AMMTransactionResponse)
-async def execute_amm_swap(
-    request: AMMExecuteSwapRequest,
-    accounts_service: AccountsService = Depends(get_accounts_service),
-):
-    """Execute a swap against a specific AMM pool."""
-    try:
-        await _require_gateway(accounts_service)
-        wallet_address = await _resolve_wallet(accounts_service, request.network, request.wallet_address)
-        result = check_gateway_error(await accounts_service.gateway_client.amm_execute_swap(
-            connector=request.connector, chain_network=request.network, wallet_address=wallet_address,
-            pool_address=request.pool_address, base_token=request.base_token, side=request.side,
-            amount=float(request.amount),
-            slippage_pct=float(request.slippage_pct) if request.slippage_pct is not None else None,
-        ))
-        return AMMTransactionResponse(**result)
-    except HTTPException:
-        raise
-    except GatewayError as e:
-        raise HTTPException(status_code=e.status, detail=f"Gateway error executing AMM swap: {e}")
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(f"Error executing AMM swap: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error executing AMM swap: {str(e)}")
-
 
 @router.post("/amm/add-liquidity", response_model=AMMTransactionResponse)
 async def add_amm_liquidity(

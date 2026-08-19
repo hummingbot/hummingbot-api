@@ -374,32 +374,6 @@ async def test_amm_positions_owned_path(client_and_calls):
 
 
 @pytest.mark.asyncio
-async def test_amm_quote_swap_path_and_slippage_omitted(client_and_calls):
-    client, calls = client_and_calls
-    await client.amm_quote_swap(connector="raydium", chain_network=NET, pool_address=POOL,
-                                base_token="SOL", side="SELL", amount=0.01)
-    c = calls[0]
-    assert (c["method"], c["path"]) == ("GET", "trading/amm/quote-swap")
-    assert c["params"] == {"connector": "raydium", "chainNetwork": NET, "poolAddress": POOL,
-                           "baseToken": "SOL", "side": "SELL", "amount": 0.01}
-    assert "slippagePct" not in c["params"]
-
-
-@pytest.mark.asyncio
-async def test_amm_execute_swap_path(client_and_calls):
-    client, calls = client_and_calls
-    await client.amm_execute_swap(connector="uniswap", chain_network="ethereum-mainnet", wallet_address=WALLET,
-                                  pool_address=POOL, base_token="WETH", side="buy", amount=1.0, slippage_pct=0.5)
-    c = calls[0]
-    assert (c["method"], c["path"]) == ("POST", "trading/amm/execute-swap")
-    assert c["json"]["walletAddress"] == WALLET
-    assert c["json"]["chainNetwork"] == "ethereum-mainnet"
-    assert c["json"]["slippagePct"] == 0.5
-    # Gateway's schema enum-rejects lowercase; the client normalizes like the unified swap path
-    assert c["json"]["side"] == "BUY"
-
-
-@pytest.mark.asyncio
 async def test_amm_add_liquidity_omits_position_when_unset(client_and_calls):
     client, calls = client_and_calls
     await client.amm_add_liquidity(connector="meteora", chain_network=NET, wallet_address=WALLET,
