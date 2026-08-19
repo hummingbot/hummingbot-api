@@ -408,6 +408,27 @@ async def test_amm_positions_owned_path(client_and_calls):
 
 
 @pytest.mark.asyncio
+async def test_amm_quote_liquidity_path_and_slippage_omitted(client_and_calls):
+    client, calls = client_and_calls
+    await client.amm_quote_liquidity(connector="meteora", chain_network=NET, pool_address=POOL,
+                                     base_token_amount=1.0, quote_token_amount=100.0)
+    c = calls[0]
+    assert (c["method"], c["path"]) == ("GET", "trading/amm/quote-liquidity")
+    assert c["params"] == {"connector": "meteora", "chainNetwork": NET, "poolAddress": POOL,
+                           "baseTokenAmount": 1.0, "quoteTokenAmount": 100.0}
+    # Omitted slippage means "use the connector's configured slippagePct"
+    assert "slippagePct" not in c["params"]
+
+
+@pytest.mark.asyncio
+async def test_amm_quote_liquidity_sends_zero_slippage(client_and_calls):
+    client, calls = client_and_calls
+    await client.amm_quote_liquidity(connector="meteora", chain_network=NET, pool_address=POOL,
+                                     base_token_amount=1.0, quote_token_amount=100.0, slippage_pct=0)
+    assert calls[0]["params"]["slippagePct"] == 0
+
+
+@pytest.mark.asyncio
 async def test_amm_add_liquidity_omits_position_when_unset(client_and_calls):
     client, calls = client_and_calls
     await client.amm_add_liquidity(connector="meteora", chain_network=NET, wallet_address=WALLET,
