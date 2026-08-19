@@ -155,7 +155,9 @@ class CLMMRemoveLiquidityRequest(BaseModel):
     connector: str = Field(description="CLMM connector (e.g., 'meteora', 'raydium', 'uniswap')")
     network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta')")
     position_address: str = Field(description="Position address to remove liquidity from")
-    percentage: Decimal = Field(description="Percentage of liquidity to remove (0-100)")
+    # Same name as the AMM remove model and Gateway's percentageToRemove — and distinct
+    # from the position row's `percentage`, which means price-range width.
+    percentage_to_remove: Decimal = Field(description="Percentage of liquidity to remove (0-100)")
     slippage_pct: Optional[Decimal] = Field(
         default=None,
         description="Maximum slippage percentage. Only honored by the Orca connector; "
@@ -170,8 +172,8 @@ class CLMMClosePositionRequest(BaseModel):
     position_address: str = Field(description="Position address to close")
     pool_address: Optional[str] = Field(
         default=None,
-        description="Pool the position belongs to. Only needed for positions this API never recorded "
-                    "(e.g. opened by an lp_executor straight against Gateway); otherwise read from the database"
+        description="Pool the position belongs to. Informational only — neither Gateway's call "
+                    "nor the fee snapshot needs it, and unrecorded positions work without it"
     )
     wallet_address: Optional[str] = Field(default=None, description="Wallet address (optional, uses default if not provided)")
 
@@ -183,8 +185,8 @@ class CLMMCollectFeesRequest(BaseModel):
     position_address: str = Field(description="Position address to collect fees from")
     pool_address: Optional[str] = Field(
         default=None,
-        description="Pool the position belongs to. Only needed for positions this API never recorded "
-                    "(e.g. opened by an lp_executor straight against Gateway); otherwise read from the database"
+        description="Pool the position belongs to. Informational only — neither Gateway's call "
+                    "nor the fee snapshot needs it, and unrecorded positions work without it"
     )
     wallet_address: Optional[str] = Field(default=None, description="Wallet address (optional, uses default if not provided)")
 
@@ -274,12 +276,17 @@ class CLMMPositionsOwnedRequest(BaseModel):
 
 
 class CLMMPositionInfo(BaseModel):
-    """Information about a CLMM liquidity position"""
+    """Information about a CLMM liquidity position.
+
+    Note: in_range here is a bool (live Gateway read); the DB-backed
+    /clmm/positions/search endpoint reports in_range as the string enum
+    IN_RANGE / OUT_OF_RANGE / UNKNOWN (three states, so not collapsible to bool).
+    """
     position_address: str = Field(description="Position address")
     pool_address: str = Field(description="Pool address")
-    trading_pair: str = Field(description="Trading pair")
-    base_token: str = Field(description="Base token symbol")
-    quote_token: str = Field(description="Quote token symbol")
+    trading_pair: str = Field(description="Trading pair (address-derived identifiers, not symbols)")
+    base_token: str = Field(description="Base token identifier (derived from the token address; not a symbol)")
+    quote_token: str = Field(description="Quote token identifier (derived from the token address; not a symbol)")
     base_token_amount: Decimal = Field(description="Base token amount in position")
     quote_token_amount: Decimal = Field(description="Quote token amount in position")
     current_price: Decimal = Field(description="Current pool price")
@@ -290,25 +297,6 @@ class CLMMPositionInfo(BaseModel):
     lower_bin_id: Optional[int] = Field(default=None, description="Lower bin ID (Meteora)")
     upper_bin_id: Optional[int] = Field(default=None, description="Upper bin ID (Meteora)")
     in_range: bool = Field(description="Whether position is currently in range")
-
-
-class CLMMGetPositionInfoRequest(BaseModel):
-    """Request to get detailed info about a specific CLMM position"""
-    connector: str = Field(description="CLMM connector (e.g., 'meteora', 'raydium', 'uniswap')")
-    network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta')")
-    position_address: str = Field(description="Position address to query")
-
-
-class CLMMPoolInfoRequest(BaseModel):
-    """Request to get CLMM pool information by pool address"""
-    connector: str = Field(description="CLMM connector (e.g., 'meteora', 'raydium')")
-    network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta')")
-    pool_address: str = Field(description="Pool contract address")
-    bin_count: int = Field(
-        default=0,
-        description="If > 0, include the per-tick liquidity distribution (bins) around the active "
-        "price — Gateway's binCount. Meteora always returns its bins and ignores this; orca, "
-        "raydium, uniswap and pancakeswap compute them on request.")
 
 
 class CLMMPoolBin(BaseModel):
@@ -550,45 +538,8 @@ class AMMPositionsOwnedRequest(BaseModel):
 
 
 # ============================================
-# Pool Information Models
-# ============================================
-
-class GetPoolInfoRequest(BaseModel):
-    """Request to get pool information"""
-    connector: str = Field(description="DEX connector (e.g., 'meteora', 'raydium', 'jupiter')")
-    network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta')")
-    trading_pair: str = Field(description="Trading pair (e.g., 'SOL-USDC')")
-
-
-class PoolInfo(BaseModel):
-    """Information about a liquidity pool"""
-    type: str = Field(description="Pool type: 'clmm' or 'router'")
-    address: str = Field(description="Pool address")
-    trading_pair: str = Field(description="Trading pair")
-    base_token: str = Field(description="Base token symbol")
-    quote_token: str = Field(description="Quote token symbol")
-    current_price: Decimal = Field(description="Current pool price")
-    base_token_amount: Decimal = Field(description="Base token liquidity in pool")
-    quote_token_amount: Decimal = Field(description="Quote token liquidity in pool")
-    fee_pct: Decimal = Field(description="Pool fee percentage")
-
-    # CLMM-specific
-    bin_step: Optional[int] = Field(default=None, description="Bin step (CLMM)")
-    active_bin_id: Optional[int] = Field(default=None, description="Active bin ID (CLMM)")
-
-
-# ============================================
 # CLMM Pool Listing Models
 # ============================================
-
-class TimeBasedMetrics(BaseModel):
-    """Time-based metrics (volume, fees, fee-to-TVL ratio) for different time periods"""
-    min_30: Optional[Decimal] = Field(default=None, description="30 minute metric")
-    hour_1: Optional[Decimal] = Field(default=None, description="1 hour metric")
-    hour_2: Optional[Decimal] = Field(default=None, description="2 hour metric")
-    hour_4: Optional[Decimal] = Field(default=None, description="4 hour metric")
-    hour_12: Optional[Decimal] = Field(default=None, description="12 hour metric")
-    hour_24: Optional[Decimal] = Field(default=None, description="24 hour metric")
 
 
 class CLMMPoolListItem(BaseModel):

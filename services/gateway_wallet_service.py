@@ -5,7 +5,7 @@ from typing import Dict, List, Optional
 
 from fastapi import HTTPException
 
-from services.gateway_client import GatewayClient, check_gateway_error
+from services.gateway_client import GatewayClient, GatewayError, check_gateway_error
 from services.gecko_price_source import GeckoPriceSource
 
 # Create module-specific logger
@@ -74,11 +74,16 @@ class GatewayWalletService:
         try:
             wallets = check_gateway_error(await self.gateway_client.get_wallets())
 
-            # Enrich with default wallet info for each chain
+            # Enrich with default wallet info for each chain; a per-chain config
+            # error degrades that chain's default to "" rather than failing the list.
             for wallet_group in wallets:
                 chain = wallet_group.get("chain")
                 if chain:
-                    default_wallet = await self.gateway_client.get_default_wallet_address(chain)
+                    try:
+                        default_wallet = await self.gateway_client.get_default_wallet_address(chain)
+                    except GatewayError as e:
+                        logger.warning(f"Could not read default wallet for {chain}: {e}")
+                        default_wallet = None
                     wallet_group["default_address"] = default_wallet or ""
 
             return wallets
@@ -103,6 +108,9 @@ class GatewayWalletService:
         try:
             result = await self.gateway_client.add_wallet(chain, private_key, set_default=set_default)
 
+            if result is None:
+                # Connection error: the client returns None — 503, not a crash on `in None`.
+                raise HTTPException(status_code=503, detail="Gateway service is not available")
             if "error" in result:
                 raise HTTPException(status_code=400, detail=f"Gateway error: {result['error']}")
 
@@ -131,6 +139,9 @@ class GatewayWalletService:
         try:
             result = await self.gateway_client.remove_wallet(chain, address)
 
+            if result is None:
+                # Connection error: the client returns None — 503, not a crash on `in None`.
+                raise HTTPException(status_code=503, detail="Gateway service is not available")
             if "error" in result:
                 raise HTTPException(status_code=400, detail=f"Gateway error: {result['error']}")
 
@@ -169,6 +180,8 @@ class GatewayWalletService:
             # Get balances from Gateway
             balances_response = await self.gateway_client.get_balances(chain, network, address, tokens=tokens)
 
+            if balances_response is None:
+                raise HTTPException(status_code=503, detail="Gateway service is not available")
             if "error" in balances_response:
                 raise HTTPException(status_code=400, detail=f"Gateway error: {balances_response['error']}")
 

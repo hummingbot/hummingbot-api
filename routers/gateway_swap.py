@@ -14,30 +14,13 @@ from database import AsyncDatabaseManager
 from database.repositories import GatewaySwapRepository
 from deps import get_accounts_service, get_database_manager
 from models import SwapExecuteRequest, SwapExecuteResponse, SwapQuoteRequest, SwapQuoteResponse
-from routers.gateway_extras import ExtraParamsSpec, validate_extra_params
+from routers.gateway_extras import ExtraParamsSpec, get_transaction_status_from_response, validate_extra_params
 from services.accounts_service import AccountsService
 from services.gateway_client import GatewayError, check_gateway_error
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Gateway Swaps"], prefix="/gateway")
-
-
-def get_transaction_status_from_response(gateway_response: dict) -> str:
-    """
-    Determine transaction status from Gateway response:
-    status 1 -> CONFIRMED, negative (-1 failed, -2 dropped) -> FAILED,
-    0 or missing -> SUBMITTED.
-    """
-    status = gateway_response.get("status")
-
-    if status == 1:
-        return "CONFIRMED"
-    # Gateway's TransactionStatus uses negative values for terminal failures
-    # (e.g. a failed EVM swap returns status -1 with zeroed amounts).
-    if isinstance(status, (int, float)) and status < 0:
-        return "FAILED"
-    return "SUBMITTED"
 
 
 # Gateway's unified /trading/swap routes pass approximateIfNoExactOut only to the

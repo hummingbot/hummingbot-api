@@ -591,10 +591,11 @@ class LPRebalancer(ControllerBase):
             self._current_executor_id = None
 
             # Determine side for new position
-            if executor_failed and failed_executor_side is not None:
-                # Retry with same side on failure
+            if (executor_failed or involuntary_hold) and failed_executor_side is not None:
+                # Retry with same side after any abnormal terminal (FAILED, or an
+                # involuntary hold that left no on-chain position to recover)
                 side = failed_executor_side
-                self.logger().info(f"Retrying with same side={side} after executor failure")
+                self.logger().info(f"Retrying with same side={side} after abnormal executor end")
             elif not self._initial_position_created:
                 # Initial position: use configured side
                 side = self.config.side
@@ -822,24 +823,25 @@ class LPRebalancer(ControllerBase):
         """
         Check if price is within configured limits for the position type.
         """
+        # `is not None`: a limit set to exactly 0 is a real bound, not "unset"
         if side == TradeType.SELL:
-            if self.config.sell_price_min and price < self.config.sell_price_min:
+            if self.config.sell_price_min is not None and price < self.config.sell_price_min:
                 return False
-            if self.config.sell_price_max and price > self.config.sell_price_max:
+            if self.config.sell_price_max is not None and price > self.config.sell_price_max:
                 return False
         elif side == TradeType.BUY:
-            if self.config.buy_price_min and price < self.config.buy_price_min:
+            if self.config.buy_price_min is not None and price < self.config.buy_price_min:
                 return False
-            if self.config.buy_price_max and price > self.config.buy_price_max:
+            if self.config.buy_price_max is not None and price > self.config.buy_price_max:
                 return False
         else:  # RANGE
-            if self.config.buy_price_min and price < self.config.buy_price_min:
+            if self.config.buy_price_min is not None and price < self.config.buy_price_min:
                 return False
-            if self.config.buy_price_max and price > self.config.buy_price_max:
+            if self.config.buy_price_max is not None and price > self.config.buy_price_max:
                 return False
-            if self.config.sell_price_min and price < self.config.sell_price_min:
+            if self.config.sell_price_min is not None and price < self.config.sell_price_min:
                 return False
-            if self.config.sell_price_max and price > self.config.sell_price_max:
+            if self.config.sell_price_max is not None and price > self.config.sell_price_max:
                 return False
         return True
 

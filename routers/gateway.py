@@ -369,9 +369,11 @@ async def list_pools_legacy(
         if not await accounts_service.gateway_client.ping():
             raise HTTPException(status_code=503, detail="Gateway service is not available")
 
-        # Determine chain from connector (legacy behavior)
-        # This is a simple mapping - in production, you'd want to look this up
-        chain = "solana" if connector_name in ["raydium", "meteora", "orca", "pancakeswap-sol"] else "ethereum"
+        # Determine chain from connector (legacy behavior). Solana routers
+        # (jupiter/dflow/okx/titan) must map to solana too, or this returns the
+        # (empty) ethereum pool list for them.
+        solana_connectors = {"raydium", "meteora", "orca", "pancakeswap-sol", "jupiter", "dflow", "okx", "titan"}
+        chain = "solana" if connector_name in solana_connectors else "ethereum"
 
         pools = check_gateway_error(
             await accounts_service.gateway_client.get_pools(chain, network, connector=connector_name)

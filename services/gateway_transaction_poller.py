@@ -15,7 +15,7 @@ from typing import Dict, Optional
 from database import AsyncDatabaseManager
 from database.models import GatewayCLMMPosition
 from database.repositories import GatewayCLMMRepository, GatewaySwapRepository
-from services.gateway_client import GatewayClient
+from services.gateway_client import GatewayClient, get_native_gas_token
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +48,10 @@ class GatewayTransactionPoller:
         self._poll_task: Optional[asyncio.Task] = None
         self._position_poll_task: Optional[asyncio.Task] = None
         self._last_position_poll: Optional[datetime] = None
+        # Consecutive position-info misses per position. A single 404/500 can be a
+        # transient RPC problem (Gateway 500s on upstream hiccups), so a position is
+        # only marked CLOSED after MISSING_STRIKES_TO_CLOSE consecutive misses.
+        self._position_missing_strikes: Dict[str, int] = {}
 
     async def start(self):
         """Start the polling service."""
@@ -99,9 +103,28 @@ class GatewayTransactionPoller:
             except asyncio.CancelledError:
                 break
 
+    # A tx reported NOT_FOUND (-2) is only terminal once its blockhash can no longer
+    # be valid (~90s on Solana); before that, -2 can just mean "not visible yet".
+    DROPPED_GRACE_SECONDS = 180
+
+    # Consecutive position-info misses before a position is marked CLOSED
+    # (mirrors the lp_executor's external-close gate).
+    MISSING_STRIKES_TO_CLOSE = 3
+
+    # Don't reopen a DB-CLOSED position seen in positions-owned if it was closed
+    # within this window: the listing RPC node may simply lag the close.
+    REOPEN_GRACE_SECONDS = 300
+
     async def _poll_pending_transactions(self):
         """Poll all pending transactions and update their status."""
         try:
+            # One availability gate per cycle. When Gateway is unreachable nothing is
+            # polled AND nothing is aged out: the age timeout must never fire on a
+            # transaction we could not actually check (it may have confirmed on-chain).
+            if not await self.gateway_client.ping():
+                logger.warning("Gateway not available; skipping transaction poll cycle")
+                return
+
             async with self.db_manager.get_session_context() as session:
                 swap_repo = GatewaySwapRepository(session)
                 clmm_repo = GatewayCLMMRepository(session)
@@ -111,18 +134,6 @@ class GatewayTransactionPoller:
                 logger.debug(f"Found {len(pending_swaps)} pending swaps")
 
                 for swap in pending_swaps:
-                    # Skip if too old (likely failed without proper error)
-                    age = (datetime.now(timezone.utc) - swap.timestamp).total_seconds()
-                    if age > self.max_retry_age:
-                        logger.warning(f"Swap {swap.transaction_hash} exceeded max retry age, marking as FAILED")
-                        await swap_repo.update_swap_status(
-                            transaction_hash=swap.transaction_hash,
-                            status="FAILED",
-                            error_message="Transaction confirmation timeout"
-                        )
-                        continue
-
-                    # Poll transaction status
                     await self._poll_swap_transaction(swap, swap_repo)
 
                 # Get pending CLMM events
@@ -130,18 +141,6 @@ class GatewayTransactionPoller:
                 logger.debug(f"Found {len(pending_events)} pending CLMM events")
 
                 for event in pending_events:
-                    # Skip if too old
-                    age = (datetime.now(timezone.utc) - event.timestamp).total_seconds()
-                    if age > self.max_retry_age:
-                        logger.warning(f"CLMM event {event.transaction_hash} exceeded max retry age, marking as FAILED")
-                        await clmm_repo.update_event_status(
-                            transaction_hash=event.transaction_hash,
-                            status="FAILED",
-                            error_message="Transaction confirmation timeout"
-                        )
-                        continue
-
-                    # Poll transaction status
                     await self._poll_clmm_event_transaction(event, clmm_repo)
 
         except Exception as e:
@@ -158,31 +157,59 @@ class GatewayTransactionPoller:
 
             chain, network = parts
 
-            # Check transaction status on Gateway/blockchain
-            # Note: This is a placeholder - actual implementation depends on Gateway API
             status_result = await self._check_transaction_status(
                 chain=chain,
                 network=network,
                 tx_hash=swap.transaction_hash
             )
+            if status_result is None:
+                # Transient (Gateway/RPC hiccup): no information, no state change.
+                return
 
-            if status_result:
-                if status_result["status"] == "CONFIRMED":
-                    logger.info(f"Swap transaction confirmed: {swap.transaction_hash}")
-                    await swap_repo.update_swap_status(
-                        transaction_hash=swap.transaction_hash,
-                        status="CONFIRMED",
-                        gas_fee=Decimal(str(status_result.get("gas_fee", 0))) if status_result.get("gas_fee") else None,
-                        gas_token=status_result.get("gas_token")
-                    )
-                elif status_result["status"] == "FAILED":
-                    logger.warning(f"Swap transaction failed: {swap.transaction_hash}")
-                    await swap_repo.update_swap_status(
-                        transaction_hash=swap.transaction_hash,
-                        status="FAILED",
-                        error_message=status_result.get("error_message", "Transaction failed on-chain")
-                    )
-                # If status is still pending, do nothing and retry later
+            age = (datetime.now(timezone.utc) - swap.timestamp).total_seconds()
+            status = status_result["status"]
+            gas_fee_raw = status_result.get("gas_fee")
+            gas_fee = Decimal(str(gas_fee_raw)) if gas_fee_raw is not None else None
+
+            if status == "CONFIRMED":
+                # Accepted residual: amounts/price are NOT backfilled from the poll's
+                # txData — a swap recorded while pending keeps its request-side leg
+                # and 0 placeholders after confirmation. Backfilling requires parsing
+                # balance changes from txData (deferred by design).
+                logger.info(f"Swap transaction confirmed: {swap.transaction_hash}")
+                await swap_repo.update_swap_status(
+                    transaction_hash=swap.transaction_hash,
+                    status="CONFIRMED",
+                    gas_fee=gas_fee,
+                    gas_token=status_result.get("gas_token")
+                )
+            elif status == "FAILED":
+                # A landed-but-failed tx still paid gas — record it.
+                logger.warning(f"Swap transaction failed: {swap.transaction_hash}")
+                await swap_repo.update_swap_status(
+                    transaction_hash=swap.transaction_hash,
+                    status="FAILED",
+                    error_message=status_result.get("error_message", "Transaction failed on-chain"),
+                    gas_fee=gas_fee,
+                    gas_token=status_result.get("gas_token")
+                )
+            elif status == "DROPPED" and age > self.DROPPED_GRACE_SECONDS:
+                logger.warning(f"Swap transaction dropped (not found on-chain): {swap.transaction_hash}")
+                await swap_repo.update_swap_status(
+                    transaction_hash=swap.transaction_hash,
+                    status="FAILED",
+                    error_message="Transaction not found on-chain (dropped after blockhash expiry)"
+                )
+            elif status == "PENDING" and age > self.max_retry_age:
+                # Genuinely still unconfirmed after a successful poll — only now may
+                # the age timeout fire.
+                logger.warning(f"Swap {swap.transaction_hash} exceeded max retry age, marking as FAILED")
+                await swap_repo.update_swap_status(
+                    transaction_hash=swap.transaction_hash,
+                    status="FAILED",
+                    error_message="Transaction confirmation timeout"
+                )
+            # PENDING within age / DROPPED within grace: retry next cycle.
 
         except Exception as e:
             logger.error(f"Error polling swap transaction {swap.transaction_hash}: {e}")
@@ -205,33 +232,54 @@ class GatewayTransactionPoller:
 
             chain, network = parts
 
-            # Check transaction status
             status_result = await self._check_transaction_status(
                 chain=chain,
                 network=network,
                 tx_hash=event.transaction_hash
             )
+            if status_result is None:
+                # Transient (Gateway/RPC hiccup): no information, no state change.
+                return
 
-            if status_result:
-                if status_result["status"] == "CONFIRMED":
-                    logger.info(f"CLMM event transaction confirmed: {event.transaction_hash}")
-                    await clmm_repo.update_event_status(
-                        transaction_hash=event.transaction_hash,
-                        status="CONFIRMED",
-                        gas_fee=Decimal(str(status_result.get("gas_fee", 0))) if status_result.get("gas_fee") else None,
-                        gas_token=status_result.get("gas_token")
-                    )
+            age = (datetime.now(timezone.utc) - event.timestamp).total_seconds()
+            status = status_result["status"]
+            gas_fee_raw = status_result.get("gas_fee")
+            gas_fee = Decimal(str(gas_fee_raw)) if gas_fee_raw is not None else None
 
-                    # Update position state based on event type
-                    await self._update_position_from_event(event, clmm_repo)
-
-                elif status_result["status"] == "FAILED":
-                    logger.warning(f"CLMM event transaction failed: {event.transaction_hash}")
-                    await clmm_repo.update_event_status(
-                        transaction_hash=event.transaction_hash,
-                        status="FAILED",
-                        error_message=status_result.get("error_message", "Transaction failed on-chain")
-                    )
+            if status == "CONFIRMED":
+                logger.info(f"CLMM event transaction confirmed: {event.transaction_hash}")
+                await clmm_repo.update_event_status(
+                    transaction_hash=event.transaction_hash,
+                    status="CONFIRMED",
+                    gas_fee=gas_fee,
+                    gas_token=status_result.get("gas_token")
+                )
+                # Update position state based on event type
+                await self._update_position_from_event(event, clmm_repo)
+            elif status == "FAILED":
+                logger.warning(f"CLMM event transaction failed: {event.transaction_hash}")
+                await clmm_repo.update_event_status(
+                    transaction_hash=event.transaction_hash,
+                    status="FAILED",
+                    error_message=status_result.get("error_message", "Transaction failed on-chain"),
+                    gas_fee=gas_fee,
+                    gas_token=status_result.get("gas_token")
+                )
+            elif status == "DROPPED" and age > self.DROPPED_GRACE_SECONDS:
+                logger.warning(f"CLMM event transaction dropped (not found on-chain): {event.transaction_hash}")
+                await clmm_repo.update_event_status(
+                    transaction_hash=event.transaction_hash,
+                    status="FAILED",
+                    error_message="Transaction not found on-chain (dropped after blockhash expiry)"
+                )
+            elif status == "PENDING" and age > self.max_retry_age:
+                logger.warning(f"CLMM event {event.transaction_hash} exceeded max retry age, marking as FAILED")
+                await clmm_repo.update_event_status(
+                    transaction_hash=event.transaction_hash,
+                    status="FAILED",
+                    error_message="Transaction confirmation timeout"
+                )
+            # PENDING within age / DROPPED within grace: retry next cycle.
 
         except Exception as e:
             logger.error(f"Error polling CLMM event transaction {event.transaction_hash}: {e}")
@@ -247,10 +295,37 @@ class GatewayTransactionPoller:
                 return
 
             if event.event_type == "CLOSE":
+                # Fee booking happens exactly once, on confirmation: the endpoints
+                # only mutate the position when Gateway confirmed the tx inline, and
+                # leave submitted-not-confirmed booking to this path.
+                if event.base_fee_collected is not None or event.quote_fee_collected is not None:
+                    new_base = float(position.base_fee_collected or 0) + float(event.base_fee_collected or 0)
+                    new_quote = float(position.quote_fee_collected or 0) + float(event.quote_fee_collected or 0)
+                    await clmm_repo.update_position_fees(
+                        position_address=position.position_address,
+                        base_fee_collected=Decimal(str(new_base)),
+                        quote_fee_collected=Decimal(str(new_quote)),
+                        base_fee_pending=Decimal("0"),
+                        quote_fee_pending=Decimal("0")
+                    )
                 await clmm_repo.close_position(position.position_address)
 
+            elif event.event_type == "ADD_LIQUIDITY":
+                # Added capital raises the PnL baseline. Event amounts may be the
+                # requested figures (recorded at submit time) rather than on-chain
+                # actuals — the accepted residual is that pending-tx amounts are not
+                # backfilled from txData; requested amounts are the best available.
+                if event.base_token_amount or event.quote_token_amount:
+                    await clmm_repo.add_to_initial_amounts(
+                        position_address=position.position_address,
+                        base_delta=Decimal(str(event.base_token_amount or 0)),
+                        quote_delta=Decimal(str(event.quote_token_amount or 0)),
+                    )
+
             elif event.event_type == "COLLECT_FEES":
-                # Add collected fees to cumulative total
+                # Add collected fees to cumulative total (endpoints book inline only
+                # for txs Gateway confirmed at submit time — those events are created
+                # CONFIRMED and never reach this path, so there is no double count).
                 if event.base_fee_collected or event.quote_fee_collected:
                     new_base_collected = float(position.base_fee_collected or 0) + float(event.base_fee_collected or 0)
                     new_quote_collected = float(position.quote_fee_collected or 0) + float(event.quote_fee_collected or 0)
@@ -276,16 +351,14 @@ class GatewayTransactionPoller:
         Check transaction status on blockchain via Gateway.
 
         Returns:
-            Dict with status, gas_fee, gas_token, and error_message if available.
-            None if transaction not yet confirmed or pending.
+            Dict with status ("CONFIRMED" | "FAILED" | "DROPPED" | "PENDING"),
+            gas_fee, gas_token, and error_message.
+            None only when no information could be obtained (Gateway/RPC hiccup) —
+            callers must treat that as "no state change", never as pending-with-age.
         """
         try:
-            # Check if Gateway is available
-            if not await self.gateway_client.ping():
-                logger.warning("Gateway not available for transaction polling")
-                return None
-
             # Reconstruct network_id from chain and network
+            # (Gateway availability is gated once per cycle by the caller.)
             network_id = f"{chain}-{network}"
 
             # Poll transaction status from Gateway
@@ -310,70 +383,61 @@ class GatewayTransactionPoller:
 
             logger.debug(f"Polled transaction {tx_hash} on {network_id}: txStatus={result.get('txStatus')}")
 
-            # Parse the response with defensive checks
+            # Classify on txStatus ALONE. Gateway deliberately returns txStatus 0
+            # (pending) WITH a non-null `error` for transient poll failures — "the
+            # caller should poll again, not give up" — so the error field must never
+            # promote a pending transaction to FAILED.
             tx_status = result.get("txStatus")
+            gas_token = get_native_gas_token(chain)
+            gas_fee = result.get("fee")
 
-            # Determine gas token based on chain
-            gas_token = {
-                "solana": "SOL",
-                "ethereum": "ETH",
-                "arbitrum": "ETH",
-                "optimism": "ETH",
-                "polygon": "MATIC",
-                "avalanche": "AVAX"
-            }.get(chain, "UNKNOWN")
-
-            # Transaction is confirmed if txStatus == 1
             if tx_status == 1:
                 return {
                     "status": "CONFIRMED",
-                    "gas_fee": result.get("fee", 0),
+                    "gas_fee": gas_fee,
                     "gas_token": gas_token,
                     "error_message": None
                 }
 
-            # Transaction failed if txStatus == -1 or there's an error field
-            # Gateway now returns parsed error messages like "SLIPPAGE_EXCEEDED (0x1771): ..."
-            error_msg = result.get("error")
-            if tx_status == -1 or error_msg:
+            if tx_status == -1:
+                # Landed on-chain but failed. Gateway returns parsed error messages
+                # like "SLIPPAGE_EXCEEDED (0x1771): ..."; fall back to meta.err.
+                error_msg = result.get("error")
                 if not error_msg:
-                    # Fallback to meta.err if no parsed error
                     tx_data = result.get("txData") or {}
                     meta = tx_data.get("meta") if isinstance(tx_data, dict) else {}
                     raw_error = meta.get("err") if isinstance(meta, dict) else None
                     error_msg = str(raw_error) if raw_error else "Transaction failed on-chain"
                 return {
                     "status": "FAILED",
-                    "gas_fee": result.get("fee", 0),
+                    "gas_fee": gas_fee,
                     "gas_token": gas_token,
                     "error_message": error_msg
                 }
 
-            # Transaction still pending (txStatus == 0 or not finalized)
-            return None
+            if tx_status == -2:
+                # NOT_FOUND — terminal on Solana once the blockhash expires; can also
+                # appear briefly right after submission. The caller applies the grace
+                # window before treating it as dropped.
+                return {
+                    "status": "DROPPED",
+                    "gas_fee": None,
+                    "gas_token": gas_token,
+                    "error_message": "Transaction not found on-chain"
+                }
+
+            # txStatus 0 (or anything unrecognized): a successful poll that says the
+            # transaction is still unconfirmed — distinct from None (no information).
+            return {
+                "status": "PENDING",
+                "gas_fee": None,
+                "gas_token": gas_token,
+                "error_message": None
+            }
 
         except Exception as e:
             logger.error(f"Error checking transaction status for {tx_hash}: {e}")
             return None
-
-    async def poll_transaction_once(self, tx_hash: str, network_id: str) -> Optional[Dict]:
-        """
-        Poll a specific transaction once (useful for immediate status checks).
-
-        Args:
-            tx_hash: Transaction hash
-            network_id: Network ID in format 'chain-network' (e.g., 'solana-mainnet-beta')
-
-        Returns:
-            Transaction status dict or None if pending
-        """
-        parts = network_id.split('-', 1)
-        if len(parts) != 2:
-            logger.error(f"Invalid network format: {network_id}")
-            return None
-
-        chain, network = parts
-        return await self._check_transaction_status(chain, network, tx_hash)
 
     # ============================================
     # Position State Polling & Discovery
@@ -469,6 +533,8 @@ class GatewayTransactionPoller:
                 open_positions = await clmm_repo.get_position_addresses_set(status="OPEN")
                 # Get CLOSED positions (to potentially reopen if still on-chain)
                 closed_positions = await clmm_repo.get_position_addresses_set(status="CLOSED")
+                # Positions closed moments ago are exempt from reopening (lag guard)
+                recently_closed = await clmm_repo.get_recently_closed_addresses(self.REOPEN_GRACE_SECONDS)
 
             # Poll each supported connector/chain/wallet combination
             for config in self.SUPPORTED_CLMM_CONFIGS:
@@ -506,6 +572,13 @@ class GatewayTransactionPoller:
 
                             # Check if position was incorrectly marked as CLOSED
                             if position_address in closed_positions:
+                                if position_address in recently_closed:
+                                    # Just closed — the positions-owned RPC node may
+                                    # lag the close confirmation; reopening now would
+                                    # flap the record CLOSED -> OPEN -> CLOSED.
+                                    logger.debug(f"Position {position_address} closed recently; "
+                                                 "skipping reopen (listing may lag the close)")
+                                    continue
                                 # Position exists on-chain but is CLOSED in DB → reopen it
                                 async with self.db_manager.get_session_context() as session:
                                     clmm_repo = GatewayCLMMRepository(session)
@@ -684,11 +757,6 @@ class GatewayTransactionPoller:
         except Exception as e:
             logger.error(f"Error updating open positions: {e}", exc_info=True)
 
-    # Legacy method name for backwards compatibility
-    async def _poll_open_positions(self):
-        """Poll all open CLMM positions and update their state. (Legacy wrapper)"""
-        await self._poll_and_discover_positions()
-
     async def _refresh_position_state(self, position: GatewayCLMMPosition, clmm_repo: GatewayCLMMRepository):
         """
         Refresh a single position's state from Gateway.
@@ -735,12 +803,23 @@ class GatewayTransactionPoller:
                 if "error" in result:
                     status_code = result.get("status")
 
-                    # Gateway returns 500 instead of 404 when position doesn't exist (closed)
-                    # Treat any error (404 or 500) on position-info as "position closed"
+                    # Some connectors 500 instead of 404 for a nonexistent position,
+                    # but Gateway ALSO 500s on transient RPC problems — so a miss only
+                    # counts as a strike, and the position closes after
+                    # MISSING_STRIKES_TO_CLOSE consecutive misses, never on one.
                     if status_code in (404, 500):
-                        logger.info(f"Position {position.position_address} not found on Gateway "
-                                    f"(status: {status_code}), marking as CLOSED")
-                        await clmm_repo.close_position(position.position_address)
+                        strikes = self._position_missing_strikes.get(position.position_address, 0) + 1
+                        self._position_missing_strikes[position.position_address] = strikes
+                        if strikes >= self.MISSING_STRIKES_TO_CLOSE:
+                            logger.info(f"Position {position.position_address} missing from Gateway "
+                                        f"{strikes} consecutive times (last status: {status_code}), "
+                                        "marking as CLOSED")
+                            await clmm_repo.close_position(position.position_address)
+                            self._position_missing_strikes.pop(position.position_address, None)
+                        else:
+                            logger.debug(f"Position {position.position_address} miss "
+                                         f"{strikes}/{self.MISSING_STRIKES_TO_CLOSE} "
+                                         f"(status: {status_code}), not closing yet")
                         return
                     # Other errors → skip update, don't close
                     logger.debug(f"Gateway error for position {position.position_address}: "
@@ -751,6 +830,9 @@ class GatewayTransactionPoller:
                 if "address" not in result:
                     logger.warning(f"Invalid response for position {position.position_address}, missing 'address' field")
                     return
+
+                # Successful read: the position exists — reset the miss counter.
+                self._position_missing_strikes.pop(position.position_address, None)
 
             except Exception as e:
                 logger.warning(f"Error fetching position {position.position_address} from Gateway: {e}")

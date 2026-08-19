@@ -216,7 +216,7 @@ async def test_clmm_remove_liquidity_uses_percentage_to_remove(client_and_calls)
     client, calls = client_and_calls
     await client.clmm_remove_liquidity(
         connector="meteora", chain_network="solana-mainnet-beta",
-        wallet_address="WALLET", position_address="POS", percentage=50.0,
+        wallet_address="WALLET", position_address="POS", percentage_to_remove=50.0,
     )
     call = calls[0]
     assert (call["method"], call["path"]) == ("POST", "trading/clmm/remove")
@@ -232,7 +232,7 @@ async def test_clmm_remove_liquidity_sends_slippage_when_set(client_and_calls):
     client, calls = client_and_calls
     await client.clmm_remove_liquidity(
         connector="orca", chain_network="solana-mainnet-beta",
-        wallet_address="WALLET", position_address="POS", percentage=100.0,
+        wallet_address="WALLET", position_address="POS", percentage_to_remove=100.0,
         slippage_pct=0.5,
     )
     assert calls[0]["json"]["slippagePct"] == 0.5

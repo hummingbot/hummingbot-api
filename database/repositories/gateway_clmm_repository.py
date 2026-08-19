@@ -1,8 +1,8 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Dict, List, Optional, Set
 
-from sqlalchemy import distinct, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import GatewayCLMMEvent, GatewayCLMMPosition
@@ -93,7 +93,7 @@ class GatewayCLMMRepository:
         position = result.scalar_one_or_none()
         if position:
             position.status = "CLOSED"
-            position.closed_at = datetime.utcnow()
+            position.closed_at = datetime.now(timezone.utc)
             await self.session.flush()
         return position
 
@@ -113,6 +113,44 @@ class GatewayCLMMRepository:
             position.closed_at = None
             await self.session.flush()
         return position
+
+    async def add_to_initial_amounts(
+        self,
+        position_address: str,
+        base_delta: Decimal,
+        quote_delta: Decimal
+    ) -> Optional[GatewayCLMMPosition]:
+        """Raise the PnL baseline when liquidity is ADDED to an existing position.
+
+        Without this, pnl_summary compares post-add value against the original
+        deposit only and overstates PnL by exactly the added capital.
+        """
+        result = await self.session.execute(
+            select(GatewayCLMMPosition).where(GatewayCLMMPosition.position_address == position_address)
+        )
+        position = result.scalar_one_or_none()
+        if position:
+            position.initial_base_token_amount = float(position.initial_base_token_amount or 0) + float(base_delta)
+            position.initial_quote_token_amount = float(position.initial_quote_token_amount or 0) + float(quote_delta)
+            await self.session.flush()
+        return position
+
+    async def get_recently_closed_addresses(self, within_seconds: int) -> Set[str]:
+        """Addresses of positions closed within the last `within_seconds`.
+
+        Used by the discovery sweep's reopen logic: a lagging positions-owned RPC
+        read can still show a position the user just closed, and reopening it would
+        flap the record CLOSED -> OPEN -> CLOSED.
+        """
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=within_seconds)
+        result = await self.session.execute(
+            select(GatewayCLMMPosition.position_address).where(
+                GatewayCLMMPosition.status == "CLOSED",
+                GatewayCLMMPosition.closed_at.isnot(None),
+                GatewayCLMMPosition.closed_at >= cutoff,
+            )
+        )
+        return set(result.scalars().all())
 
     async def get_positions(
         self,
@@ -162,32 +200,6 @@ class GatewayCLMMRepository:
             limit=1000
         )
 
-    async def get_unique_wallet_configs(self) -> List[Dict]:
-        """
-        Get unique combinations of connector/network/wallet from all positions.
-
-        Returns:
-            List of dicts with keys: connector, network, wallet_address
-            This is useful for discovering which wallets to poll for positions.
-        """
-        query = select(
-            distinct(GatewayCLMMPosition.connector),
-            GatewayCLMMPosition.network,
-            GatewayCLMMPosition.wallet_address
-        ).distinct()
-
-        result = await self.session.execute(query)
-        rows = result.all()
-
-        return [
-            {
-                "connector": row[0],
-                "network": row[1],
-                "wallet_address": row[2]
-            }
-            for row in rows
-        ]
-
     async def get_position_addresses_set(self, status: Optional[str] = None) -> Set[str]:
         """
         Get a set of position addresses in the database.
@@ -215,19 +227,6 @@ class GatewayCLMMRepository:
         self.session.add(event)
         await self.session.flush()
         return event
-
-    async def get_event_by_tx_hash(
-        self,
-        transaction_hash: str,
-        event_type: Optional[str] = None
-    ) -> Optional[GatewayCLMMEvent]:
-        """Get an event by transaction hash."""
-        query = select(GatewayCLMMEvent).where(GatewayCLMMEvent.transaction_hash == transaction_hash)
-        if event_type:
-            query = query.where(GatewayCLMMEvent.event_type == event_type)
-
-        result = await self.session.execute(query)
-        return result.scalar_one_or_none()
 
     async def update_event_status(
         self,
@@ -294,14 +293,14 @@ class GatewayCLMMRepository:
         pnl_summary = None
 
         # Get prices for PnL calculation
-        entry_price = float(position.entry_price) if position.entry_price else None
-        current_price = float(position.current_price) if position.current_price else None
+        entry_price = float(position.entry_price) if position.entry_price is not None else None
+        current_price = float(position.current_price) if position.current_price is not None else None
 
         # Calculate PnL if we have initial amounts and prices
-        if (position.initial_base_token_amount is not None and
-            position.initial_quote_token_amount is not None and
-            entry_price and entry_price > 0 and
-            current_price and current_price > 0):
+        if (position.initial_base_token_amount is not None
+                and position.initial_quote_token_amount is not None
+                and entry_price and entry_price > 0
+                and current_price and current_price > 0):
 
             # Initial amounts
             initial_base = float(position.initial_base_token_amount)
@@ -411,8 +410,10 @@ class GatewayCLMMRepository:
             "entry_price": entry_price,
             "current_price": current_price,
             "percentage": float(position.percentage) if position.percentage is not None else None,
-            "initial_base_token_amount": float(position.initial_base_token_amount) if position.initial_base_token_amount is not None else None,
-            "initial_quote_token_amount": float(position.initial_quote_token_amount) if position.initial_quote_token_amount is not None else None,
+            "initial_base_token_amount": (float(position.initial_base_token_amount)
+                                          if position.initial_base_token_amount is not None else None),
+            "initial_quote_token_amount": (float(position.initial_quote_token_amount)
+                                           if position.initial_quote_token_amount is not None else None),
             "position_rent": float(position.position_rent) if position.position_rent is not None else None,
             "base_token_amount": float(position.base_token_amount),
             "quote_token_amount": float(position.quote_token_amount),
@@ -431,11 +432,11 @@ class GatewayCLMMRepository:
             "transaction_hash": event.transaction_hash,
             "timestamp": event.timestamp.isoformat(),
             "event_type": event.event_type,
-            "base_token_amount": float(event.base_token_amount) if event.base_token_amount else None,
-            "quote_token_amount": float(event.quote_token_amount) if event.quote_token_amount else None,
-            "base_fee_collected": float(event.base_fee_collected) if event.base_fee_collected else None,
-            "quote_fee_collected": float(event.quote_fee_collected) if event.quote_fee_collected else None,
-            "gas_fee": float(event.gas_fee) if event.gas_fee else None,
+            "base_token_amount": float(event.base_token_amount) if event.base_token_amount is not None else None,
+            "quote_token_amount": float(event.quote_token_amount) if event.quote_token_amount is not None else None,
+            "base_fee_collected": float(event.base_fee_collected) if event.base_fee_collected is not None else None,
+            "quote_fee_collected": float(event.quote_fee_collected) if event.quote_fee_collected is not None else None,
+            "gas_fee": float(event.gas_fee) if event.gas_fee is not None else None,
             "gas_token": event.gas_token,
             "status": event.status,
             "error_message": event.error_message,
