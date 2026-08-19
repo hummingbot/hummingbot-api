@@ -402,46 +402,6 @@ class AMMPositionInfoResponse(BaseModel):
     model_config = {"populate_by_name": True}
 
 
-class AMMQuoteSwapRequest(BaseModel):
-    """Request to quote a swap against a specific AMM pool."""
-    connector: str = Field(description="AMM connector (e.g., 'meteora', 'raydium', 'uniswap')")
-    network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta')")
-    pool_address: str = Field(description="Pool contract address")
-    base_token: str = Field(description="Token that defines the swap direction (symbol or address)")
-    side: str = Field(description="Trade direction: BUY or SELL")
-    amount: Decimal = Field(description="Amount to swap (of base for SELL, of base to receive for BUY)")
-    slippage_pct: Optional[Decimal] = Field(default=None, description="Maximum slippage percentage")
-
-
-class AMMQuoteSwapResponse(BaseModel):
-    """Response with an AMM swap quote."""
-    pool_address: str = Field(alias="poolAddress", description="Pool address")
-    token_in: str = Field(alias="tokenIn", description="Input token address")
-    token_out: str = Field(alias="tokenOut", description="Output token address")
-    amount_in: Decimal = Field(alias="amountIn", description="Input amount")
-    amount_out: Decimal = Field(alias="amountOut", description="Output amount")
-    price: Decimal = Field(description="Execution price")
-    min_amount_out: Decimal = Field(alias="minAmountOut", description="Minimum output after slippage")
-    max_amount_in: Decimal = Field(alias="maxAmountIn", description="Maximum input after slippage")
-    price_impact_pct: Decimal = Field(alias="priceImpactPct", description="Price impact percentage")
-    slippage_pct: Optional[Decimal] = Field(default=None, alias="slippagePct", description="Slippage percentage used")
-
-    model_config = {"populate_by_name": True}
-
-
-class AMMExecuteSwapRequest(BaseModel):
-    """Request to execute a swap against a specific AMM pool."""
-    connector: str = Field(description="AMM connector (e.g., 'meteora', 'raydium', 'uniswap')")
-    network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta')")
-    pool_address: str = Field(description="Pool contract address")
-    base_token: str = Field(description="Token that defines the swap direction (symbol or address)")
-    side: str = Field(description="Trade direction: BUY or SELL")
-    amount: Decimal = Field(description="Amount to swap")
-    slippage_pct: Optional[Decimal] = Field(
-        default=None, description="Maximum slippage percentage; omit to use the connector's configured slippagePct")
-    wallet_address: Optional[str] = Field(default=None, description="Wallet address (optional, uses default)")
-
-
 class AMMTransactionResponse(BaseModel):
     """Chain-neutral write response. `signature` holds the tx signature (Solana) or tx hash (EVM)."""
     signature: str = Field(description="Transaction signature (Solana) or transaction hash (EVM)")

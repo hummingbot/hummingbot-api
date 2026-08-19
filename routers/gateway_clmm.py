@@ -210,6 +210,9 @@ async def get_clmm_pool_info(
 @router.get("/clmm/pools", response_model=CLMMPoolListResponse)
 async def get_clmm_pools(
     connector: str,
+    network: str = Query(
+        "mainnet-beta",
+        description="Solana network name (bare, e.g. 'mainnet-beta'); meteora/orca are Solana-only"),
     page: int = Query(0, ge=0, description="Page number"),
     limit: int = Query(50, ge=1, le=100, description="Results per page (max 100)"),
     search_term: Optional[str] = Query(None, description="Search query to filter pools"),
@@ -225,6 +228,7 @@ async def get_clmm_pools(
 
     Args:
         connector: CLMM connector (meteora, orca)
+        network: Solana network name (bare, default 'mainnet-beta')
         page: Page number (default: 0)
         limit: Results per page (default: 50, max: 100)
         search_term: Search query to filter pools (optional)
@@ -256,7 +260,7 @@ async def get_clmm_pools(
             direction = order_by if order_by else "desc"
             gateway_data = check_gateway_error(await accounts_service.gateway_client.clmm_fetch_pools(
                 connector="meteora",
-                network="mainnet-beta",
+                network=network,
                 limit=limit,
                 query=search_term,
                 sort_by=f"{sort_key}{time_suffix}:{direction}" if sort_key else None,
@@ -272,7 +276,7 @@ async def get_clmm_pools(
                 )
             gateway_data = check_gateway_error(await accounts_service.gateway_client.clmm_fetch_pools(
                 connector="orca",
-                network="mainnet-beta",
+                network=network,
                 limit=limit,
                 query=search_term,
                 sort_by=sort_key,
