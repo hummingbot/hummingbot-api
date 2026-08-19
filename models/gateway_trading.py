@@ -34,7 +34,7 @@ class SwapQuoteRequest(BaseModel):
 class SwapQuoteResponse(BaseModel):
     """Swap quote, re-framed from Gateway's token-flow response into trading-pair terms.
 
-    Gateway's /trading/swap/quote speaks tokenIn/tokenOut; this keeps the base/quote +
+    Gateway's quote-swap routes speak tokenIn/tokenOut; this keeps the base/quote +
     side framing bots use and passes Gateway's execution-safety fields through in
     snake_case. No gas estimate: Gateway's quote does not return one.
     """
@@ -405,7 +405,11 @@ class AMMPositionInfoResponse(BaseModel):
 class AMMTransactionResponse(BaseModel):
     """Chain-neutral write response. `signature` holds the tx signature (Solana) or tx hash (EVM)."""
     signature: str = Field(description="Transaction signature (Solana) or transaction hash (EVM)")
-    status: int = Field(description="TransactionStatus enum value from Gateway")
+    status: str = Field(
+        description="Transaction status: SUBMITTED, CONFIRMED or FAILED. Mapped from "
+                    "Gateway's TransactionStatus enum by the same helper the swap and "
+                    "CLMM surfaces use, so one vocabulary spans all three."
+    )
     data: Optional[Dict[str, Any]] = Field(default=None, description="Connector-specific confirmed-tx details")
 
     model_config = {"populate_by_name": True}
@@ -482,7 +486,11 @@ class AMMCreatePoolRequest(BaseModel):
 class AMMCreatePoolResponse(BaseModel):
     """Response after creating an AMM pool."""
     signature: str = Field(description="Transaction signature (Solana) or transaction hash (EVM)")
-    status: int = Field(description="TransactionStatus enum value from Gateway")
+    status: str = Field(
+        description="Transaction status: SUBMITTED, CONFIRMED or FAILED. Mapped from "
+                    "Gateway's TransactionStatus enum by the same helper the swap and "
+                    "CLMM surfaces use, so one vocabulary spans all three."
+    )
     pool_address: str = Field(alias="poolAddress", description="Address of the newly created pool")
     price: Optional[Decimal] = Field(default=None, description="Initial price the pool was seeded at (quote per base)")
     data: Optional[Dict[str, Any]] = Field(default=None, description="Connector-specific confirmed-tx details")

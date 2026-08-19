@@ -1,6 +1,7 @@
 """
 Gateway Swap Router - Handles DEX swap operations via Hummingbot Gateway.
-Uses Gateway's unified /trading/swap endpoints, so any swap provider works:
+Dispatches to Gateway's /trading/{router,clmm,amm}/*-swap routes by the connector's
+trading type, so any swap provider works:
 router connectors (jupiter, 0x, uniswap, pancakeswap) and amm/clmm connectors
 (raydium/amm, meteora/clmm, ...).
 """
@@ -16,14 +17,14 @@ from deps import get_accounts_service, get_database_manager
 from models import SwapExecuteRequest, SwapExecuteResponse, SwapQuoteRequest, SwapQuoteResponse
 from routers.gateway_extras import ExtraParamsSpec, get_transaction_status_from_response, validate_extra_params
 from services.accounts_service import AccountsService
-from services.gateway_client import GatewayError, check_gateway_error
+from services.gateway_client import GatewayError, check_gateway_error, get_native_gas_token
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Gateway Swaps"], prefix="/gateway")
 
 
-# Gateway's unified /trading/swap routes pass approximateIfNoExactOut only to the
+# Gateway's swap routes pass approximateIfNoExactOut only to the
 # Solana router connectors' quote path; every other provider silently ignores it.
 SWAP_EXTRA_PARAMS_SPEC: ExtraParamsSpec = {
     "approximateIfNoExactOut": ((bool,), {"jupiter", "dflow", "okx", "titan"}),
@@ -52,7 +53,7 @@ async def get_swap_quote(
     """
     try:
         validate_extra_params(request.extra_params, SWAP_EXTRA_PARAMS_SPEC,
-                              request.connector, "unified /trading/swap/quote")
+                              request.connector, "the quote-swap routes")
 
         if not await accounts_service.gateway_client.ping():
             raise HTTPException(status_code=503, detail="Gateway service is not available")
@@ -129,7 +130,7 @@ async def execute_swap(
     """
     try:
         validate_extra_params(request.extra_params, SWAP_EXTRA_PARAMS_SPEC,
-                              request.connector, "unified /trading/swap/execute")
+                              request.connector, "the execute-swap routes")
 
         if not await accounts_service.gateway_client.ping():
             raise HTTPException(status_code=503, detail="Gateway service is not available")
@@ -187,6 +188,24 @@ async def execute_swap(
             output_amount = request.amount if side == "BUY" else Decimal("0")
             price = Decimal("0")
 
+        # Gateway reports the gas it actually paid in the same confirmed `data` block.
+        # Record it here rather than leaving the columns null for the poller to fill —
+        # the poller only revisits swaps that were still pending, so a swap confirmed
+        # on the execute call was never getting its gas recorded at all.
+        fee_raw = data.get("fee")
+        gas_fee = Decimal(str(fee_raw)) if fee_raw is not None else None
+        chain, _ = accounts_service.gateway_client.parse_network_id(request.network)
+        gas_token = get_native_gas_token(chain) if gas_fee is not None else None
+
+        # Prefer the slippage Gateway reports it actually applied over the one the
+        # caller asked for: omitting slippage_pct means "use the connector's configured
+        # value", and recording the request's None there loses what was really enforced.
+        applied_slippage = data.get("slippagePct")
+        slippage_pct = (
+            Decimal(str(applied_slippage)) if applied_slippage is not None
+            else request.slippage_pct
+        )
+
         # Get transaction status from Gateway response
         tx_status = get_transaction_status_from_response(result)
 
@@ -209,10 +228,13 @@ async def execute_swap(
                     "input_amount": float(input_amount),
                     "output_amount": float(output_amount),
                     "price": float(price),
-                    "slippage_pct": float(request.slippage_pct) if request.slippage_pct is not None else None,
+                    "slippage_pct": float(slippage_pct) if slippage_pct is not None else None,
+                    "gas_fee": float(gas_fee) if gas_fee is not None else None,
+                    "gas_token": gas_token,
                     "status": tx_status,
-                    # Gateway's execute response schema carries no pool information
-                    "pool_address": None
+                    # Set by the pool-scoped routes, which resolve exactly one pool; a
+                    # router picks its own path across pools and leaves it unset.
+                    "pool_address": data.get("poolAddress")
                 }
 
                 await swap_repo.create_swap(swap_data)

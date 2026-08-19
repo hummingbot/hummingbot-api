@@ -311,12 +311,25 @@ class GatewayTransactionPoller:
                 await clmm_repo.close_position(position.position_address)
 
             elif event.event_type == "ADD_LIQUIDITY":
-                # Added capital raises the PnL baseline. Event amounts may be the
-                # requested figures (recorded at submit time) rather than on-chain
-                # actuals — the accepted residual is that pending-tx amounts are not
-                # backfilled from txData; requested amounts are the best available.
+                # Added capital raises both the PnL baseline and the held amounts.
+                # Event amounts may be the requested figures (recorded at submit time)
+                # rather than on-chain actuals — the accepted residual is that
+                # pending-tx amounts are not backfilled from txData; requested amounts
+                # are the best available.
                 if event.base_token_amount or event.quote_token_amount:
-                    await clmm_repo.add_to_initial_amounts(
+                    await clmm_repo.add_to_position_amounts(
+                        position_address=position.position_address,
+                        base_delta=Decimal(str(event.base_token_amount or 0)),
+                        quote_delta=Decimal(str(event.quote_token_amount or 0)),
+                    )
+
+            elif event.event_type == "REMOVE_LIQUIDITY":
+                # The mirror of ADD_LIQUIDITY: withdrawn capital lowers both the held
+                # amounts and the PnL baseline. Endpoints book inline only for txs
+                # Gateway confirmed at submit time — those events are created CONFIRMED
+                # and never reach this path, so there is no double count.
+                if event.base_token_amount or event.quote_token_amount:
+                    await clmm_repo.subtract_from_position_amounts(
                         position_address=position.position_address,
                         base_delta=Decimal(str(event.base_token_amount or 0)),
                         quote_delta=Decimal(str(event.quote_token_amount or 0)),

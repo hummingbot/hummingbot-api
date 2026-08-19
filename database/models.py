@@ -287,6 +287,10 @@ class GatewayCLMMPosition(Base):
 
     # Position rent (SOL locked for position NFT, returned on close)
     position_rent = Column(Numeric(precision=30, scale=18), nullable=True)
+    # What the chain actually refunded when the position account was closed. Kept
+    # alongside position_rent rather than replacing it so the two can be compared —
+    # a close refunding less than was locked means an account was left behind.
+    position_rent_refunded = Column(Numeric(precision=30, scale=18), nullable=True)
 
     # Current liquidity amounts
     base_token_amount = Column(Numeric(precision=30, scale=18), nullable=False, default=0)
@@ -346,6 +350,87 @@ class GatewayCLMMEvent(Base):
 
     # Relationship
     position = relationship("GatewayCLMMPosition", back_populates="events")
+
+
+class GatewayAMMPosition(Base):
+    """A Meteora DAMM v2 position — an NFT with its own identity, tracked like a CLMM one.
+
+    Only connectors whose positions are NFTs get rows here. Fungible-LP AMMs (Raydium CPMM,
+    Uniswap/PancakeSwap V2) have no per-position identity to key on: their holdings are the
+    LP token balance, read live, and their history is gateway_amm_events alone.
+    """
+    __tablename__ = "gateway_amm_positions"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    position_address = Column(String, nullable=False, unique=True, index=True)  # position NFT
+    pool_address = Column(String, nullable=False, index=True)
+
+    network = Column(String, nullable=False, index=True)  # chain-network format
+    connector = Column(String, nullable=False, index=True)
+    wallet_address = Column(String, nullable=False, index=True)
+
+    base_token = Column(String, nullable=False, index=True)
+    quote_token = Column(String, nullable=False, index=True)
+    trading_pair = Column(String, nullable=False, index=True)
+
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False, index=True)
+    closed_at = Column(TIMESTAMP(timezone=True), nullable=True, index=True)
+    status = Column(String, nullable=False, default="OPEN", index=True)  # OPEN, CLOSED
+
+    # Deposited capital (the PnL baseline) and what the position currently holds. These
+    # move together on every add and remove — see the CLMM repository for why letting
+    # them drift reports a loss or gain of exactly the amount transacted.
+    initial_base_token_amount = Column(Numeric(precision=30, scale=18), nullable=True)
+    initial_quote_token_amount = Column(Numeric(precision=30, scale=18), nullable=True)
+    base_token_amount = Column(Numeric(precision=30, scale=18), nullable=False, default=0)
+    quote_token_amount = Column(Numeric(precision=30, scale=18), nullable=False, default=0)
+    lp_token_amount = Column(Numeric(precision=30, scale=18), nullable=True)
+
+    entry_price = Column(Numeric(precision=30, scale=18), nullable=True)  # base-weighted across adds
+    current_price = Column(Numeric(precision=30, scale=18), nullable=True)
+
+    last_updated = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class GatewayAMMEvent(Base):
+    """One AMM liquidity write — the AMM history, for every connector.
+
+    Fungible-LP AMMs have only this: no position identity to key a row on, so holdings
+    come from Gateway live and cost basis reconstructs from the log. Meteora DAMM v2
+    positions are NFTs and additionally get a GatewayAMMPosition row, which these events
+    reference by position_address.
+    """
+    __tablename__ = "gateway_amm_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    transaction_hash = Column(String, nullable=False, index=True)
+    timestamp = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False, index=True)
+
+    # Venue. No foreign key: there is no AMM positions table to point at.
+    connector = Column(String, nullable=False, index=True)
+    network = Column(String, nullable=False, index=True)  # chain-network format
+    wallet_address = Column(String, nullable=False, index=True)
+    pool_address = Column(String, nullable=False, index=True)
+    # Meteora DAMM v2 positions are NFTs; fungible-LP AMMs leave this null.
+    position_address = Column(String, nullable=True, index=True)
+
+    event_type = Column(String, nullable=False, index=True)  # ADD_LIQUIDITY, REMOVE_LIQUIDITY, CREATE_POOL
+
+    base_token_amount = Column(Numeric(precision=30, scale=18), nullable=True)
+    quote_token_amount = Column(Numeric(precision=30, scale=18), nullable=True)
+
+    # Pool price when the write landed (quote per base). Without it a fungible-LP AMM has
+    # no cost basis anywhere: those connectors get no position row, so this column is the
+    # only record of what price the capital went in or out at.
+    price = Column(Numeric(precision=30, scale=18), nullable=True)
+
+    gas_fee = Column(Numeric(precision=30, scale=18), nullable=True)
+    gas_token = Column(String, nullable=True)
+
+    status = Column(String, nullable=False, default="SUBMITTED", index=True)  # SUBMITTED, CONFIRMED, FAILED
+    error_message = Column(Text, nullable=True)
 
 
 class ControllerPerformanceSnapshot(Base):

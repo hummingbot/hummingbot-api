@@ -3,7 +3,7 @@ Regression tests for the Gateway HTTP contract (paths, payload keys, error handl
 
 These pin the client to the Gateway route table verified live on 2026-07-13
 (hummingbot/gateway feat-robinhood-chain):
-- swaps go through the unified /trading/swap endpoints (NOT /connectors/{c}/router/...,
+- swaps go through /trading/{router,clmm,amm}/*-swap (NOT /connectors/{c}/router/...,
   which 404s for clmm-only connectors like meteora and doubles the path for
   connector values like "jupiter/router"),
 - CLMM ops go through the unified /trading/clmm endpoints with camelCase keys
@@ -55,51 +55,52 @@ def client_and_calls(monkeypatch):
 
 
 # ============================================
-# Connector normalization
+# Connector -> (name, trading type) resolution
 # ============================================
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("connector,expected", [
-    ("jupiter", "jupiter/router"),
-    ("0x", "0x/router"),
-    ("uniswap", "uniswap/router"),
-    ("pancakeswap", "pancakeswap/router"),
-    ("dflow", "dflow/router"),
-    ("okx", "okx/router"),
-    ("titan", "titan/router"),
-    ("meteora", "meteora/clmm"),
-    ("orca", "orca/clmm"),
-    ("raydium", "raydium/clmm"),
-    ("pancakeswap-sol", "pancakeswap-sol/clmm"),
-    # Already-typed providers pass through untouched (no doubled /router/router)
-    ("jupiter/router", "jupiter/router"),
-    ("meteora/clmm", "meteora/clmm"),
-    ("raydium/amm", "raydium/amm"),
+    ("jupiter", ("jupiter", "router")),
+    ("0x", ("0x", "router")),
+    ("uniswap", ("uniswap", "router")),
+    ("pancakeswap", ("pancakeswap", "router")),
+    ("dflow", ("dflow", "router")),
+    ("okx", ("okx", "router")),
+    ("titan", ("titan", "router")),
+    ("meteora", ("meteora", "clmm")),
+    ("orca", ("orca", "clmm")),
+    ("raydium", ("raydium", "clmm")),
+    ("pancakeswap-sol", ("pancakeswap-sol", "clmm")),
+    # A typed provider is split as given, never re-resolved
+    ("jupiter/router", ("jupiter", "router")),
+    ("meteora/clmm", ("meteora", "clmm")),
+    ("raydium/amm", ("raydium", "amm")),
 ])
-async def test_normalize_swap_connector(connector, expected):
+async def test_resolve_swap_route(connector, expected):
     client = GatewayClient()
     client._connector_trading_types = {
         entry["name"]: entry["trading_types"] for entry in _CONNECTOR_LISTING["connectors"]
     }
-    assert await client.normalize_swap_connector(connector) == expected
+    assert await client.resolve_swap_route(connector) == expected
 
 
 @pytest.mark.asyncio
-async def test_normalize_swap_connector_rejects_unknown_name():
+async def test_resolve_swap_route_rejects_unknown_name():
     client = GatewayClient()
     client._connector_trading_types = {"jupiter": ["router"]}
     with pytest.raises(GatewayError) as exc:
-        await client.normalize_swap_connector("nosuchdex")
+        await client.resolve_swap_route("nosuchdex")
     assert "nosuchdex" in str(exc.value)
 
 
 # ============================================
-# Swap paths and payloads (unified /trading/swap)
+# Swap paths and payloads (/trading/{type}/*-swap)
 # ============================================
 
 @pytest.mark.asyncio
-async def test_quote_swap_uses_unified_endpoint(client_and_calls):
+async def test_quote_swap_routes_by_trading_type(client_and_calls):
+    """A bare name resolves to its type, which selects the path; `connector` stays bare."""
     client, calls = client_and_calls
     await client.quote_swap(
         connector="meteora", chain_network="solana-mainnet-beta",
@@ -108,10 +109,10 @@ async def test_quote_swap_uses_unified_endpoint(client_and_calls):
     )
     call = calls[0]
     assert call["method"] == "GET"
-    assert call["path"] == "trading/swap/quote"
+    assert call["path"] == "trading/clmm/quote-swap"
     assert call["params"] == {
         "chainNetwork": "solana-mainnet-beta",
-        "connector": "meteora/clmm",
+        "connector": "meteora",
         "baseToken": "SOL",
         "quoteToken": "USDC",
         "amount": "0.1",
@@ -121,7 +122,7 @@ async def test_quote_swap_uses_unified_endpoint(client_and_calls):
 
 
 @pytest.mark.asyncio
-async def test_execute_swap_uses_unified_endpoint(client_and_calls):
+async def test_execute_swap_routes_by_trading_type(client_and_calls):
     client, calls = client_and_calls
     await client.execute_swap(
         connector="jupiter/router", chain_network="solana-mainnet-beta",
@@ -130,9 +131,9 @@ async def test_execute_swap_uses_unified_endpoint(client_and_calls):
     )
     call = calls[0]
     assert call["method"] == "POST"
-    assert call["path"] == "trading/swap/execute"
+    assert call["path"] == "trading/router/execute-swap"
     assert call["json"]["chainNetwork"] == "solana-mainnet-beta"
-    assert call["json"]["connector"] == "jupiter/router"
+    assert call["json"]["connector"] == "jupiter"
     assert call["json"]["walletAddress"] == "WALLET"
     assert call["json"]["side"] == "BUY"
 
@@ -311,10 +312,12 @@ async def test_clmm_pool_info_uses_unified_endpoint(client_and_calls):
 async def test_clmm_fetch_pools_meteora_params(client_and_calls):
     """Meteora's fetch-pools paginates and filters via page/includeUnverified."""
     client, calls = client_and_calls
-    await client.clmm_fetch_pools(connector="meteora", network="mainnet-beta", limit=10,
+    await client.clmm_fetch_pools(connector="meteora", chain_network="solana-mainnet-beta", limit=10,
                                   sort_by="volume_24h:desc", page=2, include_unverified=False)
     call = calls[0]
-    assert (call["method"], call["path"]) == ("GET", "connectors/meteora/clmm/fetch-pools")
+    assert (call["method"], call["path"]) == ("GET", "trading/clmm/fetch-pools")
+    assert call["params"]["connector"] == "meteora"
+    assert call["params"]["chainNetwork"] == "solana-mainnet-beta"
     assert call["params"]["page"] == 2
     assert call["params"]["includeUnverified"] == "false"
     assert call["params"]["sortBy"] == "volume_24h:desc"
@@ -325,12 +328,13 @@ async def test_clmm_fetch_pools_meteora_params(client_and_calls):
 @pytest.mark.asyncio
 async def test_clmm_fetch_pools_orca_params(client_and_calls):
     """Orca's fetch-pools takes sortDirection/verifiedOnly and has no pagination —
-    sending meteora's knobs would be silently stripped by Gateway's AJV."""
+    the unified route drops a knob the chosen connector ignores."""
     client, calls = client_and_calls
-    await client.clmm_fetch_pools(connector="orca", network="mainnet-beta", limit=10,
+    await client.clmm_fetch_pools(connector="orca", chain_network="solana-mainnet-beta", limit=10,
                                   sort_by="volume", sort_direction="desc", verified_only=True)
     call = calls[0]
-    assert (call["method"], call["path"]) == ("GET", "connectors/orca/clmm/fetch-pools")
+    assert (call["method"], call["path"]) == ("GET", "trading/clmm/fetch-pools")
+    assert call["params"]["connector"] == "orca"
     assert call["params"]["sortDirection"] == "desc"
     assert call["params"]["verifiedOnly"] == "true"
     for meteora_only in ("page", "includeUnverified"):
@@ -434,7 +438,7 @@ async def test_amm_add_liquidity_omits_position_when_unset(client_and_calls):
     await client.amm_add_liquidity(connector="meteora", chain_network=NET, wallet_address=WALLET,
                                    pool_address=POOL, base_token_amount=1.0, quote_token_amount=2.0)
     c = calls[0]
-    assert (c["method"], c["path"]) == ("POST", "trading/amm/add-liquidity")
+    assert (c["method"], c["path"]) == ("POST", "trading/amm/add")
     assert "positionAddress" not in c["json"]  # omit => open a new Meteora position
 
 
@@ -453,7 +457,7 @@ async def test_amm_remove_liquidity_includes_position_when_set(client_and_calls)
     await client.amm_remove_liquidity(connector="meteora", chain_network=NET, wallet_address=WALLET,
                                       pool_address=POOL, percentage_to_remove=100, position_address="POS123")
     c = calls[0]
-    assert (c["method"], c["path"]) == ("POST", "trading/amm/remove-liquidity")
+    assert (c["method"], c["path"]) == ("POST", "trading/amm/remove")
     assert c["json"]["percentageToRemove"] == 100
     assert c["json"]["positionAddress"] == "POS123"
 

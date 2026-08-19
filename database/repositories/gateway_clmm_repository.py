@@ -85,8 +85,12 @@ class GatewayCLMMRepository:
             await self.session.flush()
         return position
 
-    async def close_position(self, position_address: str) -> Optional[GatewayCLMMPosition]:
-        """Mark position as closed."""
+    async def close_position(
+        self,
+        position_address: str,
+        position_rent_refunded: Optional[Decimal] = None
+    ) -> Optional[GatewayCLMMPosition]:
+        """Mark position as closed, recording the rent the chain gave back."""
         result = await self.session.execute(
             select(GatewayCLMMPosition).where(GatewayCLMMPosition.position_address == position_address)
         )
@@ -94,6 +98,8 @@ class GatewayCLMMRepository:
         if position:
             position.status = "CLOSED"
             position.closed_at = datetime.now(timezone.utc)
+            if position_rent_refunded is not None:
+                position.position_rent_refunded = position_rent_refunded
             await self.session.flush()
         return position
 
@@ -114,24 +120,77 @@ class GatewayCLMMRepository:
             await self.session.flush()
         return position
 
-    async def add_to_initial_amounts(
+    async def subtract_from_position_amounts(
         self,
         position_address: str,
         base_delta: Decimal,
         quote_delta: Decimal
     ) -> Optional[GatewayCLMMPosition]:
-        """Raise the PnL baseline when liquidity is ADDED to an existing position.
+        """Book removed liquidity: lower both the PnL baseline and the held amounts.
 
-        Without this, pnl_summary compares post-add value against the original
-        deposit only and overstates PnL by exactly the added capital.
+        The mirror of add_to_position_amounts, and the same invariant. Lowering only
+        the held amounts leaves withdrawn capital counted as a loss of exactly the
+        amount withdrawn. entry_price is deliberately untouched: a pro-rata removal
+        changes how much remains, not the average price it was entered at.
         """
         result = await self.session.execute(
             select(GatewayCLMMPosition).where(GatewayCLMMPosition.position_address == position_address)
         )
         position = result.scalar_one_or_none()
         if position:
-            position.initial_base_token_amount = float(position.initial_base_token_amount or 0) + float(base_delta)
+            # Floor at 0: a remove reported larger than the recorded holding (stale
+            # cache, or liquidity added outside this API) must not drive it negative.
+            position.initial_base_token_amount = max(
+                0.0, float(position.initial_base_token_amount or 0) - float(base_delta))
+            position.initial_quote_token_amount = max(
+                0.0, float(position.initial_quote_token_amount or 0) - float(quote_delta))
+            position.base_token_amount = max(0.0, float(position.base_token_amount or 0) - float(base_delta))
+            position.quote_token_amount = max(0.0, float(position.quote_token_amount or 0) - float(quote_delta))
+            await self.session.flush()
+        return position
+
+    async def add_to_position_amounts(
+        self,
+        position_address: str,
+        base_delta: Decimal,
+        quote_delta: Decimal,
+        entry_price: Optional[Decimal] = None
+    ) -> Optional[GatewayCLMMPosition]:
+        """Book added liquidity: raise both the PnL baseline and the held amounts.
+
+        Both move together or the row contradicts itself. Raising only the baseline
+        leaves a position recorded as holding less than it was given, with no removal
+        or fee collection to explain the gap — pnl_summary then reports a loss of
+        exactly the added capital. Raising only the held amounts overstates PnL by
+        the same figure. Nothing else refreshes these: _refresh_position_data runs
+        only when a caller passes search_positions(refresh=True).
+
+        `entry_price` is the pool price at the moment of the add. Given it, the stored
+        entry price becomes the base-weighted average of the old basis and the new
+        capital — without it, capital deposited today is valued at the price the
+        position opened at, and the cost basis is wrong by the drift between them.
+        """
+        result = await self.session.execute(
+            select(GatewayCLMMPosition).where(GatewayCLMMPosition.position_address == position_address)
+        )
+        position = result.scalar_one_or_none()
+        if position:
+            old_base = float(position.initial_base_token_amount or 0)
+            new_base = old_base + float(base_delta)
+
+            if entry_price is not None and float(base_delta) > 0 and new_base > 0:
+                old_entry = float(position.entry_price) if position.entry_price is not None else None
+                if old_entry is not None:
+                    position.entry_price = (old_entry * old_base + float(entry_price) * float(base_delta)) / new_base
+                else:
+                    # No basis to weight against (e.g. a discovered position): the
+                    # add's own price is the best available.
+                    position.entry_price = float(entry_price)
+
+            position.initial_base_token_amount = new_base
             position.initial_quote_token_amount = float(position.initial_quote_token_amount or 0) + float(quote_delta)
+            position.base_token_amount = float(position.base_token_amount or 0) + float(base_delta)
+            position.quote_token_amount = float(position.quote_token_amount or 0) + float(quote_delta)
             await self.session.flush()
         return position
 
@@ -415,6 +474,8 @@ class GatewayCLMMRepository:
             "initial_quote_token_amount": (float(position.initial_quote_token_amount)
                                            if position.initial_quote_token_amount is not None else None),
             "position_rent": float(position.position_rent) if position.position_rent is not None else None,
+            "position_rent_refunded": (float(position.position_rent_refunded)
+                                       if position.position_rent_refunded is not None else None),
             "base_token_amount": float(position.base_token_amount),
             "quote_token_amount": float(position.quote_token_amount),
             "in_range": position.in_range,

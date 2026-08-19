@@ -243,6 +243,9 @@ async def get_clmm_pools(
         List of available pools with trading pairs, addresses, liquidity, volume, APR, etc.
     """
     try:
+        # Both listing connectors are Solana-only, which is what makes the
+        # "solana-" prefix below safe: the endpoint takes a bare network name while
+        # Gateway's unified route keys on chain-network.
         supported_connectors = ["meteora", "orca"]
         if connector.lower() not in supported_connectors:
             raise HTTPException(
@@ -260,7 +263,7 @@ async def get_clmm_pools(
             direction = order_by if order_by else "desc"
             gateway_data = check_gateway_error(await accounts_service.gateway_client.clmm_fetch_pools(
                 connector="meteora",
-                network=network,
+                chain_network=f"solana-{network}",
                 limit=limit,
                 query=search_term,
                 sort_by=f"{sort_key}{time_suffix}:{direction}" if sort_key else None,
@@ -276,7 +279,7 @@ async def get_clmm_pools(
                 )
             gateway_data = check_gateway_error(await accounts_service.gateway_client.clmm_fetch_pools(
                 connector="orca",
-                network=network,
+                chain_network=f"solana-{network}",
                 limit=limit,
                 query=search_term,
                 sort_by=sort_key,
@@ -620,6 +623,27 @@ async def add_liquidity_to_clmm_position(
         if quote_amount_added is None:
             quote_amount_added = float(request.quote_token_amount) if request.quote_token_amount else None
 
+        # Pool price at the moment of the add, used to weight the position's entry
+        # price. Gateway's add-liquidity response carries no price, so read it from
+        # the pool the position sits in. A failure here costs the weighting, not the
+        # add — the capital is already deposited.
+        add_price = None
+        try:
+            position_for_pool = None
+            async with db_manager.get_session_context() as session:
+                position_for_pool = await GatewayCLMMRepository(session).get_position_by_address(
+                    request.position_address)
+            if position_for_pool:
+                pool_info = check_gateway_error(await accounts_service.gateway_client.clmm_pool_info(
+                    connector=request.connector,
+                    chain_network=request.network,
+                    pool_address=position_for_pool.pool_address
+                ))
+                add_price = float(pool_info.get("price")) if pool_info.get("price") else None
+        except Exception as price_error:
+            logger.warning(f"Could not read pool price for ADD_LIQUIDITY {transaction_hash}; "
+                           f"entry price will not be re-weighted: {price_error}")
+
         # Store ADD_LIQUIDITY event in database
         try:
             async with db_manager.get_session_context() as session:
@@ -643,15 +667,16 @@ async def add_liquidity_to_clmm_position(
                     logger.info(f"Recorded CLMM ADD_LIQUIDITY event: {transaction_hash} "
                                 f"(status: {tx_status}, gas: {gas_fee} {gas_token})")
 
-                    # Added capital raises the PnL baseline. Book here only when the
-                    # tx confirmed inline (the event is created CONFIRMED and the
-                    # poller never re-processes it); SUBMITTED events are booked by
-                    # the poller's confirm path.
+                    # Added capital raises both the PnL baseline and the held amounts.
+                    # Book here only when the tx confirmed inline (the event is created
+                    # CONFIRMED and the poller never re-processes it); SUBMITTED events
+                    # are booked by the poller's confirm path.
                     if tx_status == "CONFIRMED":
-                        await clmm_repo.add_to_initial_amounts(
+                        await clmm_repo.add_to_position_amounts(
                             position_address=request.position_address,
                             base_delta=Decimal(str(base_amount_added or 0)),
                             quote_delta=Decimal(str(quote_amount_added or 0)),
+                            entry_price=Decimal(str(add_price)) if add_price else None,
                         )
                 else:
                     logger.warning(f"ADD_LIQUIDITY {transaction_hash} executed for position "
@@ -765,6 +790,17 @@ async def remove_liquidity_from_clmm_position(
                     await clmm_repo.create_event(event_data)
                     logger.info(f"Recorded CLMM REMOVE_LIQUIDITY event: {transaction_hash} "
                                 f"(status: {tx_status}, gas: {gas_fee} {gas_token})")
+
+                    # Withdrawn capital lowers both the held amounts and the PnL
+                    # baseline. Book only on inline confirmation (the event is created
+                    # CONFIRMED and the poller never re-processes it); SUBMITTED events
+                    # are booked by the poller's confirm path.
+                    if tx_status == "CONFIRMED":
+                        await clmm_repo.subtract_from_position_amounts(
+                            position_address=request.position_address,
+                            base_delta=Decimal(str(base_amount_removed or 0)),
+                            quote_delta=Decimal(str(quote_amount_removed or 0)),
+                        )
                 else:
                     logger.warning(f"REMOVE_LIQUIDITY {transaction_hash} executed for position "
                                    f"{request.position_address} with no database record — "
@@ -972,7 +1008,11 @@ async def close_clmm_position(
                             if verify_result and isinstance(verify_result, dict) and "error" in verify_result:
                                 status_code = verify_result.get("status")
                                 if status_code in (404, 500):
-                                    await clmm_repo.close_position(request.position_address)
+                                    await clmm_repo.close_position(
+                                        request.position_address,
+                                        position_rent_refunded=(Decimal(str(position_rent_refunded))
+                                                                if position_rent_refunded is not None else None)
+                                    )
                                     logger.info(f"Position {request.position_address} verified as closed "
                                                 f"(Gateway returned {status_code})")
                                 else:
@@ -1213,7 +1253,7 @@ async def get_clmm_positions_owned(
             raise HTTPException(status_code=503, detail="Gateway service is not available")
 
         # Parse network_id
-        chain, _ = accounts_service.gateway_client.parse_network_id(request.network)
+        chain, network = accounts_service.gateway_client.parse_network_id(request.network)
 
         # Get wallet address
         wallet_address = await accounts_service.gateway_client.get_wallet_address_or_default(
@@ -1232,13 +1272,12 @@ async def get_clmm_positions_owned(
         positions = []
 
         for pos in positions_data:
-            # Extract token addresses (Gateway returns addresses, not symbols)
-            base_token_address = pos.get("baseTokenAddress", "")
-            quote_token_address = pos.get("quoteTokenAddress", "")
-
-            # Use short addresses as symbols for now
-            base_token = base_token_address[-8:] if base_token_address else ""
-            quote_token = quote_token_address[-8:] if quote_token_address else ""
+            # Gateway returns token addresses; resolve them against its token list so
+            # positions carry real symbols ('SOL-USDC') that trading_pair filters match.
+            base_token = await accounts_service.gateway_client.resolve_token_symbol(
+                chain, network, pos.get("baseTokenAddress", ""))
+            quote_token = await accounts_service.gateway_client.resolve_token_symbol(
+                chain, network, pos.get("quoteTokenAddress", ""))
             trading_pair = f"{base_token}-{quote_token}" if base_token and quote_token else ""
 
             current_price = Decimal(str(pos.get("price", 0)))
@@ -1398,10 +1437,11 @@ async def get_clmm_position_info(
                 raise HTTPException(status_code=404, detail=f"Position {position_address} not found or closed")
             raise HTTPException(status_code=status_code or 502, detail=str(pos.get("error")))
 
-        base_token_address = pos.get("baseTokenAddress", "")
-        quote_token_address = pos.get("quoteTokenAddress", "")
-        base_token = base_token_address[-8:] if base_token_address else ""
-        quote_token = quote_token_address[-8:] if quote_token_address else ""
+        chain, bare_network = accounts_service.gateway_client.parse_network_id(network)
+        base_token = await accounts_service.gateway_client.resolve_token_symbol(
+            chain, bare_network, pos.get("baseTokenAddress", ""))
+        quote_token = await accounts_service.gateway_client.resolve_token_symbol(
+            chain, bare_network, pos.get("quoteTokenAddress", ""))
         current_price = Decimal(str(pos.get("price", 0)))
         lower_price = Decimal(str(pos.get("lowerPrice", 0))) if pos.get("lowerPrice") else Decimal("0")
         upper_price = Decimal(str(pos.get("upperPrice", 0))) if pos.get("upperPrice") else Decimal("0")
@@ -1495,7 +1535,8 @@ async def search_clmm_positions(
         network: Filter by network (e.g., 'solana-mainnet-beta')
         connector: Filter by connector (e.g., 'meteora')
         wallet_address: Filter by wallet address
-        trading_pair: Filter by trading pair (address-derived identifiers as stored; symbol pairs like 'SOL-USDC' will not match)
+        trading_pair: Filter by trading pair (e.g., 'SOL-USDC'; a token outside Gateway's
+            token list is stored under its full mint address instead of a symbol)
         status: Filter by status (OPEN, CLOSED)
         position_addresses: Filter by specific position addresses (list of addresses)
         limit: Max results (default 50, max 1000)

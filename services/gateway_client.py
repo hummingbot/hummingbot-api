@@ -92,6 +92,8 @@ class GatewayClient:
         self._certs_unavailable_warned = False
         # Gateway's connector -> trading_types listing, fetched on first use.
         self._connector_trading_types: Optional[Dict[str, List[str]]] = None
+        # Per-(chain, network) token address -> symbol map, fetched on first use.
+        self._token_symbols: Dict[tuple[str, str], Dict[str, str]] = {}
 
     @staticmethod
     def parse_network_id(network_id: str) -> tuple[str, str]:
@@ -330,6 +332,31 @@ class GatewayClient:
             "network": network
         })
 
+    async def _get_token_symbols(self, chain: str, network: str) -> Dict[str, str]:
+        """Gateway's token address -> symbol map for a network, fetched once per client."""
+        key = (chain, network)
+        if key not in self._token_symbols:
+            listing = check_gateway_error(await self.get_tokens(chain, network))
+            self._token_symbols[key] = {
+                token["address"]: token["symbol"]
+                for token in listing.get("tokens", [])
+                if token.get("address") and token.get("symbol")
+            }
+        return self._token_symbols[key]
+
+    async def resolve_token_symbol(self, chain: str, network: str, address: str) -> str:
+        """
+        Symbol for a token address, falling back to the address itself.
+
+        Gateway knows only the tokens in its configured list, so a pool on an unlisted
+        mint has no symbol to report. The full address then stands in as the identifier:
+        it is at least unambiguous and usable, where the truncated fragment this
+        replaced ('11111112' for wrapped SOL) named nothing and matched nothing.
+        """
+        if not address:
+            return ""
+        return (await self._get_token_symbols(chain, network)).get(address, address)
+
     async def add_token(self, chain: str, network: str, address: str, symbol: str, name: str, decimals: int) -> Dict:
         """Add a custom token to Gateway's token list"""
         return await self._request("POST", "tokens", json={
@@ -458,7 +485,7 @@ class GatewayClient:
         })
 
     # ============================================
-    # Swap Operations (unified /trading/swap endpoints)
+    # Swap Operations (/trading/{router,clmm,amm}/{quote,execute}-swap)
     # ============================================
 
     async def _get_connector_trading_types(self) -> Dict[str, List[str]]:
@@ -472,17 +499,21 @@ class GatewayClient:
             }
         return self._connector_trading_types
 
-    async def normalize_swap_connector(self, connector: str) -> str:
+    async def resolve_swap_route(self, connector: str) -> tuple[str, str]:
         """
-        Normalize a connector name to Gateway's 'name/type' swap-provider format.
+        Split a swap provider into the (bare name, trading type) the routes need.
 
-        An already-typed value passes through untouched ('raydium/amm'). A bare
-        name takes the connector's most swap-appropriate trading type as Gateway
-        reports it: router, else clmm, else amm. Unknown names raise rather than
-        guessing a type that Gateway would reject with an opaque 400.
+        Gateway carries the trading type in the path — /trading/router, /trading/clmm,
+        /trading/amm — and constrains each route's `connector` to bare names, so a typed
+        value has to be taken apart rather than passed through. A typed input
+        ('raydium/amm') is split as given; a bare one takes the connector's most
+        swap-appropriate type as Gateway reports it: router, else clmm, else amm.
+        Unknown names raise rather than guessing a type Gateway would reject with an
+        opaque 400.
         """
         if "/" in connector:
-            return connector
+            name, trading_type = connector.split("/", 1)
+            return name, trading_type
         trading_types = (await self._get_connector_trading_types()).get(connector)
         if trading_types is None:
             raise GatewayError(
@@ -492,7 +523,7 @@ class GatewayClient:
             )
         for candidate in _SWAP_TYPE_PREFERENCE:
             if candidate in trading_types:
-                return f"{connector}/{candidate}"
+                return connector, candidate
         raise GatewayError(
             f"Connector '{connector}' supports no swap trading type "
             f"(Gateway reports: {', '.join(trading_types) or 'none'})",
@@ -508,22 +539,28 @@ class GatewayClient:
         amount: float,
         side: str,
         slippage_pct: Optional[float] = None,
-        extra_params: Optional[Dict] = None
+        extra_params: Optional[Dict] = None,
+        pool_address: Optional[str] = None
     ) -> Dict:
         """
-        Get a swap quote via Gateway's unified /trading/swap/quote endpoint.
+        Get a swap quote from the trading surface matching the connector's type.
 
         Args:
             connector: Swap provider, either bare ('jupiter', 'meteora') or typed
-                ('jupiter/router', 'raydium/amm', 'meteora/clmm').
+                ('jupiter/router', 'raydium/amm', 'meteora/clmm'). The type selects the
+                route — /trading/{router,clmm,amm}/quote-swap — and the bare name is sent
+                as `connector`.
             chain_network: 'chain-network' format (e.g. 'solana-mainnet-beta').
-                For amm/clmm providers Gateway resolves the pool from its pool list.
+            pool_address: Pin an amm/clmm quote to one pool. Omitted, Gateway resolves the
+                pool from its configured list by token pair, which cannot reach a pool that
+                is not in it. Routers reject this — they choose their own path across pools.
             extra_params: Connector-specific query params under Gateway's own names
                 (e.g. approximateIfNoExactOut). The router validates keys first.
         """
+        name, trading_type = await self.resolve_swap_route(connector)
         params = {
             "chainNetwork": chain_network,
-            "connector": await self.normalize_swap_connector(connector),
+            "connector": name,
             "baseToken": base_asset,
             "quoteToken": quote_asset,
             "amount": str(amount),
@@ -531,13 +568,15 @@ class GatewayClient:
         }
         if slippage_pct is not None:
             params["slippagePct"] = str(slippage_pct)
+        if pool_address:
+            params["poolAddress"] = pool_address
         if extra_params:
             # Query params must be strings for aiohttp; Gateway's schema coerces
             # "true"/"false" back to booleans.
             for key, value in extra_params.items():
                 params[key] = str(value).lower() if isinstance(value, bool) else str(value)
 
-        return await self._request("GET", "trading/swap/quote", params=params)
+        return await self._request("GET", f"trading/{trading_type}/quote-swap", params=params)
 
     async def execute_swap(
         self,
@@ -549,16 +588,20 @@ class GatewayClient:
         amount: float,
         side: str,
         slippage_pct: Optional[float] = None,
-        extra_params: Optional[Dict] = None
+        extra_params: Optional[Dict] = None,
+        pool_address: Optional[str] = None
     ) -> Dict:
-        """Execute a swap via Gateway's unified /trading/swap/execute endpoint.
+        """Execute a swap on the trading surface matching the connector's type.
 
-        extra_params carries connector-specific params under Gateway's own names
-        (e.g. approximateIfNoExactOut). The router validates keys first.
+        The type selects the route — /trading/{router,clmm,amm}/execute-swap — and the
+        bare name is sent as `connector`. pool_address pins an amm/clmm swap to one pool;
+        routers reject it. extra_params carries connector-specific params under Gateway's
+        own names (e.g. approximateIfNoExactOut); the router validates keys first.
         """
+        name, trading_type = await self.resolve_swap_route(connector)
         payload = {
             "chainNetwork": chain_network,
-            "connector": await self.normalize_swap_connector(connector),
+            "connector": name,
             "walletAddress": wallet_address,
             "baseToken": base_asset,
             "quoteToken": quote_asset,
@@ -567,10 +610,12 @@ class GatewayClient:
         }
         if slippage_pct is not None:
             payload["slippagePct"] = slippage_pct
+        if pool_address:
+            payload["poolAddress"] = pool_address
         if extra_params:
             payload.update(extra_params)
 
-        return await self._request("POST", "trading/swap/execute", json=payload)
+        return await self._request("POST", f"trading/{trading_type}/execute-swap", json=payload)
 
     # ============================================
     # Liquidity Operations - CLMM (unified /trading/clmm endpoints)
@@ -769,7 +814,7 @@ class GatewayClient:
             params["quoteTokenAmount"] = quote_token_amount
         if slippage_pct is not None:
             params["slippagePct"] = slippage_pct
-        return await self._request("GET", "trading/clmm/quote-position", params=params)
+        return await self._request("GET", "trading/clmm/quote-liquidity", params=params)
 
     async def clmm_create_pool(
         self,
@@ -841,7 +886,7 @@ class GatewayClient:
     async def clmm_fetch_pools(
         self,
         connector: str,
-        network: str,
+        chain_network: str,
         limit: int = 50,
         query: Optional[str] = None,
         sort_by: Optional[str] = None,
@@ -853,15 +898,15 @@ class GatewayClient:
         """
         Discover CLMM pools from the connector's own listing API (meteora, orca).
 
-        This is a per-connector Gateway route (no unified equivalent): it proxies the
-        DEX's pool-discovery API rather than Gateway's saved pool list. The schemas
-        differ per connector — meteora takes page/includeUnverified and a
+        Proxies the DEX's pool-discovery API rather than Gateway's saved pool list. The
+        knobs differ per connector — meteora takes page/includeUnverified and a
         "field:direction" sortBy; orca takes sortDirection/verifiedOnly and does not
-        paginate. Only keys the caller sets are sent; AJV strips unknown keys
-        Gateway-side, so sending the wrong connector's knob would be a silent no-op.
+        paginate — so only keys the caller sets are sent. Gateway drops a knob the chosen
+        connector ignores, meaning the wrong connector's knob is a silent no-op.
         """
         params = {
-            "network": network,
+            "chainNetwork": chain_network,
+            "connector": connector,
             "limit": limit,
         }
         if query:
@@ -877,7 +922,7 @@ class GatewayClient:
         if verified_only is not None:
             params["verifiedOnly"] = "true" if verified_only else "false"
 
-        return await self._request("GET", f"connectors/{connector}/clmm/fetch-pools", params=params)
+        return await self._request("GET", "trading/clmm/fetch-pools", params=params)
 
     # ============================================
     # AMM Liquidity (Meteora DAMM v2, Raydium CPMM, Uniswap/Pancakeswap V2)
@@ -960,7 +1005,7 @@ class GatewayClient:
             payload["slippagePct"] = slippage_pct
         if position_address is not None:
             payload["positionAddress"] = position_address
-        return await self._request("POST", "trading/amm/add-liquidity", json=payload)
+        return await self._request("POST", "trading/amm/add", json=payload)
 
     async def amm_remove_liquidity(
         self,
@@ -984,7 +1029,7 @@ class GatewayClient:
             payload["slippagePct"] = slippage_pct
         if position_address is not None:
             payload["positionAddress"] = position_address
-        return await self._request("POST", "trading/amm/remove-liquidity", json=payload)
+        return await self._request("POST", "trading/amm/remove", json=payload)
 
     async def amm_create_pool(
         self,
