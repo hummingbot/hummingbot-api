@@ -291,15 +291,13 @@ async def create_amm_pool(
 
     Seed price priority: initial_price → quote_token_amount ratio → live market price (anti-snipe).
     Connector-specific params ride extra_params under Gateway's own names (configAddress for
-    meteora — required there, feeConfigIndex/openTime for raydium, gasPrice/maxGas/slippagePct
-    for uniswap) — the same contract as clmm open's extra_params.
+    meteora — required there, ammConfigIndex for raydium) — the same contract as clmm open's
+    extra_params. Seeding slippage for uniswap/pancakeswap is the standard slippage_pct field.
     """
     try:
         # Gateway's unified create-pool destructures exactly these; anything else
         # would be silently ignored there, so reject it loudly here.
-        supported_extra_params = {
-            "configAddress", "feeConfigIndex", "openTime", "gasPrice", "maxGas", "slippagePct",
-        }
+        supported_extra_params = {"configAddress", "ammConfigIndex"}
         extra_params = request.extra_params or {}
         unknown = set(extra_params) - supported_extra_params
         if unknown:
@@ -325,6 +323,7 @@ async def create_amm_pool(
             base_token_amount=float(request.base_token_amount),
             quote_token_amount=float(request.quote_token_amount) if request.quote_token_amount is not None else None,
             initial_price=float(request.initial_price) if request.initial_price is not None else None,
+            slippage_pct=float(request.slippage_pct) if request.slippage_pct is not None else None,
             extra_params=request.extra_params,
         ))
         return AMMCreatePoolResponse(**result)

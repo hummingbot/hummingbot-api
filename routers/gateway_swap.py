@@ -44,6 +44,25 @@ def get_transaction_status_from_response(gateway_response: dict) -> str:
     return "SUBMITTED"
 
 
+# Gateway's unified /trading/swap routes destructure a fixed set of connector-specific
+# keys from the request and silently ignore anything else. Reject unknown extra_params
+# here so a typo fails loudly instead of quoting/trading with the parameter dropped.
+SUPPORTED_SWAP_EXTRA_PARAMS = {"approximateIfNoExactOut"}
+
+
+def validate_swap_extra_params(extra_params: Optional[dict]) -> None:
+    unknown = set(extra_params or {}) - SUPPORTED_SWAP_EXTRA_PARAMS
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unsupported extra_params {sorted(unknown)}: Gateway's unified "
+                f"/trading/swap routes honor only {sorted(SUPPORTED_SWAP_EXTRA_PARAMS)} "
+                "and silently ignore everything else."
+            )
+        )
+
+
 @router.post("/swap/quote", response_model=SwapQuoteResponse)
 async def get_swap_quote(
     request: SwapQuoteRequest,
@@ -58,12 +77,15 @@ async def get_swap_quote(
         trading_pair: 'SOL-USDC'
         side: 'BUY'
         amount: 1
-        slippage_pct: 1
+        slippage_pct: 1  (optional; omit to use the connector's configured slippagePct)
+        extra_params: {"approximateIfNoExactOut": false}  # Solana routers
 
     Returns:
-        Quote with price, expected output amount, and gas estimate
+        Quote with price, expected output amount, and execution-safety fields
     """
     try:
+        validate_swap_extra_params(request.extra_params)
+
         if not await accounts_service.gateway_client.ping():
             raise HTTPException(status_code=503, detail="Gateway service is not available")
 
@@ -78,7 +100,8 @@ async def get_swap_quote(
             quote_asset=quote,
             amount=float(request.amount),
             side=request.side,
-            slippage_pct=float(request.slippage_pct) if request.slippage_pct is not None else 1.0
+            slippage_pct=float(request.slippage_pct) if request.slippage_pct is not None else None,
+            extra_params=request.extra_params
         ))
 
         # Re-frame Gateway's token-flow response (tokenIn/tokenOut) into pair terms,
@@ -99,8 +122,8 @@ async def get_swap_quote(
             price_impact_pct=_dec("priceImpactPct"),
             pool_address=result.get("poolAddress"),
             route_path=result.get("routePath"),
-            slippage_pct=(_dec("slippagePct")
-                          or (request.slippage_pct if request.slippage_pct is not None else Decimal("1.0"))),
+            slippage_pct=(_dec("slippagePct") if result.get("slippagePct") is not None
+                          else request.slippage_pct),
         )
 
     except HTTPException:
@@ -129,13 +152,16 @@ async def execute_swap(
         trading_pair: 'SOL-USDC'
         side: 'BUY'
         amount: 1
-        slippage_pct: 1
+        slippage_pct: 1  (optional; omit to use the connector's configured slippagePct)
         wallet_address: (optional, uses default if not provided)
+        extra_params: {"approximateIfNoExactOut": false}  # Solana routers
 
     Returns:
         Transaction hash and swap details
     """
     try:
+        validate_swap_extra_params(request.extra_params)
+
         if not await accounts_service.gateway_client.ping():
             raise HTTPException(status_code=503, detail="Gateway service is not available")
 
@@ -160,7 +186,8 @@ async def execute_swap(
             quote_asset=quote,
             amount=float(request.amount),
             side=request.side,
-            slippage_pct=float(request.slippage_pct) if request.slippage_pct is not None else 1.0
+            slippage_pct=float(request.slippage_pct) if request.slippage_pct is not None else None,
+            extra_params=request.extra_params
         ))
         transaction_hash = result.get("signature") or result.get("txHash") or result.get("hash")
         if not transaction_hash:
@@ -200,7 +227,7 @@ async def execute_swap(
                     "input_amount": float(input_amount),
                     "output_amount": float(output_amount),
                     "price": float(price),
-                    "slippage_pct": float(request.slippage_pct) if request.slippage_pct is not None else 1.0,
+                    "slippage_pct": float(request.slippage_pct) if request.slippage_pct is not None else None,
                     "status": tx_status,
                     "pool_address": result.get("poolAddress") or result.get("pool_address")
                 }

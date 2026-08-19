@@ -21,7 +21,12 @@ class SwapQuoteRequest(BaseModel):
     trading_pair: str = Field(description="Trading pair in BASE-QUOTE format (e.g., 'SOL-USDC')")
     side: str = Field(description="Trade side: 'BUY' or 'SELL'")
     amount: Decimal = Field(description="Amount to swap (in base token for SELL, quote token for BUY)")
-    slippage_pct: Optional[Decimal] = Field(default=1.0, description="Maximum slippage percentage (default: 1.0)")
+    slippage_pct: Optional[Decimal] = Field(
+        default=None, description="Maximum slippage percentage; omit to use the connector's configured slippagePct")
+    extra_params: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Connector-specific params passed through to Gateway under its own names: "
+        "approximateIfNoExactOut (Solana routers). Unknown keys are rejected.")
 
 
 class SwapQuoteResponse(BaseModel):
@@ -49,7 +54,9 @@ class SwapQuoteResponse(BaseModel):
         default=None, description="Price impact of this trade size on the route")
     pool_address: Optional[str] = Field(default=None, description="Pool the quote was priced against")
     route_path: Optional[str] = Field(default=None, description="Route taken (router connectors)")
-    slippage_pct: Decimal = Field(description="Slippage percentage Gateway applied to the quote")
+    slippage_pct: Optional[Decimal] = Field(
+        default=None,
+        description="Slippage percentage Gateway applied to the quote (the request value when Gateway omits it)")
 
 
 class SwapExecuteRequest(BaseModel):
@@ -59,8 +66,13 @@ class SwapExecuteRequest(BaseModel):
     trading_pair: str = Field(description="Trading pair (e.g., 'SOL-USDC')")
     side: str = Field(description="Trade side: 'BUY' or 'SELL'")
     amount: Decimal = Field(description="Amount to swap")
-    slippage_pct: Optional[Decimal] = Field(default=1.0, description="Maximum slippage percentage (default: 1.0)")
+    slippage_pct: Optional[Decimal] = Field(
+        default=None, description="Maximum slippage percentage; omit to use the connector's configured slippagePct")
     wallet_address: Optional[str] = Field(default=None, description="Wallet address (optional, uses default if not provided)")
+    extra_params: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Connector-specific params passed through to Gateway under its own names: "
+        "approximateIfNoExactOut (Solana routers). Unknown keys are rejected.")
 
 
 class SwapExecuteResponse(BaseModel):
@@ -89,7 +101,8 @@ class CLMMOpenPositionRequest(BaseModel):
     # Initial liquidity
     base_token_amount: Optional[Decimal] = Field(default=None, description="Amount of base token to add")
     quote_token_amount: Optional[Decimal] = Field(default=None, description="Amount of quote token to add")
-    slippage_pct: Optional[Decimal] = Field(default=1.0, description="Maximum slippage percentage (default: 1.0)")
+    slippage_pct: Optional[Decimal] = Field(
+        default=None, description="Maximum slippage percentage; omit to use the connector's configured slippagePct")
     wallet_address: Optional[str] = Field(default=None, description="Wallet address (optional, uses default if not provided)")
 
     # Connector-specific parameters (e.g., strategyType for Meteora)
@@ -122,8 +135,12 @@ class CLMMAddLiquidityRequest(BaseModel):
     position_address: str = Field(description="Existing position address to add liquidity to")
     base_token_amount: Optional[Decimal] = Field(default=None, description="Amount of base token to add")
     quote_token_amount: Optional[Decimal] = Field(default=None, description="Amount of quote token to add")
-    slippage_pct: Optional[Decimal] = Field(default=1.0, description="Maximum slippage percentage (default: 1.0)")
+    slippage_pct: Optional[Decimal] = Field(
+        default=None, description="Maximum slippage percentage; omit to use the connector's configured slippagePct")
     wallet_address: Optional[str] = Field(default=None, description="Wallet address (optional, uses default if not provided)")
+
+    # Connector-specific parameters (e.g., strategyType for Meteora)
+    extra_params: Optional[Dict[str, Any]] = Field(default=None, description="Additional connector-specific parameters")
 
 
 class CLMMRemoveLiquidityRequest(BaseModel):
@@ -132,6 +149,10 @@ class CLMMRemoveLiquidityRequest(BaseModel):
     network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta')")
     position_address: str = Field(description="Position address to remove liquidity from")
     percentage: Decimal = Field(description="Percentage of liquidity to remove (0-100)")
+    slippage_pct: Optional[Decimal] = Field(
+        default=None,
+        description="Maximum slippage percentage. Only honored by the Orca connector; "
+        "omit to use the connector's configured slippagePct")
     wallet_address: Optional[str] = Field(default=None, description="Wallet address (optional, uses default if not provided)")
 
 
@@ -228,8 +249,9 @@ class CLMMCreatePoolRequest(BaseModel):
     extra_params: Optional[Dict[str, Any]] = Field(
         default=None,
         description="Connector-specific create params, passed through to Gateway under its own "
-        "names: binStep/feeBps (meteora), ammConfigIndex (raydium), fee/tickSpacing (orca), "
-        "ammConfig (pancakeswap-sol), gasPrice/maxGas (EVM connectors). Unknown keys are rejected.")
+        "names: binStep (meteora, orca), feeBps (meteora; required for uniswap/pancakeswap — the "
+        "V3 fee tier in basis points), ammConfigIndex (raydium, pancakeswap-sol). "
+        "Unknown keys are rejected.")
 
 
 class CLMMPositionsOwnedRequest(BaseModel):
@@ -420,7 +442,8 @@ class AMMExecuteSwapRequest(BaseModel):
     base_token: str = Field(description="Token that defines the swap direction (symbol or address)")
     side: str = Field(description="Trade direction: BUY or SELL")
     amount: Decimal = Field(description="Amount to swap")
-    slippage_pct: Optional[Decimal] = Field(default=1.0, description="Maximum slippage percentage (default: 1.0)")
+    slippage_pct: Optional[Decimal] = Field(
+        default=None, description="Maximum slippage percentage; omit to use the connector's configured slippagePct")
     wallet_address: Optional[str] = Field(default=None, description="Wallet address (optional, uses default)")
 
 
@@ -461,7 +484,8 @@ class AMMAddLiquidityRequest(BaseModel):
     pool_address: str = Field(description="Pool contract address")
     base_token_amount: Decimal = Field(description="Amount of base token to add")
     quote_token_amount: Decimal = Field(description="Amount of quote token to add")
-    slippage_pct: Optional[Decimal] = Field(default=1.0, description="Maximum slippage percentage (default: 1.0)")
+    slippage_pct: Optional[Decimal] = Field(
+        default=None, description="Maximum slippage percentage; omit to use the connector's configured slippagePct")
     wallet_address: Optional[str] = Field(default=None, description="Wallet address (optional, uses default)")
     # Meteora DAMM v2: add to this specific NFT position; omit to open a NEW position. Ignored by fungible-LP AMMs.
     position_address: Optional[str] = Field(default=None, description="Meteora position to add to (omit = new position)")
@@ -488,12 +512,16 @@ class AMMCreatePoolRequest(BaseModel):
     base_token_amount: Decimal = Field(description="Amount of base token to seed the pool with")
     quote_token_amount: Optional[Decimal] = Field(default=None, description="Amount of quote to seed (sets price if given)")
     initial_price: Optional[Decimal] = Field(default=None, description="Initial price (quote per base); overrides quote amount")
+    slippage_pct: Optional[Decimal] = Field(
+        default=None,
+        description="Seeding slippage percentage (uniswap/pancakeswap only); "
+        "omit to use the connector's configured slippagePct")
     wallet_address: Optional[str] = Field(default=None, description="Wallet address (optional, uses default)")
     extra_params: Optional[Dict[str, Any]] = Field(
         default=None,
         description="Connector-specific create params, passed through to Gateway under its own "
-        "names: configAddress (meteora DAMM v2, required there), feeConfigIndex/openTime (raydium "
-        "CPMM), gasPrice/maxGas/slippagePct (uniswap/EVM). Unknown keys are rejected.")
+        "names: configAddress (meteora DAMM v2, required there), ammConfigIndex (raydium CPMM). "
+        "Unknown keys are rejected.")
 
 
 class AMMCreatePoolResponse(BaseModel):

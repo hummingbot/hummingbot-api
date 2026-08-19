@@ -440,7 +440,8 @@ class GatewayClient:
         quote_asset: str,
         amount: float,
         side: str,
-        slippage_pct: Optional[float] = None
+        slippage_pct: Optional[float] = None,
+        extra_params: Optional[Dict] = None
     ) -> Dict:
         """
         Get a swap quote via Gateway's unified /trading/swap/quote endpoint.
@@ -450,6 +451,8 @@ class GatewayClient:
                 ('jupiter/router', 'raydium/amm', 'meteora/clmm').
             chain_network: 'chain-network' format (e.g. 'solana-mainnet-beta').
                 For amm/clmm providers Gateway resolves the pool from its pool list.
+            extra_params: Connector-specific query params under Gateway's own names
+                (e.g. approximateIfNoExactOut). The router validates keys first.
         """
         params = {
             "chainNetwork": chain_network,
@@ -461,6 +464,11 @@ class GatewayClient:
         }
         if slippage_pct is not None:
             params["slippagePct"] = str(slippage_pct)
+        if extra_params:
+            # Query params must be strings for aiohttp; Gateway's schema coerces
+            # "true"/"false" back to booleans.
+            for key, value in extra_params.items():
+                params[key] = str(value).lower() if isinstance(value, bool) else str(value)
 
         return await self._request("GET", "trading/swap/quote", params=params)
 
@@ -473,9 +481,14 @@ class GatewayClient:
         quote_asset: str,
         amount: float,
         side: str,
-        slippage_pct: Optional[float] = None
+        slippage_pct: Optional[float] = None,
+        extra_params: Optional[Dict] = None
     ) -> Dict:
-        """Execute a swap via Gateway's unified /trading/swap/execute endpoint."""
+        """Execute a swap via Gateway's unified /trading/swap/execute endpoint.
+
+        extra_params carries connector-specific params under Gateway's own names
+        (e.g. approximateIfNoExactOut). The router validates keys first.
+        """
         payload = {
             "chainNetwork": chain_network,
             "connector": self.normalize_swap_connector(connector),
@@ -487,6 +500,8 @@ class GatewayClient:
         }
         if slippage_pct is not None:
             payload["slippagePct"] = slippage_pct
+        if extra_params:
+            payload.update(extra_params)
 
         return await self._request("POST", "trading/swap/execute", json=payload)
 
@@ -537,7 +552,8 @@ class GatewayClient:
         position_address: str,
         base_token_amount: Optional[float] = None,
         quote_token_amount: Optional[float] = None,
-        slippage_pct: Optional[float] = None
+        slippage_pct: Optional[float] = None,
+        extra_params: Optional[Dict] = None
     ) -> Dict:
         """Add more liquidity to an existing CLMM position"""
         payload = {
@@ -552,6 +568,10 @@ class GatewayClient:
             payload["quoteTokenAmount"] = quote_token_amount
         if slippage_pct is not None:
             payload["slippagePct"] = slippage_pct
+
+        # Connector-specific parameters (e.g. Meteora's strategyType)
+        if extra_params:
+            payload.update(extra_params)
 
         return await self._request("POST", "trading/clmm/add", json=payload)
 
@@ -576,16 +596,24 @@ class GatewayClient:
         chain_network: str,
         wallet_address: str,
         position_address: str,
-        percentage: float
+        percentage: float,
+        slippage_pct: Optional[float] = None
     ) -> Dict:
-        """Remove liquidity from a CLMM position (partial)"""
-        return await self._request("POST", "trading/clmm/remove", json={
+        """Remove liquidity from a CLMM position (partial).
+
+        slippage_pct is only honored by the Orca connector; others ignore it.
+        """
+        payload = {
             "connector": connector,
             "chainNetwork": chain_network,
             "walletAddress": wallet_address,
             "positionAddress": position_address,
             "percentageToRemove": percentage
-        })
+        }
+        if slippage_pct is not None:
+            payload["slippagePct"] = slippage_pct
+
+        return await self._request("POST", "trading/clmm/remove", json=payload)
 
     async def clmm_position_info(
         self,
@@ -689,9 +717,9 @@ class GatewayClient:
         """Create a new (empty) CLMM pool.
 
         extra_params carries the connector-specific create params under Gateway's own
-        names (binStep, feeBps, ammConfigIndex, fee, tickSpacing, ammConfig, gasPrice,
-        maxGas) and is spread into the payload — the same contract as clmm open's
-        extra_params. The router validates keys before this is called.
+        names (binStep, feeBps, ammConfigIndex) and is spread into the payload — the
+        same contract as clmm open's extra_params. The router validates keys before
+        this is called.
         """
         payload = {
             "connector": connector,
@@ -939,14 +967,16 @@ class GatewayClient:
         base_token_amount: float,
         quote_token_amount: Optional[float] = None,
         initial_price: Optional[float] = None,
+        slippage_pct: Optional[float] = None,
         extra_params: Optional[Dict] = None,
     ) -> Dict:
         """Create and seed a new AMM pool.
 
-        extra_params carries the connector-specific create params under Gateway's own
-        names (configAddress, feeConfigIndex, openTime, gasPrice, maxGas, slippagePct)
-        and is spread into the payload — the same contract as clmm open's extra_params.
-        The router validates keys before this is called.
+        slippage_pct is the seeding slippage (uniswap/pancakeswap only); omitted, the
+        connector's configured slippagePct applies. extra_params carries the
+        connector-specific create params under Gateway's own names (configAddress,
+        ammConfigIndex) and is spread into the payload — the same contract as clmm
+        open's extra_params. The router validates keys before this is called.
         """
         payload = {
             "connector": connector,
@@ -961,6 +991,8 @@ class GatewayClient:
             payload["quoteTokenAmount"] = quote_token_amount
         if initial_price is not None:
             payload["initialPrice"] = initial_price
+        if slippage_pct is not None:
+            payload["slippagePct"] = slippage_pct
         if extra_params:
             payload.update(extra_params)
         return await self._request("POST", "trading/amm/create-pool", json=payload)

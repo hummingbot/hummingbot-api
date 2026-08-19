@@ -353,7 +353,7 @@ async def open_clmm_position(
         upper_price: 250
         base_token_amount: 0.01
         quote_token_amount: 2
-        slippage_pct: 1
+        slippage_pct: 1  (optional; omit to use the connector's configured slippagePct)
         wallet_address: (optional)
         extra_params: {"strategyType": 0}  # Meteora-specific
 
@@ -394,7 +394,8 @@ async def open_clmm_position(
         # opening a position without knowing its tokens would corrupt the position record.
         pool_info = check_gateway_error(await accounts_service.gateway_client.clmm_pool_info(
             connector=request.connector,
-            chain_network=request.network
+            chain_network=request.network,
+            pool_address=request.pool_address
         ))
 
         # Extract tokens from pool info
@@ -421,7 +422,7 @@ async def open_clmm_position(
             upper_price=float(request.upper_price),
             base_token_amount=float(request.base_token_amount) if request.base_token_amount else None,
             quote_token_amount=float(request.quote_token_amount) if request.quote_token_amount else None,
-            slippage_pct=float(request.slippage_pct) if request.slippage_pct is not None else 1.0,
+            slippage_pct=float(request.slippage_pct) if request.slippage_pct is not None else None,
             extra_params=request.extra_params
         ))
 
@@ -557,13 +558,29 @@ async def add_liquidity_to_clmm_position(
         position_address: '...'
         base_token_amount: 0.5
         quote_token_amount: 50.0
-        slippage_pct: 1
+        slippage_pct: 1  (optional; omit to use the connector's configured slippagePct)
         wallet_address: (optional)
+        extra_params: {"strategyType": 0}  # Meteora-specific
 
     Returns:
         Transaction hash
     """
     try:
+        # Same contract as /clmm/open: Gateway's unified add destructures ONLY
+        # strategyType from the body and silently drops any other key.
+        supported_extra_params = {"strategyType"}
+        if request.extra_params:
+            unknown = set(request.extra_params) - supported_extra_params
+            if unknown:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Unsupported extra_params {sorted(unknown)}: Gateway's unified "
+                        f"/trading/clmm/add honors only {sorted(supported_extra_params)} "
+                        "and silently ignores everything else."
+                    )
+                )
+
         if not await accounts_service.gateway_client.ping():
             raise HTTPException(status_code=503, detail="Gateway service is not available")
 
@@ -584,7 +601,8 @@ async def add_liquidity_to_clmm_position(
             position_address=request.position_address,
             base_token_amount=float(request.base_token_amount) if request.base_token_amount else None,
             quote_token_amount=float(request.quote_token_amount) if request.quote_token_amount else None,
-            slippage_pct=float(request.slippage_pct) if request.slippage_pct is not None else 1.0
+            slippage_pct=float(request.slippage_pct) if request.slippage_pct is not None else None,
+            extra_params=request.extra_params
         ))
 
         transaction_hash = result.get("signature") or result.get("txHash") or result.get("hash")
@@ -667,6 +685,7 @@ async def remove_liquidity_from_clmm_position(
         network: 'solana-mainnet-beta'
         position_address: '...'
         percentage: 50
+        slippage_pct: 1  (optional; Orca only — other connectors ignore it)
         wallet_address: (optional)
 
     Returns:
@@ -691,7 +710,8 @@ async def remove_liquidity_from_clmm_position(
             chain_network=request.network,
             wallet_address=wallet_address,
             position_address=request.position_address,
-            percentage=float(request.percentage)
+            percentage=float(request.percentage),
+            slippage_pct=float(request.slippage_pct) if request.slippage_pct is not None else None
         ))
 
         transaction_hash = result.get("signature") or result.get("txHash") or result.get("hash")
@@ -1301,12 +1321,11 @@ async def create_clmm_pool(
     under Gateway's own names — the same contract as open's extra_params.
     """
     try:
-        # Gateway's unified create-pool destructures exactly these; anything else
-        # would be silently ignored there, so reject it loudly here.
-        supported_extra_params = {
-            "binStep", "feeBps", "ammConfigIndex", "fee", "tickSpacing",
-            "ammConfig", "gasPrice", "maxGas",
-        }
+        # Gateway's unified create-pool destructures exactly these (binStep for
+        # meteora/orca, feeBps for meteora + EVM V3 fee tier, ammConfigIndex for
+        # raydium/pancakeswap-sol); anything else would be silently ignored there,
+        # so reject it loudly here.
+        supported_extra_params = {"binStep", "feeBps", "ammConfigIndex"}
         if request.extra_params:
             unknown = set(request.extra_params) - supported_extra_params
             if unknown:
