@@ -181,3 +181,5 @@ bots/conf/
 .idea/
 improvements
 bots/gateway-files/
+.DS_Store
+Dockerfile.patched-hummingbot
