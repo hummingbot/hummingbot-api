@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 # Connectors whose bare name maps to a router-type swap provider on Gateway.
 # All other connectors default to their CLMM route (meteora, orca, raydium, pancakeswap-sol).
-ROUTER_CONNECTORS = {"jupiter", "0x", "uniswap", "pancakeswap"}
+ROUTER_CONNECTORS = {"jupiter", "0x", "uniswap", "pancakeswap", "dflow", "okx", "titan"}
 
 
 class GatewayError(Exception):
@@ -775,30 +775,40 @@ class GatewayClient:
         self,
         connector: str,
         network: str,
-        page: int = 0,
         limit: int = 50,
         query: Optional[str] = None,
         sort_by: Optional[str] = None,
-        include_unverified: bool = True
+        page: Optional[int] = None,
+        include_unverified: Optional[bool] = None,
+        sort_direction: Optional[str] = None,
+        verified_only: Optional[bool] = None
     ) -> Dict:
         """
         Discover CLMM pools from the connector's own listing API (meteora, orca).
 
         This is a per-connector Gateway route (no unified equivalent): it proxies the
-        DEX's pool-discovery API rather than Gateway's saved pool list.
+        DEX's pool-discovery API rather than Gateway's saved pool list. The schemas
+        differ per connector — meteora takes page/includeUnverified and a
+        "field:direction" sortBy; orca takes sortDirection/verifiedOnly and does not
+        paginate. Only keys the caller sets are sent; AJV strips unknown keys
+        Gateway-side, so sending the wrong connector's knob would be a silent no-op.
         """
         params = {
             "network": network,
             "limit": limit,
         }
-        if page > 0:
-            params["page"] = page
         if query:
             params["query"] = query
         if sort_by:
             params["sortBy"] = sort_by
-        if not include_unverified:
-            params["includeUnverified"] = "false"
+        if page is not None and page > 0:
+            params["page"] = page
+        if include_unverified is not None:
+            params["includeUnverified"] = "true" if include_unverified else "false"
+        if sort_direction:
+            params["sortDirection"] = sort_direction
+        if verified_only is not None:
+            params["verifiedOnly"] = "true" if verified_only else "false"
 
         return await self._request("GET", f"connectors/{connector}/clmm/fetch-pools", params=params)
 
@@ -854,7 +864,7 @@ class GatewayClient:
             "chainNetwork": chain_network,
             "poolAddress": pool_address,
             "baseToken": base_token,
-            "side": side,
+            "side": side.upper(),
             "amount": amount,
         }
         if slippage_pct is not None:
@@ -879,7 +889,7 @@ class GatewayClient:
             "walletAddress": wallet_address,
             "poolAddress": pool_address,
             "baseToken": base_token,
-            "side": side,
+            "side": side.upper(),
             "amount": amount,
         }
         if slippage_pct is not None:
@@ -1015,7 +1025,9 @@ class GatewayClient:
 
         Returns:
             Transaction status dict with fields:
-            - txStatus: 1 for confirmed, 0 for pending, -1 for failed
+            - txStatus: 1 confirmed, 0 pending, -1 failed, -2 not found
+              (-2 is terminal on Solana once the blockhash expires — treat it
+              as dropped, not merely pending)
             - fee: Transaction fee amount
             - error: Parsed error message if transaction failed (e.g., "SLIPPAGE_EXCEEDED (0x1771): ...")
             - txData: Full transaction data including meta.err

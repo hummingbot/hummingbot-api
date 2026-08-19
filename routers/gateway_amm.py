@@ -32,12 +32,21 @@ from models import (
     AMMRemoveLiquidityRequest,
     AMMTransactionResponse,
 )
+from routers.gateway_extras import ExtraParamsSpec, validate_extra_params
 from services.accounts_service import AccountsService
 from services.gateway_client import GatewayError, check_gateway_error
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Gateway AMM"], prefix="/gateway")
+
+# Gateway's unified create-pool destructure, per consuming connector:
+# configAddress (meteora DAMM v2 — required there), ammConfigIndex (raydium CPMM).
+# EVM seeding slippage is the standard slippage_pct field, not an extra param.
+AMM_CREATE_POOL_EXTRA_PARAMS_SPEC: ExtraParamsSpec = {
+    "configAddress": ((str,), {"meteora"}),
+    "ammConfigIndex": ((int,), {"raydium"}),
+}
 
 
 async def _require_gateway(accounts_service: AccountsService) -> None:
@@ -295,19 +304,9 @@ async def create_amm_pool(
     extra_params. Seeding slippage for uniswap/pancakeswap is the standard slippage_pct field.
     """
     try:
-        # Gateway's unified create-pool destructures exactly these; anything else
-        # would be silently ignored there, so reject it loudly here.
-        supported_extra_params = {"configAddress", "ammConfigIndex"}
+        validate_extra_params(request.extra_params, AMM_CREATE_POOL_EXTRA_PARAMS_SPEC,
+                              request.connector, "unified /trading/amm/create-pool")
         extra_params = request.extra_params or {}
-        unknown = set(extra_params) - supported_extra_params
-        if unknown:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Unsupported extra_params {sorted(unknown)}: Gateway's unified "
-                    f"/trading/amm/create-pool honors only {sorted(supported_extra_params)}."
-                )
-            )
         if request.connector == "meteora" and not extra_params.get("configAddress"):
             raise HTTPException(
                 status_code=400,

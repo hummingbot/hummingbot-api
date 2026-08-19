@@ -42,6 +42,11 @@ def client_and_calls(monkeypatch):
     ("0x", "0x/router"),
     ("uniswap", "uniswap/router"),
     ("pancakeswap", "pancakeswap/router"),
+    # The full Solana router roster Gateway routes as first-class providers —
+    # a bare name missing here would misroute to /clmm and 404.
+    ("dflow", "dflow/router"),
+    ("okx", "okx/router"),
+    ("titan", "titan/router"),
     ("meteora", "meteora/clmm"),
     ("orca", "orca/clmm"),
     ("raydium", "raydium/clmm"),
@@ -269,11 +274,33 @@ async def test_clmm_pool_info_uses_unified_endpoint(client_and_calls):
 
 
 @pytest.mark.asyncio
-async def test_clmm_fetch_pools_path(client_and_calls):
+async def test_clmm_fetch_pools_meteora_params(client_and_calls):
+    """Meteora's fetch-pools paginates and filters via page/includeUnverified."""
     client, calls = client_and_calls
-    await client.clmm_fetch_pools(connector="meteora", network="mainnet-beta", limit=10)
+    await client.clmm_fetch_pools(connector="meteora", network="mainnet-beta", limit=10,
+                                  sort_by="volume_24h:desc", page=2, include_unverified=False)
     call = calls[0]
     assert (call["method"], call["path"]) == ("GET", "connectors/meteora/clmm/fetch-pools")
+    assert call["params"]["page"] == 2
+    assert call["params"]["includeUnverified"] == "false"
+    assert call["params"]["sortBy"] == "volume_24h:desc"
+    for orca_only in ("sortDirection", "verifiedOnly"):
+        assert orca_only not in call["params"]
+
+
+@pytest.mark.asyncio
+async def test_clmm_fetch_pools_orca_params(client_and_calls):
+    """Orca's fetch-pools takes sortDirection/verifiedOnly and has no pagination —
+    sending meteora's knobs would be silently stripped by Gateway's AJV."""
+    client, calls = client_and_calls
+    await client.clmm_fetch_pools(connector="orca", network="mainnet-beta", limit=10,
+                                  sort_by="volume", sort_direction="desc", verified_only=True)
+    call = calls[0]
+    assert (call["method"], call["path"]) == ("GET", "connectors/orca/clmm/fetch-pools")
+    assert call["params"]["sortDirection"] == "desc"
+    assert call["params"]["verifiedOnly"] == "true"
+    for meteora_only in ("page", "includeUnverified"):
+        assert meteora_only not in call["params"]
 
 
 # ============================================
@@ -362,12 +389,14 @@ async def test_amm_quote_swap_path_and_slippage_omitted(client_and_calls):
 async def test_amm_execute_swap_path(client_and_calls):
     client, calls = client_and_calls
     await client.amm_execute_swap(connector="uniswap", chain_network="ethereum-mainnet", wallet_address=WALLET,
-                                  pool_address=POOL, base_token="WETH", side="BUY", amount=1.0, slippage_pct=0.5)
+                                  pool_address=POOL, base_token="WETH", side="buy", amount=1.0, slippage_pct=0.5)
     c = calls[0]
     assert (c["method"], c["path"]) == ("POST", "trading/amm/execute-swap")
     assert c["json"]["walletAddress"] == WALLET
     assert c["json"]["chainNetwork"] == "ethereum-mainnet"
     assert c["json"]["slippagePct"] == 0.5
+    # Gateway's schema enum-rejects lowercase; the client normalizes like the unified swap path
+    assert c["json"]["side"] == "BUY"
 
 
 @pytest.mark.asyncio

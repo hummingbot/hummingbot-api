@@ -31,12 +31,28 @@ from models import (
     CLMMQuotePositionResponse,
     CLMMRemoveLiquidityRequest,
 )
+from routers.gateway_extras import ExtraParamsSpec, validate_extra_params
 from services.accounts_service import AccountsService
 from services.gateway_client import GatewayError, check_gateway_error
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Gateway CLMM"], prefix="/gateway")
+
+# Gateway's unified open/add destructure ONLY strategyType, and only Meteora
+# consumes it (Spot=0 / Curve=1).
+CLMM_LIQUIDITY_EXTRA_PARAMS_SPEC: ExtraParamsSpec = {
+    "strategyType": ((int,), {"meteora"}),
+}
+
+# Gateway's unified create-pool destructure, per consuming connector: binStep
+# (meteora bin step / orca tick spacing), feeBps (meteora; required V3 fee tier
+# for uniswap/pancakeswap), ammConfigIndex (raydium, pancakeswap-sol).
+CLMM_CREATE_POOL_EXTRA_PARAMS_SPEC: ExtraParamsSpec = {
+    "binStep": ((int,), {"meteora", "orca"}),
+    "feeBps": ((int, float), {"meteora", "uniswap", "pancakeswap"}),
+    "ammConfigIndex": ((int,), {"raydium", "pancakeswap-sol"}),
+}
 
 
 def get_transaction_status_from_response(gateway_response: dict) -> str:
@@ -275,25 +291,37 @@ async def get_clmm_pools(
 
         logger.info(f"Fetching pools from Gateway ({connector}, page={page}, limit={limit}, query={search_term})")
 
-        # Build sort_by for Gateway (connector-specific format)
-        sort_by = None
-        if sort_key:
-            if connector.lower() == "meteora":
-                time_suffix = "_24h" if sort_key in ["volume", "fees"] else ""
-                direction = order_by if order_by else "desc"
-                sort_by = f"{sort_key}{time_suffix}:{direction}"
-            else:  # orca
-                sort_by = sort_key
-
-        gateway_data = check_gateway_error(await accounts_service.gateway_client.clmm_fetch_pools(
-            connector=connector.lower(),
-            network="mainnet-beta",
-            page=page,
-            limit=limit,
-            query=search_term,
-            sort_by=sort_by,
-            include_unverified=include_unknown
-        ))
+        # The two fetch-pools routes take different params: meteora paginates and
+        # filters via page/includeUnverified with "field:direction" sortBy; orca does
+        # not paginate and uses sortBy + sortDirection + verifiedOnly.
+        if connector.lower() == "meteora":
+            time_suffix = "_24h" if sort_key in ["volume", "fees"] else ""
+            direction = order_by if order_by else "desc"
+            gateway_data = check_gateway_error(await accounts_service.gateway_client.clmm_fetch_pools(
+                connector="meteora",
+                network="mainnet-beta",
+                limit=limit,
+                query=search_term,
+                sort_by=f"{sort_key}{time_suffix}:{direction}" if sort_key else None,
+                page=page,
+                include_unverified=include_unknown
+            ))
+        else:  # orca
+            if page > 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Orca's pool listing does not paginate; page is meteora-only. "
+                           "Raise limit instead (max 100)."
+                )
+            gateway_data = check_gateway_error(await accounts_service.gateway_client.clmm_fetch_pools(
+                connector="orca",
+                network="mainnet-beta",
+                limit=limit,
+                query=search_term,
+                sort_by=sort_key,
+                sort_direction=order_by,
+                verified_only=not include_unknown
+            ))
 
         # Transform Gateway response to our format
         # Both Meteora and Orca now return same format: {pools: [...], total, page, pageSize}
@@ -358,25 +386,13 @@ async def open_clmm_position(
         extra_params: {"strategyType": 0}  # Meteora-specific
 
     Returns:
-        Transaction hash and position address
+        Transaction hash and position address. position_address is None when the
+        transaction was submitted but not yet confirmed — poll the transaction; the
+        poller's discovery sweep records the position once it lands on-chain.
     """
     try:
-        # Gateway's unified open destructures ONLY strategyType from the body; any other
-        # extra_params key is silently dropped there. Reject unknown keys here so a typo
-        # (or a connector param the unified route does not carry) fails loudly instead of
-        # opening a position with the parameter ignored.
-        supported_extra_params = {"strategyType"}
-        if request.extra_params:
-            unknown = set(request.extra_params) - supported_extra_params
-            if unknown:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"Unsupported extra_params {sorted(unknown)}: Gateway's unified "
-                        f"/trading/clmm/open honors only {sorted(supported_extra_params)} "
-                        "and silently ignores everything else."
-                    )
-                )
+        validate_extra_params(request.extra_params, CLMM_LIQUIDITY_EXTRA_PARAMS_SPEC,
+                              request.connector, "unified /trading/clmm/open")
 
         if not await accounts_service.gateway_client.ping():
             raise HTTPException(status_code=503, detail="Gateway service is not available")
@@ -426,23 +442,51 @@ async def open_clmm_position(
             extra_params=request.extra_params
         ))
 
-        transaction_hash = result.get("signature") or result.get("txHash") or result.get("hash")
+        transaction_hash = result.get("signature")
+        if not transaction_hash:
+            raise HTTPException(status_code=500, detail="No transaction signature returned from Gateway")
 
-        # Position address can be at root level or nested in data object
-        data = result.get("data", {})
-        position_address = (result.get("positionAddress") or result.get("position")
-                            or data.get("positionAddress") or data.get("position"))
+        # Gateway's OpenPositionResponse carries position details only inside `data`,
+        # which is present only for CONFIRMED transactions (the response schema strips
+        # any other key, so there is no top-level fallback to read).
+        data = result.get("data") or {}
+        position_address = data.get("positionAddress")
+        tx_status = get_transaction_status_from_response(result)
+
+        if not position_address:
+            if tx_status == "CONFIRMED":
+                raise HTTPException(
+                    status_code=500,
+                    detail="Gateway confirmed the open but returned no position address")
+            # Submitted-not-confirmed: the position address is unknowable until the tx
+            # lands. The tx IS in flight, so failing here would report a false failure
+            # and orphan the position; instead return the signature for the caller to
+            # poll — the transaction poller's discovery sweep records the position in
+            # the database once it appears on-chain.
+            logger.warning(
+                f"CLMM open submitted but not confirmed ({transaction_hash}); position address "
+                "unknown — the poller's discovery sweep will record the position once it lands")
+            return CLMMOpenPositionResponse(
+                transaction_hash=transaction_hash,
+                position_address=None,
+                trading_pair=trading_pair,
+                pool_address=request.pool_address,
+                lower_price=request.lower_price,
+                upper_price=request.upper_price,
+                base_token_amount_added=request.base_token_amount,
+                quote_token_amount_added=request.quote_token_amount,
+                position_rent=None,
+                status="submitted",
+            )
 
         # Extract position rent (SOL locked for position NFT)
         position_rent = data.get("positionRent")
         if position_rent:
             logger.info(f"Position rent: {position_rent} SOL")
 
-        # Prefer the CONFIRMED on-chain amounts over the requested ones: slippage and
-        # rounding make them differ, and persisting the request silently diverges the
-        # DB from the chain. data is only present when Gateway confirmed the tx, so
-        # the requested amounts remain the fallback for submitted-not-confirmed
-        # (reconciled later by the poller).
+        # CONFIRMED path: prefer the on-chain amounts over the requested ones —
+        # slippage and rounding make them differ, and persisting the request
+        # silently diverges the DB from the chain.
         base_amount_added = data.get("baseTokenAmountAdded")
         if base_amount_added is None:
             base_amount_added = float(request.base_token_amount) if request.base_token_amount else 0
@@ -450,19 +494,11 @@ async def open_clmm_position(
         if quote_amount_added is None:
             quote_amount_added = float(request.quote_token_amount) if request.quote_token_amount else 0
 
-        if not transaction_hash:
-            raise HTTPException(status_code=500, detail="No transaction hash returned from Gateway")
-        if not position_address:
-            raise HTTPException(status_code=500, detail="No position address returned from Gateway")
-
         # Calculate percentage: (upper_price - lower_price) / lower_price
         percentage = None
         if request.lower_price and request.upper_price and request.lower_price > 0:
             percentage = float((request.upper_price - request.lower_price) / request.lower_price)
             logger.info(f"Position price range percentage: {percentage:.4f} ({percentage*100:.2f}%)")
-
-        # Get transaction status from Gateway response
-        tx_status = get_transaction_status_from_response(result)
 
         # Extract gas fee from Gateway response
         gas_fee = data.get("fee")
@@ -529,7 +565,7 @@ async def open_clmm_position(
             base_token_amount_added=Decimal(str(base_amount_added)) if base_amount_added else None,
             quote_token_amount_added=Decimal(str(quote_amount_added)) if quote_amount_added else None,
             position_rent=Decimal(str(position_rent)) if position_rent else None,
-            status="submitted"
+            status="confirmed"
         )
 
     except HTTPException:
@@ -566,20 +602,8 @@ async def add_liquidity_to_clmm_position(
         Transaction hash
     """
     try:
-        # Same contract as /clmm/open: Gateway's unified add destructures ONLY
-        # strategyType from the body and silently drops any other key.
-        supported_extra_params = {"strategyType"}
-        if request.extra_params:
-            unknown = set(request.extra_params) - supported_extra_params
-            if unknown:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"Unsupported extra_params {sorted(unknown)}: Gateway's unified "
-                        f"/trading/clmm/add honors only {sorted(supported_extra_params)} "
-                        "and silently ignores everything else."
-                    )
-                )
+        validate_extra_params(request.extra_params, CLMM_LIQUIDITY_EXTRA_PARAMS_SPEC,
+                              request.connector, "unified /trading/clmm/add")
 
         if not await accounts_service.gateway_client.ping():
             raise HTTPException(status_code=503, detail="Gateway service is not available")
@@ -1321,21 +1345,8 @@ async def create_clmm_pool(
     under Gateway's own names — the same contract as open's extra_params.
     """
     try:
-        # Gateway's unified create-pool destructures exactly these (binStep for
-        # meteora/orca, feeBps for meteora + EVM V3 fee tier, ammConfigIndex for
-        # raydium/pancakeswap-sol); anything else would be silently ignored there,
-        # so reject it loudly here.
-        supported_extra_params = {"binStep", "feeBps", "ammConfigIndex"}
-        if request.extra_params:
-            unknown = set(request.extra_params) - supported_extra_params
-            if unknown:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"Unsupported extra_params {sorted(unknown)}: Gateway's unified "
-                        f"/trading/clmm/create-pool honors only {sorted(supported_extra_params)}."
-                    )
-                )
+        validate_extra_params(request.extra_params, CLMM_CREATE_POOL_EXTRA_PARAMS_SPEC,
+                              request.connector, "unified /trading/clmm/create-pool")
 
         if not await accounts_service.gateway_client.ping():
             raise HTTPException(status_code=503, detail="Gateway service is not available")

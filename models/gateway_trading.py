@@ -20,7 +20,9 @@ class SwapQuoteRequest(BaseModel):
     network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta', 'ethereum-mainnet')")
     trading_pair: str = Field(description="Trading pair in BASE-QUOTE format (e.g., 'SOL-USDC')")
     side: str = Field(description="Trade side: 'BUY' or 'SELL'")
-    amount: Decimal = Field(description="Amount to swap (in base token for SELL, quote token for BUY)")
+    amount: Decimal = Field(
+        description="Amount denominated in the BASE token (SELL: base to sell; BUY: base to receive — "
+        "Gateway quotes BUY as ExactOut)")
     slippage_pct: Optional[Decimal] = Field(
         default=None, description="Maximum slippage percentage; omit to use the connector's configured slippagePct")
     extra_params: Optional[Dict[str, Any]] = Field(
@@ -65,7 +67,8 @@ class SwapExecuteRequest(BaseModel):
     network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta')")
     trading_pair: str = Field(description="Trading pair (e.g., 'SOL-USDC')")
     side: str = Field(description="Trade side: 'BUY' or 'SELL'")
-    amount: Decimal = Field(description="Amount to swap")
+    amount: Decimal = Field(
+        description="Amount denominated in the BASE token (SELL: base to sell; BUY: base to receive)")
     slippage_pct: Optional[Decimal] = Field(
         default=None, description="Maximum slippage percentage; omit to use the connector's configured slippagePct")
     wallet_address: Optional[str] = Field(default=None, description="Wallet address (optional, uses default if not provided)")
@@ -112,7 +115,11 @@ class CLMMOpenPositionRequest(BaseModel):
 class CLMMOpenPositionResponse(BaseModel):
     """Response after opening a new CLMM position"""
     transaction_hash: str = Field(description="Transaction hash")
-    position_address: str = Field(description="Address of the newly created position")
+    position_address: Optional[str] = Field(
+        default=None,
+        description="Address of the newly created position. None when the transaction was "
+        "submitted but not yet confirmed (Gateway only knows the address once the tx lands) — "
+        "poll the transaction; the poller records the position once it appears on-chain")
     trading_pair: str = Field(description="Trading pair")
     pool_address: str = Field(description="Pool address")
     lower_price: Decimal = Field(description="Lower price bound")
@@ -334,7 +341,7 @@ class CLMMPoolInfoResponse(BaseModel):
     price: Decimal = Field(description="Current pool price")
     base_token_amount: Decimal = Field(alias="baseTokenAmount", description="Total base token liquidity")
     quote_token_amount: Decimal = Field(alias="quoteTokenAmount", description="Total quote token liquidity")
-    active_bin_id: Optional[int] = Field(None, alias="activeBinId", description="Currently active bin ID (Meteora DLMM only)")
+    active_bin_id: Optional[int] = Field(None, alias="activeBinId", description="Currently active bin/tick ID")
     # No dynamicFeePct/minBinId/maxBinId: those are Meteora connector extensions that
     # Gateway's unified /trading/clmm/pool-info response schema strips before serialization,
     # so they can never arrive here — and nothing downstream consumes them.

@@ -14,6 +14,7 @@ from database import AsyncDatabaseManager
 from database.repositories import GatewaySwapRepository
 from deps import get_accounts_service, get_database_manager
 from models import SwapExecuteRequest, SwapExecuteResponse, SwapQuoteRequest, SwapQuoteResponse
+from routers.gateway_extras import ExtraParamsSpec, validate_extra_params
 from services.accounts_service import AccountsService
 from services.gateway_client import GatewayError, check_gateway_error
 
@@ -44,23 +45,11 @@ def get_transaction_status_from_response(gateway_response: dict) -> str:
     return "SUBMITTED"
 
 
-# Gateway's unified /trading/swap routes destructure a fixed set of connector-specific
-# keys from the request and silently ignore anything else. Reject unknown extra_params
-# here so a typo fails loudly instead of quoting/trading with the parameter dropped.
-SUPPORTED_SWAP_EXTRA_PARAMS = {"approximateIfNoExactOut"}
-
-
-def validate_swap_extra_params(extra_params: Optional[dict]) -> None:
-    unknown = set(extra_params or {}) - SUPPORTED_SWAP_EXTRA_PARAMS
-    if unknown:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Unsupported extra_params {sorted(unknown)}: Gateway's unified "
-                f"/trading/swap routes honor only {sorted(SUPPORTED_SWAP_EXTRA_PARAMS)} "
-                "and silently ignore everything else."
-            )
-        )
+# Gateway's unified /trading/swap routes pass approximateIfNoExactOut only to the
+# Solana router connectors' quote path; every other provider silently ignores it.
+SWAP_EXTRA_PARAMS_SPEC: ExtraParamsSpec = {
+    "approximateIfNoExactOut": ((bool,), {"jupiter", "dflow", "okx", "titan"}),
+}
 
 
 @router.post("/swap/quote", response_model=SwapQuoteResponse)
@@ -84,7 +73,8 @@ async def get_swap_quote(
         Quote with price, expected output amount, and execution-safety fields
     """
     try:
-        validate_swap_extra_params(request.extra_params)
+        validate_extra_params(request.extra_params, SWAP_EXTRA_PARAMS_SPEC,
+                              request.connector, "unified /trading/swap/quote")
 
         if not await accounts_service.gateway_client.ping():
             raise HTTPException(status_code=503, detail="Gateway service is not available")
@@ -160,7 +150,8 @@ async def execute_swap(
         Transaction hash and swap details
     """
     try:
-        validate_swap_extra_params(request.extra_params)
+        validate_extra_params(request.extra_params, SWAP_EXTRA_PARAMS_SPEC,
+                              request.connector, "unified /trading/swap/execute")
 
         if not await accounts_service.gateway_client.ping():
             raise HTTPException(status_code=503, detail="Gateway service is not available")
@@ -193,19 +184,30 @@ async def execute_swap(
         if not transaction_hash:
             raise HTTPException(status_code=500, detail="No transaction hash returned from Gateway")
 
-        # Extract swap data from Gateway response
-        # Gateway returns amounts nested under 'data' object
+        # Gateway's `data` (present only when it confirmed the tx) speaks token flow:
+        # amountIn is the tokenIn amount — quote for BUY, base for SELL — and the DB
+        # columns keep that tokenIn/tokenOut denomination.
         data = result.get("data", {})
         amount_in_raw = data.get("amountIn")
         amount_out_raw = data.get("amountOut")
 
-        # Use amounts from Gateway response, fallback to request amount if not available
-        input_amount = Decimal(str(amount_in_raw)) if amount_in_raw is not None else request.amount
-        output_amount = Decimal(str(amount_out_raw)) if amount_out_raw is not None else Decimal("0")
-
-        # Calculate price from actual swap amounts
-        # Price = output / input (how much quote you get/pay per base)
-        price = output_amount / input_amount if input_amount > 0 else Decimal("0")
+        side = request.side.upper()
+        if amount_in_raw is not None and amount_out_raw is not None:
+            input_amount = Decimal(str(amount_in_raw))
+            output_amount = Decimal(str(amount_out_raw))
+            # Price in quote-per-base for both sides: SELL flows base->quote (out/in),
+            # BUY flows quote->base (in/out).
+            if side == "SELL":
+                price = output_amount / input_amount if input_amount > 0 else Decimal("0")
+            else:
+                price = input_amount / output_amount if output_amount > 0 else Decimal("0")
+        else:
+            # Submitted-not-confirmed: only the request leg of the flow is known —
+            # request.amount is base-denominated (SELL: base in, BUY: base out).
+            # The unknown leg and price stay 0 placeholders.
+            input_amount = request.amount if side == "SELL" else Decimal("0")
+            output_amount = request.amount if side == "BUY" else Decimal("0")
+            price = Decimal("0")
 
         # Get transaction status from Gateway response
         tx_status = get_transaction_status_from_response(result)
@@ -223,13 +225,14 @@ async def execute_swap(
                     "trading_pair": request.trading_pair,
                     "base_token": base,
                     "quote_token": quote,
-                    "side": request.side,
+                    "side": side,
                     "input_amount": float(input_amount),
                     "output_amount": float(output_amount),
                     "price": float(price),
                     "slippage_pct": float(request.slippage_pct) if request.slippage_pct is not None else None,
                     "status": tx_status,
-                    "pool_address": result.get("poolAddress") or result.get("pool_address")
+                    # Gateway's execute response schema carries no pool information
+                    "pool_address": None
                 }
 
                 await swap_repo.create_swap(swap_data)
