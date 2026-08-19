@@ -18,6 +18,22 @@ import pytest
 
 from services.gateway_client import GatewayClient, GatewayError, check_gateway_error
 
+# Gateway's own config/connectors listing decides an untyped connector's swap
+# type; these trading_types mirror what Gateway reports today.
+_CONNECTOR_LISTING = {"connectors": [
+    {"name": "jupiter", "trading_types": ["router"]},
+    {"name": "0x", "trading_types": ["router"]},
+    {"name": "uniswap", "trading_types": ["router", "amm", "clmm"]},
+    {"name": "pancakeswap", "trading_types": ["router", "amm", "clmm"]},
+    {"name": "dflow", "trading_types": ["router"]},
+    {"name": "okx", "trading_types": ["router"]},
+    {"name": "titan", "trading_types": ["router"]},
+    {"name": "meteora", "trading_types": ["clmm", "amm"]},
+    {"name": "orca", "trading_types": ["clmm"]},
+    {"name": "raydium", "trading_types": ["clmm", "amm"]},
+    {"name": "pancakeswap-sol", "trading_types": ["clmm"]},
+]}
+
 
 @pytest.fixture
 def client_and_calls(monkeypatch):
@@ -30,6 +46,11 @@ def client_and_calls(monkeypatch):
         return {}
 
     monkeypatch.setattr(client, "_request", fake_request)
+    # Pre-seed Gateway's connector listing so swap payload assertions see only
+    # the swap call itself, not the one-off discovery request behind it.
+    client._connector_trading_types = {
+        entry["name"]: entry["trading_types"] for entry in _CONNECTOR_LISTING["connectors"]
+    }
     return client, calls
 
 
@@ -37,13 +58,13 @@ def client_and_calls(monkeypatch):
 # Connector normalization
 # ============================================
 
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("connector,expected", [
     ("jupiter", "jupiter/router"),
     ("0x", "0x/router"),
     ("uniswap", "uniswap/router"),
     ("pancakeswap", "pancakeswap/router"),
-    # The full Solana router roster Gateway routes as first-class providers —
-    # a bare name missing here would misroute to /clmm and 404.
     ("dflow", "dflow/router"),
     ("okx", "okx/router"),
     ("titan", "titan/router"),
@@ -56,8 +77,21 @@ def client_and_calls(monkeypatch):
     ("meteora/clmm", "meteora/clmm"),
     ("raydium/amm", "raydium/amm"),
 ])
-def test_normalize_swap_connector(connector, expected):
-    assert GatewayClient.normalize_swap_connector(connector) == expected
+async def test_normalize_swap_connector(connector, expected):
+    client = GatewayClient()
+    client._connector_trading_types = {
+        entry["name"]: entry["trading_types"] for entry in _CONNECTOR_LISTING["connectors"]
+    }
+    assert await client.normalize_swap_connector(connector) == expected
+
+
+@pytest.mark.asyncio
+async def test_normalize_swap_connector_rejects_unknown_name():
+    client = GatewayClient()
+    client._connector_trading_types = {"jupiter": ["router"]}
+    with pytest.raises(GatewayError) as exc:
+        await client.normalize_swap_connector("nosuchdex")
+    assert "nosuchdex" in str(exc.value)
 
 
 # ============================================

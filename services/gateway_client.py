@@ -6,9 +6,11 @@ import aiohttp
 
 logger = logging.getLogger(__name__)
 
-# Connectors whose bare name maps to a router-type swap provider on Gateway.
-# All other connectors default to their CLMM route (meteora, orca, raydium, pancakeswap-sol).
-ROUTER_CONNECTORS = {"jupiter", "0x", "uniswap", "pancakeswap", "dflow", "okx", "titan"}
+# When a caller names a connector without a trading type, Gateway's own
+# config/connectors listing decides the type — preferring a router route, then
+# CLMM, then AMM. A hardcoded roster silently misrouted every connector Gateway
+# added after it was written.
+_SWAP_TYPE_PREFERENCE = ("router", "clmm", "amm")
 
 # The single source for chain -> native gas token. Every writer of gas_token
 # columns (routers and the transaction poller) must use this — drifted local
@@ -34,9 +36,13 @@ def get_native_gas_token(chain: str) -> str:
 class GatewayError(Exception):
     """A Gateway HTTP request that completed with a non-OK status."""
 
-    def __init__(self, message: str, status: int):
+    def __init__(self, message: str, status: int, code: Optional[str] = None):
         super().__init__(message)
         self.status = status
+        # Gateway's machine-readable error code (TRANSACTION_TIMEOUT,
+        # SLIPPAGE_EXCEEDED, ...). Callers branch on this instead of
+        # string-matching the message.
+        self.code = code
 
 
 def check_gateway_error(result: Optional[Any]) -> Any:
@@ -50,8 +56,8 @@ def check_gateway_error(result: Optional[Any]) -> Any:
     """
     if result is None:
         raise GatewayError("No response from Gateway (connection error)", 503)
-    if isinstance(result, dict) and set(result.keys()) == {"error", "status"}:
-        raise GatewayError(str(result["error"]), int(result["status"]))
+    if isinstance(result, dict) and {"error", "status"} <= set(result.keys()) <= {"error", "status", "code"}:
+        raise GatewayError(str(result["error"]), int(result["status"]), result.get("code"))
     return result
 
 
@@ -84,6 +90,8 @@ class GatewayClient:
         # while the Gateway is simply not started. Logged once on the transition, then suppressed
         # until certs become available again.
         self._certs_unavailable_warned = False
+        # Gateway's connector -> trading_types listing, fetched on first use.
+        self._connector_trading_types: Optional[Dict[str, List[str]]] = None
 
     @staticmethod
     def parse_network_id(network_id: str) -> tuple[str, str]:
@@ -166,23 +174,23 @@ class GatewayClient:
             if method == "GET":
                 async with session.get(url, params=params) as response:
                     if not response.ok:
-                        error_body = await self._get_error_body(response)
+                        error_body, error_code = await self._get_error_body(response)
                         logger.warning(f"Gateway request failed: {method} {url} - {response.status} - {error_body}")
-                        return {"error": error_body, "status": response.status}
+                        return {"error": error_body, "status": response.status, "code": error_code}
                     return await response.json()
             elif method == "POST":
                 async with session.post(url, params=params, json=json) as response:
                     if not response.ok:
-                        error_body = await self._get_error_body(response)
+                        error_body, error_code = await self._get_error_body(response)
                         logger.warning(f"Gateway request failed: {method} {url} - {response.status} - {error_body}")
-                        return {"error": error_body, "status": response.status}
+                        return {"error": error_body, "status": response.status, "code": error_code}
                     return await response.json()
             elif method == "DELETE":
                 async with session.delete(url, params=params, json=json) as response:
                     if not response.ok:
-                        error_body = await self._get_error_body(response)
+                        error_body, error_code = await self._get_error_body(response)
                         logger.warning(f"Gateway request failed: {method} {url} - {response.status} - {error_body}")
-                        return {"error": error_body, "status": response.status}
+                        return {"error": error_body, "status": response.status, "code": error_code}
                     return await response.json()
         except aiohttp.ClientError as e:
             logger.debug(f"Gateway request error: {method} {url} - {e}")
@@ -191,18 +199,23 @@ class GatewayClient:
             logger.debug(f"Gateway request failed: {method} {url} - {e}")
             raise
 
-    async def _get_error_body(self, response: aiohttp.ClientResponse) -> str:
-        """Extract error message from response body"""
+    async def _get_error_body(self, response: aiohttp.ClientResponse) -> tuple:
+        """Extract (message, code) from an error response body.
+
+        Gateway's error envelope is {statusCode, error, message, code?}; the
+        code is machine-readable (TRANSACTION_TIMEOUT, SLIPPAGE_EXCEEDED, ...)
+        and is what callers should branch on.
+        """
         try:
             data = await response.json()
             if isinstance(data, dict):
-                return data.get("message") or data.get("error") or str(data)
-            return str(data)
+                return (data.get("message") or data.get("error") or str(data), data.get("code"))
+            return (str(data), None)
         except Exception:
             try:
-                return await response.text()
+                return (await response.text(), None)
             except Exception:
-                return f"HTTP {response.status}"
+                return (f"HTTP {response.status}", None)
 
     async def ping(self) -> bool:
         """Check if Gateway is online"""
@@ -448,18 +461,43 @@ class GatewayClient:
     # Swap Operations (unified /trading/swap endpoints)
     # ============================================
 
-    @staticmethod
-    def normalize_swap_connector(connector: str) -> str:
+    async def _get_connector_trading_types(self) -> Dict[str, List[str]]:
+        """Gateway's connector -> trading_types map, fetched once per client."""
+        if self._connector_trading_types is None:
+            listing = check_gateway_error(await self.get_connectors())
+            self._connector_trading_types = {
+                entry["name"]: list(entry.get("trading_types", []))
+                for entry in listing.get("connectors", [])
+                if entry.get("name")
+            }
+        return self._connector_trading_types
+
+    async def normalize_swap_connector(self, connector: str) -> str:
         """
         Normalize a connector name to Gateway's 'name/type' swap-provider format.
 
-        'jupiter' -> 'jupiter/router', 'meteora' -> 'meteora/clmm',
-        'raydium/amm' -> 'raydium/amm' (already typed, passed through).
+        An already-typed value passes through untouched ('raydium/amm'). A bare
+        name takes the connector's most swap-appropriate trading type as Gateway
+        reports it: router, else clmm, else amm. Unknown names raise rather than
+        guessing a type that Gateway would reject with an opaque 400.
         """
         if "/" in connector:
             return connector
-        connector_type = "router" if connector in ROUTER_CONNECTORS else "clmm"
-        return f"{connector}/{connector_type}"
+        trading_types = (await self._get_connector_trading_types()).get(connector)
+        if trading_types is None:
+            raise GatewayError(
+                f"Unknown swap connector '{connector}'. Gateway reports: "
+                f"{', '.join(sorted((await self._get_connector_trading_types()).keys()))}",
+                400,
+            )
+        for candidate in _SWAP_TYPE_PREFERENCE:
+            if candidate in trading_types:
+                return f"{connector}/{candidate}"
+        raise GatewayError(
+            f"Connector '{connector}' supports no swap trading type "
+            f"(Gateway reports: {', '.join(trading_types) or 'none'})",
+            400,
+        )
 
     async def quote_swap(
         self,
@@ -485,7 +523,7 @@ class GatewayClient:
         """
         params = {
             "chainNetwork": chain_network,
-            "connector": self.normalize_swap_connector(connector),
+            "connector": await self.normalize_swap_connector(connector),
             "baseToken": base_asset,
             "quoteToken": quote_asset,
             "amount": str(amount),
@@ -520,7 +558,7 @@ class GatewayClient:
         """
         payload = {
             "chainNetwork": chain_network,
-            "connector": self.normalize_swap_connector(connector),
+            "connector": await self.normalize_swap_connector(connector),
             "walletAddress": wallet_address,
             "baseToken": base_asset,
             "quoteToken": quote_asset,
