@@ -159,7 +159,7 @@ class GatewaySwapRepository:
             "price": float(swap.price),
             # `is not None`: a recorded slippage of 0 is a real value, not "unset"
             "slippage_pct": float(swap.slippage_pct) if swap.slippage_pct is not None else None,
-            "gas_fee": float(swap.gas_fee) if swap.gas_fee else None,
+            "gas_fee": float(swap.gas_fee) if swap.gas_fee is not None else None,
             "gas_token": swap.gas_token,
             "status": swap.status,
             "pool_address": swap.pool_address,

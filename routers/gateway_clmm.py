@@ -57,23 +57,18 @@ CLMM_CREATE_POOL_EXTRA_PARAMS_SPEC: ExtraParamsSpec = {
 
 def get_transaction_status_from_response(gateway_response: dict) -> str:
     """
-    Determine transaction status from Gateway response.
-
-    Gateway returns status field in the response:
-    - status: 1 = confirmed
-    - status: 0 = pending/submitted
-
-    Returns:
-        "CONFIRMED" if status == 1
-        "SUBMITTED" if status == 0 or not present
+    Determine transaction status from Gateway response:
+    status 1 -> CONFIRMED, negative (-1 failed, -2 dropped) -> FAILED,
+    0 or missing -> SUBMITTED.
     """
     status = gateway_response.get("status")
 
-    # Status 1 means transaction is confirmed on-chain
     if status == 1:
         return "CONFIRMED"
-
-    # Status 0 or missing means submitted but not confirmed yet
+    # Gateway's TransactionStatus uses negative values for terminal failures
+    # (e.g. an EVM revert surfaced through the extended-poll path).
+    if isinstance(status, (int, float)) and status < 0:
+        return "FAILED"
     return "SUBMITTED"
 
 
@@ -458,6 +453,14 @@ async def open_clmm_position(
                 raise HTTPException(
                     status_code=500,
                     detail="Gateway confirmed the open but returned no position address")
+            # data present without a position address is the EVM revert shape
+            # (uniswap/pancakeswap return the receipt with an empty address when the
+            # tx landed but reverted); a negative status is a terminal failure on any
+            # chain. Both are definitive failures, not pending submissions.
+            if tx_status == "FAILED" or result.get("data") is not None:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Open position transaction failed on-chain ({transaction_hash})")
             # Submitted-not-confirmed: the position address is unknowable until the tx
             # lands. The tx IS in flight, so failing here would report a false failure
             # and orphan the position; instead return the signature for the caller to

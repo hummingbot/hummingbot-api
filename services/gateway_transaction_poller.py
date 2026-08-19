@@ -379,11 +379,19 @@ class GatewayTransactionPoller:
     # Position State Polling & Discovery
     # ============================================
 
-    # Supported CLMM connectors and their default networks
+    # Supported CLMM connectors and their default networks. The discovery sweep is
+    # also the reconciliation path for opens that returned submitted-not-confirmed
+    # (position_address unknown at open time), so every Solana connector whose open
+    # can pend (meteora, raydium, pancakeswap-sol) must be listed; orca rides along
+    # to reconcile externally-created positions. All four speak the unified
+    # /trading/clmm/positions-owned schema.
     SUPPORTED_CLMM_CONFIGS = [
         {"connector": "meteora", "chain": "solana", "network": "mainnet-beta"},
-        # Add more connectors as they become supported:
-        # {"connector": "raydium", "chain": "solana", "network": "mainnet-beta"},
+        {"connector": "raydium", "chain": "solana", "network": "mainnet-beta"},
+        {"connector": "pancakeswap-sol", "chain": "solana", "network": "mainnet-beta"},
+        {"connector": "orca", "chain": "solana", "network": "mainnet-beta"},
+        # EVM CLMM opens never return the pending shape (data always present), so
+        # discovery is not load-bearing there:
         # {"connector": "uniswap", "chain": "ethereum", "network": "mainnet"},
     ]
 

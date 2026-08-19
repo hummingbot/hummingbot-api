@@ -25,23 +25,18 @@ router = APIRouter(tags=["Gateway Swaps"], prefix="/gateway")
 
 def get_transaction_status_from_response(gateway_response: dict) -> str:
     """
-    Determine transaction status from Gateway response.
-
-    Gateway returns status field in the response:
-    - status: 1 = confirmed
-    - status: 0 = pending/submitted
-
-    Returns:
-        "CONFIRMED" if status == 1
-        "SUBMITTED" if status == 0 or not present
+    Determine transaction status from Gateway response:
+    status 1 -> CONFIRMED, negative (-1 failed, -2 dropped) -> FAILED,
+    0 or missing -> SUBMITTED.
     """
     status = gateway_response.get("status")
 
-    # Status 1 means transaction is confirmed on-chain
     if status == 1:
         return "CONFIRMED"
-
-    # Status 0 or missing means submitted but not confirmed yet
+    # Gateway's TransactionStatus uses negative values for terminal failures
+    # (e.g. a failed EVM swap returns status -1 with zeroed amounts).
+    if isinstance(status, (int, float)) and status < 0:
+        return "FAILED"
     return "SUBMITTED"
 
 
@@ -244,9 +239,11 @@ async def execute_swap(
         return SwapExecuteResponse(
             transaction_hash=transaction_hash,
             trading_pair=request.trading_pair,
-            side=request.side,
+            side=side,
             amount=request.amount,
-            status="submitted"
+            # "confirmed" / "submitted" / "failed" — a failed EVM swap comes back as
+            # status -1 with zeroed amounts, which must not read as in-flight.
+            status=tx_status.lower()
         )
 
     except HTTPException:
