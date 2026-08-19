@@ -10,6 +10,26 @@ logger = logging.getLogger(__name__)
 # All other connectors default to their CLMM route (meteora, orca, raydium, pancakeswap-sol).
 ROUTER_CONNECTORS = {"jupiter", "0x", "uniswap", "pancakeswap", "dflow", "okx", "titan"}
 
+# The single source for chain -> native gas token. Every writer of gas_token
+# columns (routers and the transaction poller) must use this — drifted local
+# copies previously produced "MATIC", None, and "UNKNOWN" for the same chain.
+_NATIVE_GAS_TOKENS = {
+    "solana": "SOL",
+    "ethereum": "ETH",
+    "polygon": "MATIC",
+    "avalanche": "AVAX",
+    "optimism": "ETH",
+    "arbitrum": "ETH",
+    "base": "ETH",
+    "bsc": "BNB",
+    "cronos": "CRO",
+}
+
+
+def get_native_gas_token(chain: str) -> str:
+    """Native gas token symbol for a chain (e.g. 'solana' -> 'SOL')."""
+    return _NATIVE_GAS_TOKENS.get(chain.lower(), "UNKNOWN")
+
 
 class GatewayError(Exception):
     """A Gateway HTTP request that completed with a non-OK status."""
@@ -87,8 +107,10 @@ class GatewayClient:
         default_wallet = await self.get_default_wallet_address(chain)
         if not default_wallet:
             raise ValueError(f"No wallet configured for chain '{chain}'")
-        # Skip placeholder wallet addresses (e.g., "ethereum-default-wallet", "solana-default-wallet")
-        if default_wallet.endswith("-default-wallet"):
+        # Gateway's fresh config templates write "<solana-wallet-address>" /
+        # "<ethereum-wallet-address>" as the placeholder — passing that literal
+        # string on would surface as an opaque Gateway address-validation error.
+        if default_wallet.startswith("<") and default_wallet.endswith(">"):
             raise ValueError(f"No valid wallet configured for chain '{chain}' (found placeholder: {default_wallet})")
         return default_wallet
 
@@ -195,13 +217,18 @@ class GatewayClient:
         return await self._request("GET", "wallet")
 
     async def get_default_wallet_address(self, chain: str) -> Optional[str]:
-        """Get default wallet address for a chain from Gateway config"""
-        try:
-            config = await self._request("GET", "config", params={"namespace": chain})
-            return config.get("defaultWallet")
-        except Exception as e:
-            logger.error(f"Error getting default wallet for chain {chain}: {e}")
-            return None
+        """Get default wallet address for a chain from Gateway config.
+
+        Raises GatewayError(503) when Gateway is unreachable — an unreachable
+        Gateway must not masquerade as "no wallet configured" (a 400 that sends
+        the operator chasing the wrong problem).
+        """
+        config = await self._request("GET", "config", params={"namespace": chain})
+        if config is None:
+            raise GatewayError("Gateway service is not available", status=503)
+        if isinstance(config, dict) and set(config.keys()) == {"error", "status"}:
+            raise GatewayError(str(config["error"]), status=config.get("status", 502))
+        return config.get("defaultWallet")
 
     async def get_all_wallet_addresses(self, chain: Optional[str] = None) -> Dict[str, List[str]]:
         """
@@ -226,7 +253,9 @@ class GatewayClient:
                 if chain and wallet_chain != chain:
                     continue
 
-                addresses = wallet.get("walletAddresses", [])
+                # Hardware (Ledger) wallets live in a separate list — without them
+                # the discovery/balance sweeps never see hardware-held positions.
+                addresses = list(wallet.get("walletAddresses", [])) + list(wallet.get("hardwareWalletAddresses", []))
                 if addresses and wallet_chain:
                     result[wallet_chain] = addresses
 
@@ -596,7 +625,7 @@ class GatewayClient:
         chain_network: str,
         wallet_address: str,
         position_address: str,
-        percentage: float,
+        percentage_to_remove: float,
         slippage_pct: Optional[float] = None
     ) -> Dict:
         """Remove liquidity from a CLMM position (partial).
@@ -608,7 +637,7 @@ class GatewayClient:
             "chainNetwork": chain_network,
             "walletAddress": wallet_address,
             "positionAddress": position_address,
-            "percentageToRemove": percentage
+            "percentageToRemove": percentage_to_remove
         }
         if slippage_pct is not None:
             payload["slippagePct"] = slippage_pct

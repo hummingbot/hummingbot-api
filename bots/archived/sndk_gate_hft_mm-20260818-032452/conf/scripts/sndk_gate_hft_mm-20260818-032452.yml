@@ -1,0 +1,5 @@
+controllers_config:
+- sndk_gate_hft_mm.yml
+max_controller_drawdown_quote: 10.0
+max_global_drawdown_quote: 15.0
+script_file_name: v2_with_controllers.py

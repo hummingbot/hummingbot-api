@@ -1,6 +1,6 @@
 """
-Shared validation for connector-specific extra_params forwarded to Gateway's
-unified /trading routes.
+Shared helpers for the gateway trading routers: extra_params validation and
+Gateway write-response status mapping.
 
 Gateway destructures a fixed set of connector-specific keys from each request
 body and silently ignores everything else, so hapi rejects loudly instead of
@@ -11,7 +11,32 @@ from typing import Any, Dict, Optional, Set, Tuple
 
 from fastapi import HTTPException
 
+
+def get_transaction_status_from_response(gateway_response: dict) -> str:
+    """Map a Gateway write response's status to hapi's transaction vocabulary:
+    status 1 -> CONFIRMED, negative (-1 failed, -2 dropped) -> FAILED,
+    0 or missing -> SUBMITTED.
+
+    Single source: both the swap and CLMM routers import this — two drifting
+    copies of load-bearing status mapping is how a failed tx gets recorded as
+    submitted on one surface but not the other.
+    """
+    status = gateway_response.get("status")
+
+    if status == 1:
+        return "CONFIRMED"
+    # Gateway's TransactionStatus uses negative values for terminal failures
+    # (e.g. a failed EVM swap returns status -1 with zeroed amounts).
+    if isinstance(status, (int, float)) and status < 0:
+        return "FAILED"
+    return "SUBMITTED"
+
+
 # Spec entry: key -> (allowed value types, connectors that honor the key).
+# Deliberate strictness (accepted residual): numeric keys are typed int even though
+# Gateway's TypeBox says Number (JS has one number type) — the domains are integral
+# (enum values, bin steps, config indexes), so a float like 1.0 gets a loud 400
+# here rather than reaching Gateway; no semantically distinct value is blocked.
 ExtraParamsSpec = Dict[str, Tuple[Tuple[type, ...], Set[str]]]
 
 

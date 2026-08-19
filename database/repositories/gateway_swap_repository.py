@@ -1,4 +1,5 @@
-from datetime import datetime
+import logging
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Dict, List, Optional
 
@@ -6,6 +7,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import GatewaySwap
+
+logger = logging.getLogger(__name__)
 
 
 class GatewaySwapRepository:
@@ -75,12 +78,15 @@ class GatewaySwapRepository:
         if trading_pair:
             query = query.where(GatewaySwap.trading_pair == trading_pair)
         if status:
-            query = query.where(GatewaySwap.status == status)
+            # DB statuses are uppercase (SUBMITTED/CONFIRMED/FAILED); accept either
+            # casing so a status copied from a write response matches.
+            query = query.where(GatewaySwap.status == status.upper())
         if start_time:
-            start_dt = datetime.fromtimestamp(start_time)
+            # tz-aware: the timestamp column is TIMESTAMP(timezone=True)
+            start_dt = datetime.fromtimestamp(start_time, tz=timezone.utc)
             query = query.where(GatewaySwap.timestamp >= start_dt)
         if end_time:
-            end_dt = datetime.fromtimestamp(end_time)
+            end_dt = datetime.fromtimestamp(end_time, tz=timezone.utc)
             query = query.where(GatewaySwap.timestamp <= end_dt)
 
         # Apply ordering and pagination
@@ -112,19 +118,29 @@ class GatewaySwapRepository:
             wallet_address=wallet_address,
             start_time=start_time,
             end_time=end_time,
-            limit=10000  # Get all for summary
+            limit=10000
         )
+        if len(swaps) == 10000:
+            logger.warning("Swap summary hit the 10,000-row cap; totals cover only the most recent rows")
 
         total_swaps = len(swaps)
         confirmed_swaps = sum(1 for s in swaps if s.status == "CONFIRMED")
         failed_swaps = sum(1 for s in swaps if s.status == "FAILED")
         pending_swaps = sum(1 for s in swaps if s.status == "SUBMITTED")
 
-        # Calculate total volume (in quote token)
-        total_volume = sum(
-            float(s.output_amount if s.side == "BUY" else s.input_amount)
-            for s in swaps if s.status == "CONFIRMED"
-        )
+        # Quote-denominated volume per quote token. Amount columns are token-flow
+        # (BUY: input=quote, output=base; SELL: input=base, output=quote), so the
+        # quote leg is input for BUY and output for SELL — and volumes are only
+        # comparable within one quote token, never summed across denominations.
+        # side.upper() tolerates legacy lowercase rows written before normalization.
+        volume_by_quote_token: Dict[str, float] = {}
+        for s in swaps:
+            if s.status != "CONFIRMED":
+                continue
+            quote_amount = s.input_amount if (s.side or "").upper() == "BUY" else s.output_amount
+            volume_by_quote_token[s.quote_token] = (
+                volume_by_quote_token.get(s.quote_token, 0.0) + float(quote_amount)
+            )
 
         # Calculate total gas fees
         total_gas_fees = sum(
@@ -138,7 +154,7 @@ class GatewaySwapRepository:
             "failed_swaps": failed_swaps,
             "pending_swaps": pending_swaps,
             "success_rate": confirmed_swaps / total_swaps if total_swaps > 0 else 0,
-            "total_volume": total_volume,
+            "volume_by_quote_token": volume_by_quote_token,
             "total_gas_fees": total_gas_fees,
         }
 

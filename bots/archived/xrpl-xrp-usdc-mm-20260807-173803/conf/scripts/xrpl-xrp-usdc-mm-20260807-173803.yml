@@ -1,0 +1,4 @@
+controllers_config:
+- xrpl_xrp_usdc_mm.yml
+max_global_drawdown_quote: 7.0
+script_file_name: v2_with_controllers.py

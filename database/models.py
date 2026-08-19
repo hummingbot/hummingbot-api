@@ -325,7 +325,8 @@ class GatewayCLMMEvent(Base):
 
     # Event type
     event_type = Column(String, nullable=False,
-                        index=True)  # OPEN, ADD_LIQUIDITY, REMOVE_LIQUIDITY, COLLECT_FEES, CLOSE
+                        index=True)  # OPEN, ADD_LIQUIDITY, REMOVE_LIQUIDITY, COLLECT_FEES, CLOSE,
+    # DISCOVERED (written by the poller with a synthetic tx hash)
 
     # Event amounts
     base_token_amount = Column(Numeric(precision=30, scale=18), nullable=True)

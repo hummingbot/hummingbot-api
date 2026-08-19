@@ -109,7 +109,10 @@ async def test_refresh_does_not_close_position_on_gateway_error():
 
 
 @pytest.mark.asyncio
-async def test_refresh_closes_position_missing_from_valid_list():
+async def test_refresh_skips_position_missing_from_valid_list():
+    """Absence from ONE positions-owned read is not proof of closure (RPC lag):
+    the refresh skips the update and leaves close detection to the poller's
+    consecutive-miss gate — a single read must never close a live position."""
     from routers.gateway_clmm import _refresh_position_data
 
     accounts_service = _mock_accounts_service(clmm_positions_owned=[{"address": "OTHER"}])
@@ -120,7 +123,8 @@ async def test_refresh_closes_position_missing_from_valid_list():
     )
 
     await _refresh_position_data(_position(), accounts_service, clmm_repo)
-    clmm_repo.close_position.assert_awaited_once_with("POS")
+    clmm_repo.close_position.assert_not_awaited()
+    clmm_repo.update_position_liquidity.assert_not_awaited()
 
 
 # ============================================
@@ -162,3 +166,29 @@ async def test_poller_confirms_transaction():
     poller = _poller_with_result({"txStatus": 1, "fee": 0.00001, "error": None})
     result = await poller._check_transaction_status("solana", "mainnet-beta", "TX")
     assert result["status"] == "CONFIRMED"
+    # fee of exactly 0 must survive (no truthiness drop)
+    poller = _poller_with_result({"txStatus": 1, "fee": 0, "error": None})
+    result = await poller._check_transaction_status("solana", "mainnet-beta", "TX")
+    assert result["gas_fee"] == 0
+
+
+@pytest.mark.asyncio
+async def test_poller_pending_with_transient_error_stays_pending():
+    """Gateway deliberately returns txStatus 0 WITH an error message for transient
+    poll failures ("poll again, don't give up") — the error field must never
+    promote a pending transaction to FAILED."""
+    poller = _poller_with_result({
+        "txStatus": 0,
+        "error": "Error polling transaction: 429 Too Many Requests",
+    })
+    result = await poller._check_transaction_status("solana", "mainnet-beta", "TX")
+    assert result["status"] == "PENDING"
+
+
+@pytest.mark.asyncio
+async def test_poller_reports_not_found_as_dropped():
+    """txStatus -2 is NOT_FOUND — terminal on Solana after blockhash expiry; the
+    caller applies the grace window, but the classifier must not call it pending."""
+    poller = _poller_with_result({"txStatus": -2, "error": None})
+    result = await poller._check_transaction_status("solana", "mainnet-beta", "TX")
+    assert result["status"] == "DROPPED"

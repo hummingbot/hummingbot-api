@@ -1,0 +1,3 @@
+controllers_config:
+- 001_pmm_xrpl_USDC-XRP.yml
+script_file_name: v2_with_controllers.py
