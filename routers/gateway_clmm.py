@@ -508,7 +508,7 @@ async def open_clmm_position(
                     "event_type": "OPEN",
                     "base_token_amount": float(base_amount_added) if base_amount_added is not None else None,
                     "quote_token_amount": float(quote_amount_added) if quote_amount_added is not None else None,
-                    "gas_fee": float(gas_fee) if gas_fee else None,
+                    "gas_fee": float(gas_fee) if gas_fee is not None else None,
                     "gas_token": gas_token,
                     "status": tx_status
                 }
@@ -915,9 +915,9 @@ async def close_clmm_position(
                         "event_type": "CLOSE",
                         "base_token_amount": float(base_amount_removed) if base_amount_removed is not None else None,
                         "quote_token_amount": float(quote_amount_removed) if quote_amount_removed is not None else None,
-                        "base_fee_collected": float(base_fee_collected) if base_fee_collected else None,
-                        "quote_fee_collected": float(quote_fee_collected) if quote_fee_collected else None,
-                        "gas_fee": float(gas_fee) if gas_fee else None,
+                        "base_fee_collected": float(base_fee_collected) if base_fee_collected is not None else None,
+                        "quote_fee_collected": float(quote_fee_collected) if quote_fee_collected is not None else None,
+                        "gas_fee": float(gas_fee) if gas_fee is not None else None,
                         "gas_token": gas_token,
                         "status": tx_status
                     }
@@ -1129,9 +1129,9 @@ async def collect_fees_from_clmm_position(
                         "position_id": position.id,
                         "transaction_hash": transaction_hash,
                         "event_type": "COLLECT_FEES",
-                        "base_fee_collected": float(base_fee_collected) if base_fee_collected else None,
-                        "quote_fee_collected": float(quote_fee_collected) if quote_fee_collected else None,
-                        "gas_fee": float(gas_fee) if gas_fee else None,
+                        "base_fee_collected": float(base_fee_collected) if base_fee_collected is not None else None,
+                        "quote_fee_collected": float(quote_fee_collected) if quote_fee_collected is not None else None,
+                        "gas_fee": float(gas_fee) if gas_fee is not None else None,
                         "gas_token": gas_token,
                         "status": tx_status
                     }
