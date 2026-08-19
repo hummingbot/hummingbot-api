@@ -35,3 +35,6 @@ dependencies:
       - psycopg2-binary
       - greenlet
       - pydantic-settings
+      # Regenerates models/gateway_generated.py from gateway-openapi.json
+      # (`make gateway-models`); test_gateway_models_match_spec reruns it to catch drift.
+      - datamodel-code-generator

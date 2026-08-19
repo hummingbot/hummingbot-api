@@ -1393,7 +1393,10 @@ async def create_clmm_pool(
             initial_price=float(request.initial_price) if request.initial_price is not None else None,
             extra_params=request.extra_params,
         ))
-        return AMMCreatePoolResponse(**result)
+        # Gateway reports status as a number; every other write path maps it to the shared
+        # SUBMITTED/CONFIRMED/FAILED vocabulary. Splatting it raw made this route fail
+        # validation on every successful create, since the model declares status as a string.
+        return AMMCreatePoolResponse(**{**result, "status": get_transaction_status_from_response(result)})
 
     except HTTPException:
         raise

@@ -53,7 +53,7 @@ async def get_swap_quote(
     """
     try:
         validate_extra_params(request.extra_params, SWAP_EXTRA_PARAMS_SPEC,
-                              request.connector, "the quote-swap routes")
+                              request.connector, "/trading/{router,clmm,amm}/quote-swap")
 
         if not await accounts_service.gateway_client.ping():
             raise HTTPException(status_code=503, detail="Gateway service is not available")
@@ -130,7 +130,7 @@ async def execute_swap(
     """
     try:
         validate_extra_params(request.extra_params, SWAP_EXTRA_PARAMS_SPEC,
-                              request.connector, "the execute-swap routes")
+                              request.connector, "/trading/{router,clmm,amm}/execute-swap")
 
         if not await accounts_service.gateway_client.ping():
             raise HTTPException(status_code=503, detail="Gateway service is not available")

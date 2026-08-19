@@ -1,4 +1,4 @@
-.PHONY: setup run deploy stop install uninstall build install-pre-commit tailscale-status reset
+.PHONY: setup run deploy stop install uninstall build install-pre-commit tailscale-status reset gateway-models
 
 SETUP_SENTINEL := .setup-complete
 
@@ -85,6 +85,28 @@ uninstall:
 install-pre-commit:
 	conda run -n hummingbot-api pip install pre-commit
 	conda run -n hummingbot-api pre-commit install
+
+# Header stamped onto the generated models. `#` starts a comment in a Makefile, so it
+# has to reach the recipe through a variable.
+HASH := \#
+define GATEWAY_MODELS_HEADER
+$(HASH) Generated from gateway-openapi.json by 'make gateway-models'. Do not edit.
+$(HASH) flake8: noqa: E501
+endef
+export GATEWAY_MODELS_HEADER
+
+# Regenerate models/gateway_generated.py from the vendored Gateway spec.
+# Adopting a Gateway change is two steps — refresh the spec, then rerun this:
+#   cd ../gateway && pnpm generate:openapi && cp openapi.json ../hummingbot-api/gateway-openapi.json
+#   make gateway-models
+# test/test_gateway_models_match_spec.py fails if the committed models drift from the spec.
+gateway-models:
+	conda run --no-capture-output -n hummingbot-api python -m datamodel_code_generator \
+		--input gateway-openapi.json --input-file-type openapi --openapi-scopes schemas \
+		--output models/gateway_generated.py --output-model-type pydantic_v2.BaseModel \
+		--snake-case-field --target-python-version 3.12 --disable-timestamp \
+		--formatters black --formatters isort \
+		--custom-file-header "$$GATEWAY_MODELS_HEADER"
 
 # Build Docker image
 build:
