@@ -306,8 +306,14 @@ async def update_api_keys(
 
         results = await accounts_service.gateway_client.update_api_keys(request.api_keys)
 
-        # Check for any errors in the results
-        errors = [r for r in results if r and "error" in r]
+        # A None result means the request never reached Gateway (connection
+        # error mid-batch) — that is a failure, not a success to filter out.
+        if any(r is None for r in results):
+            raise HTTPException(
+                status_code=503,
+                detail="Gateway became unreachable while updating API keys; not all keys were applied",
+            )
+        errors = [r for r in results if "error" in r]
         if errors:
             raise HTTPException(status_code=400, detail=f"Failed to update some API keys: {errors}")
 
