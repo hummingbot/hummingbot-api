@@ -72,7 +72,9 @@ class GatewaySwapRepository:
         if network:
             query = query.where(GatewaySwap.network == network)
         if connector:
-            query = query.where(GatewaySwap.connector == connector)
+            # Rows store the base venue name; accept a typed provider
+            # ("jupiter/router") as the same filter.
+            query = query.where(GatewaySwap.connector == connector.split("/")[0])
         if wallet_address:
             query = query.where(GatewaySwap.wallet_address == wallet_address)
         if trading_pair:

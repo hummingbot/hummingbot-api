@@ -198,7 +198,9 @@ async def execute_swap(
                 swap_data = {
                     "transaction_hash": transaction_hash,
                     "network": request.network,
-                    "connector": request.connector,
+                    # Store the base venue name: a swap on "jupiter" and one on
+                    # "jupiter/router" are the same venue and must file together.
+                    "connector": request.connector.split("/")[0],
                     "wallet_address": wallet_address,
                     "trading_pair": request.trading_pair,
                     "base_token": base,
@@ -226,7 +228,7 @@ async def execute_swap(
             amount=request.amount,
             # "confirmed" / "submitted" / "failed" — a failed EVM swap comes back as
             # status -1 with zeroed amounts, which must not read as in-flight.
-            status=tx_status.lower()
+            status=tx_status
         )
 
     except HTTPException:
