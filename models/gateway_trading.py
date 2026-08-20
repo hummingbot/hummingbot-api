@@ -64,6 +64,17 @@ class SwapQuoteResponse(BaseModel):
         description="Identifier for this quote, on the router connectors that hold a price. Pass it "
                     "to /swap/execute-quote to execute THIS quote instead of re-pricing. Absent on "
                     "pool-scoped connectors, which price against the pool at execution time.")
+    approximation: Optional[bool] = Field(
+        default=None,
+        description="True when amount_out is an ESTIMATE rather than the exact-out amount asked "
+                    "for. A BUY is an ExactOut order, and many thin tokens have no ExactOut route, "
+                    "so Gateway falls back to quoting the sell leg and then quoting that input "
+                    "forward — which pays the pool fee and crosses the spread twice. Measured at a "
+                    "near-constant ~2.5% across eleven pools spanning $17 to $1,963 of liquidity, "
+                    "and it is reached for ONLY on the thin, high-fee pools where it hurts most. "
+                    "The caller is not overcharged; the order is silently resized, which is what "
+                    "matters to a strategy that asked for a specific quantity. Set "
+                    "extra_params={'approximateIfNoExactOut': false} to require an exact route.")
 
 
 class SwapExecuteQuoteRequest(BaseModel):

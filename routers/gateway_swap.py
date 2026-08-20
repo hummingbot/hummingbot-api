@@ -95,6 +95,12 @@ async def get_swap_quote(
             # The handle for /swap/execute-quote. Routers that hold a price return one;
             # pool-scoped connectors do not, because they price at execution.
             quote_id=result.get("quoteId"),
+            # Gateway flags an approximated BUY and this dropped it, so a quote whose
+            # amount_out was ~2.5% short of the request looked identical to an exact one.
+            # The input half of the feature was already wired end to end —
+            # approximateIfNoExactOut is accepted through extra_params — so a caller
+            # could switch the behaviour off but not find out whether it had happened.
+            approximation=result.get("approximation"),
             slippage_pct=(_dec("slippagePct") if result.get("slippagePct") is not None
                           else request.slippage_pct),
         )
