@@ -795,15 +795,22 @@ class GatewayClient:
         connector: str,
         chain_network: str,
         wallet_address: str,
-        position_address: str
+        position_address: str,
+        slippage_pct: Optional[float] = None,
     ) -> Dict:
-        """Close a CLMM position completely"""
+        """Close a CLMM position completely.
+
+        `slippage_pct` is the withdrawal's tolerance; None uses the connector's
+        configured slippagePct. Enforced by orca, uniswap and pancakeswap — the other
+        CLMM connectors close with no minimum-amount check, so it changes nothing there.
+        """
         return await self._request("POST", "trading/clmm/close", json=_body(
             ClmmCloseRequest(
                 connector=connector,
                 chainNetwork=chain_network,
                 walletAddress=wallet_address,
                 positionAddress=position_address,
+                slippagePct=slippage_pct,
             )
         ))
 

@@ -905,7 +905,8 @@ async def close_clmm_position(
             connector=request.connector,
             chain_network=request.network,
             wallet_address=wallet_address,
-            position_address=request.position_address
+            position_address=request.position_address,
+            slippage_pct=float(request.slippage_pct) if request.slippage_pct is not None else None,
         ))
 
         transaction_hash = result.get("signature") or result.get("txHash") or result.get("hash")

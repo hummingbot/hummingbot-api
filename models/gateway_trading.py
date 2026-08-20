@@ -196,6 +196,14 @@ class CLMMClosePositionRequest(BaseModel):
     connector: str = Field(description="CLMM connector (e.g., 'meteora', 'raydium', 'uniswap')")
     network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta')")
     position_address: str = Field(description="Position address to close")
+    slippage_pct: Optional[Decimal] = Field(
+        default=None,
+        description="Maximum acceptable slippage percentage for the withdrawal. Enforced by orca, "
+                    "uniswap and pancakeswap; meteora, raydium and pancakeswap-sol close with no "
+                    "minimum-amount check at all, so it changes nothing there. Omit to use the "
+                    "connector's configured slippagePct. An executor widening this across retries "
+                    "is what it exists for: a narrow in-range close can fail on slippage at the "
+                    "configured value with no way to say \"accept more to get out\".")
     pool_address: Optional[str] = Field(
         default=None,
         description="Pool the position belongs to. Informational only — neither Gateway's call "
