@@ -651,6 +651,9 @@ class GatewayClient:
                 "across pools rather than executing against one. Name an amm or clmm "
                 "connector to pin a pool."
             )
+        # poolAddress only for the pool-scoped models: the router model does not declare
+        # it, and Gateway now rejects an undeclared key rather than dropping it.
+        pool_kwargs = {} if trading_type == "router" else {"poolAddress": pool_address or None}
         params = _query(
             request_model(
                 chainNetwork=chain_network,
@@ -660,7 +663,7 @@ class GatewayClient:
                 amount=amount,
                 side=side.upper(),
                 slippagePct=slippage_pct,
-                poolAddress=pool_address or None,
+                **pool_kwargs,
             )
         )
         if extra_params:
@@ -731,6 +734,8 @@ class GatewayClient:
                 "across pools rather than executing against one. Name an amm or clmm "
                 "connector to pin a pool."
             )
+        # See quote_swap: the router model does not declare poolAddress.
+        pool_kwargs = {} if trading_type == "router" else {"poolAddress": pool_address or None}
         payload = _body(
             _EXECUTE_SWAP_REQUESTS[trading_type](
                 chainNetwork=chain_network,
@@ -741,7 +746,7 @@ class GatewayClient:
                 amount=amount,
                 side=side.upper(),
                 slippagePct=slippage_pct,
-                poolAddress=pool_address or None,
+                **pool_kwargs,
             )
         )
         if extra_params:
