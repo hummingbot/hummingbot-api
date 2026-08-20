@@ -117,7 +117,9 @@ async def test_quote_swap_routes_by_trading_type(client_and_calls):
         "quoteToken": "USDC",
         "amount": "0.1",
         "side": "SELL",
-        "slippagePct": "1.0",
+        # Query values are text — that is all a URL carries — and a whole number is
+        # rendered whole, so a page index does not go out as "2.0".
+        "slippagePct": "1",
     }
 
 
@@ -318,7 +320,7 @@ async def test_clmm_fetch_pools_meteora_params(client_and_calls):
     assert (call["method"], call["path"]) == ("GET", "trading/clmm/fetch-pools")
     assert call["params"]["connector"] == "meteora"
     assert call["params"]["chainNetwork"] == "solana-mainnet-beta"
-    assert call["params"]["page"] == 2
+    assert call["params"]["page"] == "2"
     assert call["params"]["includeUnverified"] == "false"
     assert call["params"]["sortBy"] == "volume_24h:desc"
     for orca_only in ("sortDirection", "verifiedOnly"):
@@ -419,7 +421,7 @@ async def test_amm_quote_liquidity_path_and_slippage_omitted(client_and_calls):
     c = calls[0]
     assert (c["method"], c["path"]) == ("GET", "trading/amm/quote-liquidity")
     assert c["params"] == {"connector": "meteora", "chainNetwork": NET, "poolAddress": POOL,
-                           "baseTokenAmount": 1.0, "quoteTokenAmount": 100.0}
+                           "baseTokenAmount": "1", "quoteTokenAmount": "100"}
     # Omitted slippage means "use the connector's configured slippagePct"
     assert "slippagePct" not in c["params"]
 
@@ -429,7 +431,7 @@ async def test_amm_quote_liquidity_sends_zero_slippage(client_and_calls):
     client, calls = client_and_calls
     await client.amm_quote_liquidity(connector="meteora", chain_network=NET, pool_address=POOL,
                                      base_token_amount=1.0, quote_token_amount=100.0, slippage_pct=0)
-    assert calls[0]["params"]["slippagePct"] == 0
+    assert calls[0]["params"]["slippagePct"] == "0"
 
 
 @pytest.mark.asyncio

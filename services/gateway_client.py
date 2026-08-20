@@ -1,10 +1,98 @@
 import logging
 import ssl
+from decimal import Decimal
 from typing import Any, Callable, Dict, List, Optional
 
 import aiohttp
 
+from models.gateway_generated import (
+    AmmAddRequest,
+    AmmCreatePoolRequest,
+    AmmExecuteSwapRequest,
+    AmmPoolInfoRequest,
+    AmmPositionInfoRequest,
+    AmmPositionsOwnedRequest,
+    AmmQuoteLiquidityRequest,
+    AmmQuoteSwapRequest,
+    AmmRemoveRequest,
+    ClmmAddRequest,
+    ClmmCloseRequest,
+    ClmmCollectFeesRequest,
+    ClmmCreatePoolRequest,
+    ClmmExecuteSwapRequest,
+    ClmmFetchPoolsRequest,
+    ClmmOpenRequest,
+    ClmmPoolInfoRequest,
+    ClmmPositionInfoRequest,
+    ClmmPositionsOwnedRequest,
+    ClmmQuoteLiquidityRequest,
+    ClmmQuoteSwapRequest,
+    ClmmRemoveRequest,
+    RouterExecuteSwapRequest,
+    RouterQuoteSwapRequest,
+)
+
 logger = logging.getLogger(__name__)
+
+# The request model for each unified /trading route, keyed by the trading type resolved
+# at call time. The three surfaces do not take the same fields — only the router accepts
+# approximateIfNoExactOut, only the pool-scoped ones accept poolAddress — so each has its
+# own model rather than one shape covering all three.
+_QUOTE_SWAP_REQUESTS = {
+    "router": RouterQuoteSwapRequest,
+    "clmm": ClmmQuoteSwapRequest,
+    "amm": AmmQuoteSwapRequest,
+}
+_EXECUTE_SWAP_REQUESTS = {
+    "router": RouterExecuteSwapRequest,
+    "clmm": ClmmExecuteSwapRequest,
+    "amm": AmmExecuteSwapRequest,
+}
+
+
+def _wire_str(value: Any) -> str:
+    """A query value as text, keeping whole numbers whole.
+
+    Gateway types every numeric field as `number`, so pydantic holds a page index or a
+    row limit as a float and ``str`` would render it "2.0" — which is not what a page
+    index looks like to the DEX listing APIs behind fetch-pools. Integral values are
+    emitted without the fractional part; the amounts are unaffected either way, since
+    Gateway coerces the string back per its schema.
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float, Decimal)) and value == int(value):
+        return str(int(value))
+    return str(value)
+
+
+def _query(request: Any) -> Dict[str, str]:
+    """A request model as query parameters.
+
+    Everything is stringified because aiohttp rejects a non-string query value, and
+    Gateway coerces the strings back per its schema. Fields left as None are dropped:
+    Gateway applies its own default for an absent parameter, which is not the same as
+    being told the value is null.
+    """
+    return {
+        key: _wire_str(value)
+        for key, value in request.model_dump(by_alias=True, exclude_none=True).items()
+    }
+
+
+def _body(request: Any) -> Dict[str, Any]:
+    """A request model as a JSON body.
+
+    Dumped in python mode and widened here rather than with ``mode="json"``, which
+    renders Decimal as a string. Gateway declares these fields as `type: number` — its
+    `decimal` format tells a client to *hold* the value as a decimal, not to send it as
+    text — so a string would arrive as the wrong JSON type.
+    """
+    return {
+        key: (float(value) if isinstance(value, Decimal) else value)
+        for key, value in request.model_dump(by_alias=True, exclude_none=True).items()
+    }
+
 
 # When a caller names a connector without a trading type, Gateway's own
 # config/connectors listing decides the type — preferring a router route, then
@@ -558,21 +646,33 @@ class GatewayClient:
                 (e.g. approximateIfNoExactOut). The router validates keys first.
         """
         name, trading_type = await self.resolve_swap_route(connector)
-        params = {
-            "chainNetwork": chain_network,
-            "connector": name,
-            "baseToken": base_asset,
-            "quoteToken": quote_asset,
-            "amount": str(amount),
-            "side": side.upper()
-        }
-        if slippage_pct is not None:
-            params["slippagePct"] = str(slippage_pct)
-        if pool_address:
-            params["poolAddress"] = pool_address
+        request_model = _QUOTE_SWAP_REQUESTS[trading_type]
+        if pool_address and trading_type == "router":
+            # The router model has no poolAddress, and pydantic drops an unknown keyword
+            # silently — which would look like the pin applied. Routers choose their own
+            # path across pools, so there is nothing to pin.
+            raise ValueError(
+                f"Router connector '{name}' does not take a pool_address: a router routes "
+                "across pools rather than executing against one. Name an amm or clmm "
+                "connector to pin a pool."
+            )
+        params = _query(
+            request_model(
+                chainNetwork=chain_network,
+                connector=name,
+                baseToken=base_asset,
+                quoteToken=quote_asset,
+                amount=amount,
+                side=side.upper(),
+                slippagePct=slippage_pct,
+                poolAddress=pool_address or None,
+            )
+        )
         if extra_params:
-            # Query params must be strings for aiohttp; Gateway's schema coerces
-            # "true"/"false" back to booleans.
+            # Connector-specific params, merged after the model: they are named by the
+            # connector rather than the route, so no route schema declares them. Query
+            # params must be strings for aiohttp; Gateway's schema coerces "true"/"false"
+            # back to booleans.
             for key, value in extra_params.items():
                 params[key] = str(value).lower() if isinstance(value, bool) else str(value)
 
@@ -599,20 +699,29 @@ class GatewayClient:
         own names (e.g. approximateIfNoExactOut); the router validates keys first.
         """
         name, trading_type = await self.resolve_swap_route(connector)
-        payload = {
-            "chainNetwork": chain_network,
-            "connector": name,
-            "walletAddress": wallet_address,
-            "baseToken": base_asset,
-            "quoteToken": quote_asset,
-            "amount": amount,
-            "side": side.upper()
-        }
-        if slippage_pct is not None:
-            payload["slippagePct"] = slippage_pct
-        if pool_address:
-            payload["poolAddress"] = pool_address
+        if pool_address and trading_type == "router":
+            # See quote_swap: the router model has no poolAddress and pydantic would drop
+            # it in silence, which would read as though the pin applied.
+            raise ValueError(
+                f"Router connector '{name}' does not take a pool_address: a router routes "
+                "across pools rather than executing against one. Name an amm or clmm "
+                "connector to pin a pool."
+            )
+        payload = _body(
+            _EXECUTE_SWAP_REQUESTS[trading_type](
+                chainNetwork=chain_network,
+                connector=name,
+                walletAddress=wallet_address,
+                baseToken=base_asset,
+                quoteToken=quote_asset,
+                amount=amount,
+                side=side.upper(),
+                slippagePct=slippage_pct,
+                poolAddress=pool_address or None,
+            )
+        )
         if extra_params:
+            # Connector-specific params, merged after the model — see quote_swap.
             payload.update(extra_params)
 
         return await self._request("POST", f"trading/{trading_type}/execute-swap", json=payload)
@@ -635,22 +744,23 @@ class GatewayClient:
         extra_params: Optional[Dict] = None
     ) -> Dict:
         """Open a NEW CLMM position with initial liquidity"""
-        payload = {
-            "connector": connector,
-            "chainNetwork": chain_network,
-            "walletAddress": wallet_address,
-            "poolAddress": pool_address,
-            "lowerPrice": lower_price,
-            "upperPrice": upper_price
-        }
-        if base_token_amount is not None:
-            payload["baseTokenAmount"] = base_token_amount
-        if quote_token_amount is not None:
-            payload["quoteTokenAmount"] = quote_token_amount
-        if slippage_pct is not None:
-            payload["slippagePct"] = slippage_pct
+        payload = _body(
+            ClmmOpenRequest(
+                connector=connector,
+                chainNetwork=chain_network,
+                walletAddress=wallet_address,
+                poolAddress=pool_address,
+                lowerPrice=lower_price,
+                upperPrice=upper_price,
+                baseTokenAmount=base_token_amount,
+                quoteTokenAmount=quote_token_amount,
+                slippagePct=slippage_pct,
+            )
+        )
 
-        # Connector-specific parameters (e.g. Meteora's strategyType)
+        # Connector-specific parameters (e.g. Meteora's strategyType), merged after the
+        # model: they are named by the connector rather than the route, so no route
+        # schema declares them.
         if extra_params:
             payload.update(extra_params)
 
@@ -668,20 +778,19 @@ class GatewayClient:
         extra_params: Optional[Dict] = None
     ) -> Dict:
         """Add more liquidity to an existing CLMM position"""
-        payload = {
-            "connector": connector,
-            "chainNetwork": chain_network,
-            "walletAddress": wallet_address,
-            "positionAddress": position_address
-        }
-        if base_token_amount is not None:
-            payload["baseTokenAmount"] = base_token_amount
-        if quote_token_amount is not None:
-            payload["quoteTokenAmount"] = quote_token_amount
-        if slippage_pct is not None:
-            payload["slippagePct"] = slippage_pct
+        payload = _body(
+            ClmmAddRequest(
+                connector=connector,
+                chainNetwork=chain_network,
+                walletAddress=wallet_address,
+                positionAddress=position_address,
+                baseTokenAmount=base_token_amount,
+                quoteTokenAmount=quote_token_amount,
+                slippagePct=slippage_pct,
+            )
+        )
 
-        # Connector-specific parameters (e.g. Meteora's strategyType)
+        # Connector-specific parameters, merged after the model — see clmm_open_position.
         if extra_params:
             payload.update(extra_params)
 
@@ -695,12 +804,14 @@ class GatewayClient:
         position_address: str
     ) -> Dict:
         """Close a CLMM position completely"""
-        return await self._request("POST", "trading/clmm/close", json={
-            "connector": connector,
-            "chainNetwork": chain_network,
-            "walletAddress": wallet_address,
-            "positionAddress": position_address
-        })
+        return await self._request("POST", "trading/clmm/close", json=_body(
+            ClmmCloseRequest(
+                connector=connector,
+                chainNetwork=chain_network,
+                walletAddress=wallet_address,
+                positionAddress=position_address,
+            )
+        ))
 
     async def clmm_remove_liquidity(
         self,
@@ -715,15 +826,16 @@ class GatewayClient:
 
         slippage_pct is only honored by the Orca connector; others ignore it.
         """
-        payload = {
-            "connector": connector,
-            "chainNetwork": chain_network,
-            "walletAddress": wallet_address,
-            "positionAddress": position_address,
-            "percentageToRemove": percentage_to_remove
-        }
-        if slippage_pct is not None:
-            payload["slippagePct"] = slippage_pct
+        payload = _body(
+            ClmmRemoveRequest(
+                connector=connector,
+                chainNetwork=chain_network,
+                walletAddress=wallet_address,
+                positionAddress=position_address,
+                percentageToRemove=percentage_to_remove,
+                slippagePct=slippage_pct,
+            )
+        )
 
         return await self._request("POST", "trading/clmm/remove", json=payload)
 
@@ -747,11 +859,13 @@ class GatewayClient:
         if not position_address:
             raise ValueError("position_address is required for clmm_position_info")
 
-        params = {
-            "connector": connector,
-            "chainNetwork": chain_network,
-            "positionAddress": position_address
-        }
+        params = _query(
+            ClmmPositionInfoRequest(
+                connector=connector,
+                chainNetwork=chain_network,
+                positionAddress=position_address,
+            )
+        )
         return await self._request("GET", "trading/clmm/position-info", params=params)
 
     async def clmm_positions_owned(
@@ -782,11 +896,13 @@ class GatewayClient:
             - lowerBinId, upperBinId
             - lowerPrice, upperPrice, price
         """
-        params = {
-            "connector": connector,
-            "chainNetwork": chain_network,
-            "walletAddress": wallet_address,
-        }
+        params = _query(
+            ClmmPositionsOwnedRequest(
+                connector=connector,
+                chainNetwork=chain_network,
+                walletAddress=wallet_address,
+            )
+        )
         return await self._request("GET", "trading/clmm/positions-owned", params=params)
 
     async def clmm_quote_position(
@@ -801,19 +917,18 @@ class GatewayClient:
         slippage_pct: Optional[float] = None,
     ) -> Dict:
         """Quote the base/quote split a candidate position would take, without signing anything."""
-        params = {
-            "connector": connector,
-            "chainNetwork": chain_network,
-            "poolAddress": pool_address,
-            "lowerPrice": lower_price,
-            "upperPrice": upper_price,
-        }
-        if base_token_amount is not None:
-            params["baseTokenAmount"] = base_token_amount
-        if quote_token_amount is not None:
-            params["quoteTokenAmount"] = quote_token_amount
-        if slippage_pct is not None:
-            params["slippagePct"] = slippage_pct
+        params = _query(
+            ClmmQuoteLiquidityRequest(
+                connector=connector,
+                chainNetwork=chain_network,
+                poolAddress=pool_address,
+                lowerPrice=lower_price,
+                upperPrice=upper_price,
+                baseTokenAmount=base_token_amount,
+                quoteTokenAmount=quote_token_amount,
+                slippagePct=slippage_pct,
+            )
+        )
         return await self._request("GET", "trading/clmm/quote-liquidity", params=params)
 
     async def clmm_create_pool(
@@ -833,15 +948,16 @@ class GatewayClient:
         same contract as clmm open's extra_params. The router validates keys before
         this is called.
         """
-        payload = {
-            "connector": connector,
-            "chainNetwork": chain_network,
-            "walletAddress": wallet_address,
-            "baseToken": base_token,
-            "quoteToken": quote_token,
-        }
-        if initial_price is not None:
-            payload["initialPrice"] = initial_price
+        payload = _body(
+            ClmmCreatePoolRequest(
+                connector=connector,
+                chainNetwork=chain_network,
+                walletAddress=wallet_address,
+                baseToken=base_token,
+                quoteToken=quote_token,
+                initialPrice=initial_price,
+            )
+        )
         if extra_params:
             payload.update(extra_params)
         return await self._request("POST", "trading/clmm/create-pool", json=payload)
@@ -854,12 +970,14 @@ class GatewayClient:
         position_address: str
     ) -> Dict:
         """Collect accumulated fees from a CLMM position"""
-        return await self._request("POST", "trading/clmm/collect-fees", json={
-            "connector": connector,
-            "chainNetwork": chain_network,
-            "walletAddress": wallet_address,
-            "positionAddress": position_address
-        })
+        return await self._request("POST", "trading/clmm/collect-fees", json=_body(
+            ClmmCollectFeesRequest(
+                connector=connector,
+                chainNetwork=chain_network,
+                walletAddress=wallet_address,
+                positionAddress=position_address,
+            )
+        ))
 
     async def clmm_pool_info(
         self,
@@ -874,13 +992,14 @@ class GatewayClient:
         (`bins`) around the active tick. Meteora always returns its bins and
         ignores the parameter; orca, raydium, uniswap and pancakeswap honour it.
         """
-        params = {
-            "connector": connector,
-            "chainNetwork": chain_network,
-            "poolAddress": pool_address
-        }
-        if bin_count:
-            params["binCount"] = bin_count
+        params = _query(
+            ClmmPoolInfoRequest(
+                connector=connector,
+                chainNetwork=chain_network,
+                poolAddress=pool_address,
+                binCount=bin_count or None,
+            )
+        )
         return await self._request("GET", "trading/clmm/pool-info", params=params)
 
     async def clmm_fetch_pools(
@@ -904,23 +1023,19 @@ class GatewayClient:
         paginate — so only keys the caller sets are sent. Gateway drops a knob the chosen
         connector ignores, meaning the wrong connector's knob is a silent no-op.
         """
-        params = {
-            "chainNetwork": chain_network,
-            "connector": connector,
-            "limit": limit,
-        }
-        if query:
-            params["query"] = query
-        if sort_by:
-            params["sortBy"] = sort_by
-        if page is not None and page > 0:
-            params["page"] = page
-        if include_unverified is not None:
-            params["includeUnverified"] = "true" if include_unverified else "false"
-        if sort_direction:
-            params["sortDirection"] = sort_direction
-        if verified_only is not None:
-            params["verifiedOnly"] = "true" if verified_only else "false"
+        params = _query(
+            ClmmFetchPoolsRequest(
+                chainNetwork=chain_network,
+                connector=connector,
+                limit=limit,
+                query=query or None,
+                sortBy=sort_by or None,
+                page=page if page else None,
+                includeUnverified=include_unverified,
+                sortDirection=sort_direction or None,
+                verifiedOnly=verified_only,
+            )
+        )
 
         return await self._request("GET", "trading/clmm/fetch-pools", params=params)
 
@@ -933,32 +1048,38 @@ class GatewayClient:
 
     async def amm_pool_info(self, connector: str, chain_network: str, pool_address: str) -> Dict:
         """Get AMM pool information (reserves, price, base fee)."""
-        return await self._request("GET", "trading/amm/pool-info", params={
-            "connector": connector,
-            "chainNetwork": chain_network,
-            "poolAddress": pool_address,
-        })
+        return await self._request("GET", "trading/amm/pool-info", params=_query(
+            AmmPoolInfoRequest(
+                connector=connector,
+                chainNetwork=chain_network,
+                poolAddress=pool_address,
+            )
+        ))
 
     async def amm_position_info(
         self, connector: str, chain_network: str, pool_address: str, wallet_address: str
     ) -> Dict:
         """Get a wallet's aggregate liquidity in an AMM pool plus a per-position breakdown (DAMM v2)."""
-        return await self._request("GET", "trading/amm/position-info", params={
-            "connector": connector,
-            "chainNetwork": chain_network,
-            "poolAddress": pool_address,
-            "walletAddress": wallet_address,
-        })
+        return await self._request("GET", "trading/amm/position-info", params=_query(
+            AmmPositionInfoRequest(
+                connector=connector,
+                chainNetwork=chain_network,
+                poolAddress=pool_address,
+                walletAddress=wallet_address,
+            )
+        ))
 
     async def amm_positions_owned(
         self, connector: str, chain_network: str, wallet_address: str
     ) -> List[Dict]:
         """List all of a wallet's AMM positions across pools (meteora only; fungible-LP → Gateway 400)."""
-        return await self._request("GET", "trading/amm/positions-owned", params={
-            "connector": connector,
-            "chainNetwork": chain_network,
-            "walletAddress": wallet_address,
-        })
+        return await self._request("GET", "trading/amm/positions-owned", params=_query(
+            AmmPositionsOwnedRequest(
+                connector=connector,
+                chainNetwork=chain_network,
+                walletAddress=wallet_address,
+            )
+        ))
 
     async def amm_quote_liquidity(
         self,
@@ -970,15 +1091,16 @@ class GatewayClient:
         slippage_pct: Optional[float] = None,
     ) -> Dict:
         """Quote a two-sided liquidity deposit."""
-        payload = {
-            "connector": connector,
-            "chainNetwork": chain_network,
-            "poolAddress": pool_address,
-            "baseTokenAmount": base_token_amount,
-            "quoteTokenAmount": quote_token_amount,
-        }
-        if slippage_pct is not None:
-            payload["slippagePct"] = slippage_pct
+        payload = _query(
+            AmmQuoteLiquidityRequest(
+                connector=connector,
+                chainNetwork=chain_network,
+                poolAddress=pool_address,
+                baseTokenAmount=base_token_amount,
+                quoteTokenAmount=quote_token_amount,
+                slippagePct=slippage_pct,
+            )
+        )
         return await self._request("GET", "trading/amm/quote-liquidity", params=payload)
 
     async def amm_add_liquidity(
@@ -993,18 +1115,18 @@ class GatewayClient:
         position_address: Optional[str] = None,
     ) -> Dict:
         """Add two-sided liquidity. For meteora, position_address adds to that NFT position (omit = new)."""
-        payload = {
-            "connector": connector,
-            "chainNetwork": chain_network,
-            "walletAddress": wallet_address,
-            "poolAddress": pool_address,
-            "baseTokenAmount": base_token_amount,
-            "quoteTokenAmount": quote_token_amount,
-        }
-        if slippage_pct is not None:
-            payload["slippagePct"] = slippage_pct
-        if position_address is not None:
-            payload["positionAddress"] = position_address
+        payload = _body(
+            AmmAddRequest(
+                connector=connector,
+                chainNetwork=chain_network,
+                walletAddress=wallet_address,
+                poolAddress=pool_address,
+                baseTokenAmount=base_token_amount,
+                quoteTokenAmount=quote_token_amount,
+                slippagePct=slippage_pct,
+                positionAddress=position_address,
+            )
+        )
         return await self._request("POST", "trading/amm/add", json=payload)
 
     async def amm_remove_liquidity(
@@ -1018,17 +1140,17 @@ class GatewayClient:
         position_address: Optional[str] = None,
     ) -> Dict:
         """Remove liquidity. Gateway requires position_address for meteora (DAMM v2 NFT positions)."""
-        payload = {
-            "connector": connector,
-            "chainNetwork": chain_network,
-            "walletAddress": wallet_address,
-            "poolAddress": pool_address,
-            "percentageToRemove": percentage_to_remove,
-        }
-        if slippage_pct is not None:
-            payload["slippagePct"] = slippage_pct
-        if position_address is not None:
-            payload["positionAddress"] = position_address
+        payload = _body(
+            AmmRemoveRequest(
+                connector=connector,
+                chainNetwork=chain_network,
+                walletAddress=wallet_address,
+                poolAddress=pool_address,
+                percentageToRemove=percentage_to_remove,
+                slippagePct=slippage_pct,
+                positionAddress=position_address,
+            )
+        )
         return await self._request("POST", "trading/amm/remove", json=payload)
 
     async def amm_create_pool(
@@ -1052,21 +1174,21 @@ class GatewayClient:
         ammConfigIndex) and is spread into the payload — the same contract as clmm
         open's extra_params. The router validates keys before this is called.
         """
-        payload = {
-            "connector": connector,
-            "chainNetwork": chain_network,
-            "walletAddress": wallet_address,
-            "baseToken": base_token,
-            "quoteToken": quote_token,
-            "baseTokenAmount": base_token_amount,
-        }
-        # Seed price: at most one of quoteTokenAmount / initialPrice; Gateway falls back to market price.
-        if quote_token_amount is not None:
-            payload["quoteTokenAmount"] = quote_token_amount
-        if initial_price is not None:
-            payload["initialPrice"] = initial_price
-        if slippage_pct is not None:
-            payload["slippagePct"] = slippage_pct
+        # Seed price: at most one of quoteTokenAmount / initialPrice; Gateway falls back
+        # to market price when neither is given, which _body expresses by dropping None.
+        payload = _body(
+            AmmCreatePoolRequest(
+                connector=connector,
+                chainNetwork=chain_network,
+                walletAddress=wallet_address,
+                baseToken=base_token,
+                quoteToken=quote_token,
+                baseTokenAmount=base_token_amount,
+                quoteTokenAmount=quote_token_amount,
+                initialPrice=initial_price,
+                slippagePct=slippage_pct,
+            )
+        )
         if extra_params:
             payload.update(extra_params)
         return await self._request("POST", "trading/amm/create-pool", json=payload)

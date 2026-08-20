@@ -14,9 +14,11 @@ Three checks, each guarding a different half of the wire:
   built from. Those models are constructed by splatting a Gateway response
   (`Model(**result)`), so a field Gateway does not send is dead on arrival.
 - Every camelCase key `services/gateway_client.py` writes or reads appears in the spec.
-  This is the only check that reaches GET query parameters, which live in the spec as
-  `parameters` and so are absent from `components.schemas` entirely — no generated
-  model covers them.
+  This covers the routes still built by hand — /wallet, /config, /tokens, /pools.
+- Every keyword the client passes to a generated request model is a field of it. The
+  /trading methods build their payloads from those models, so their names are checked by
+  construction — except that pydantic drops an unknown keyword, which on an optional
+  field would send the request without it, in silence.
 
 Refresh the spec and models together when adopting a Gateway change:
 
@@ -109,6 +111,9 @@ def test_the_generated_models_match_the_vendored_spec():
             "--snake-case-field",
             "--target-python-version", "3.12",
             "--disable-timestamp",
+            # Keeps `connector`/`network` as plain strings rather than baking Gateway's
+            # current roster into this service. See the Makefile.
+            "--ignore-enum-constraints",
             "--formatters", "black",
             "--formatters", "isort",
             "--custom-file-header", GENERATED_PATH.read_text().split("\n\n")[0],
@@ -160,11 +165,48 @@ def test_every_wire_key_the_client_uses_exists_in_the_spec():
     )
 
 
+# `ModelNameRequest(\n    key=..., ...)` — the shape every converted call site uses.
+_MODEL_CALL = re.compile(r"\b([A-Z][A-Za-z0-9]*Request)\(\s*\n((?:\s+\w+=.*\n)+)")
+_MODEL_KWARG = re.compile(r"^\s+(\w+)=", re.M)
+
+
+def _model_calls() -> list:
+    return [
+        (m.group(1), _MODEL_KWARG.findall(m.group(2)))
+        for m in _MODEL_CALL.finditer(CLIENT_PATH.read_text())
+    ]
+
+
+def test_every_kwarg_is_a_field_of_the_model_it_names():
+    """Pydantic ignores an unknown keyword.
+
+    On a required field that still fails loudly — the real one goes missing — but
+    `slippagePc=1` for `slippagePct` would be dropped in silence, and the request would
+    go out without the slippage the caller asked for.
+    """
+    from models import gateway_generated
+
+    unknown = []
+    for model_name, kwargs in _model_calls():
+        model = getattr(gateway_generated, model_name, None)
+        assert model is not None, f"{model_name} is not a generated model"
+        fields = {(f.alias or n) for n, f in model.model_fields.items()} | set(model.model_fields)
+        unknown += [f"{model_name}.{k}" for k in kwargs if k not in fields]
+
+    assert not unknown, (
+        "GatewayClient passes keywords no generated model declares:\n  "
+        + "\n  ".join(sorted(unknown))
+        + "\n\nPydantic drops an unknown keyword, so an optional one goes missing in "
+        "silence. Follow the rename, or correct the spelling."
+    )
+
+
 def test_the_checks_above_are_not_vacuous():
     """A truncated spec or a regex matching nothing would pass every check silently."""
     spec = _spec()
     assert len(spec["components"]["schemas"]) > 50, "components.schemas looks truncated"
     assert len(_schema_property_names(spec)) > 100, "Found almost no property names in the spec"
-    assert len(re.findall(r'"([a-z][a-zA-Z0-9]*[A-Z][a-zA-Z0-9]*)"', CLIENT_PATH.read_text())) > 50, (
-        "Found almost no camelCase literals in the client — has the regex gone stale?"
+    assert len(_model_calls()) > 10, (
+        f"Only {len(_model_calls())} model constructions found in the client — has the regex "
+        "gone stale, or did the /trading methods go back to hand-written dicts?"
     )

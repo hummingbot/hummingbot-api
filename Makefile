@@ -95,6 +95,13 @@ $(HASH) flake8: noqa: E501
 endef
 export GATEWAY_MODELS_HEADER
 
+# --ignore-enum-constraints keeps `connector` and `network` as plain strings. Gateway
+# constrains them by enum so its docs can offer dropdowns, but generating those as Python
+# enums would bake a connector and network roster into this service: a venue Gateway added
+# after the last spec refresh would be rejected before the request left the process. It
+# also removes the only classes the generator had to number (Connector9, Connector15, ...),
+# which were renamed by any unrelated route insertion.
+#
 # Regenerate models/gateway_generated.py from the vendored Gateway spec.
 # Adopting a Gateway change is two steps — refresh the spec, then rerun this:
 #   cd ../gateway && pnpm generate:openapi && cp openapi.json ../hummingbot-api/gateway-openapi.json
@@ -105,6 +112,7 @@ gateway-models:
 		--input gateway-openapi.json --input-file-type openapi --openapi-scopes schemas \
 		--output models/gateway_generated.py --output-model-type pydantic_v2.BaseModel \
 		--snake-case-field --target-python-version 3.12 --disable-timestamp \
+		--ignore-enum-constraints \
 		--formatters black --formatters isort \
 		--custom-file-header "$$GATEWAY_MODELS_HEADER"
 
