@@ -445,10 +445,18 @@ async def remove_amm_liquidity(
                         base_delta=Decimal(str(data.get("baseTokenAmountRemoved") or 0)),
                         quote_delta=Decimal(str(data.get("quoteTokenAmountRemoved") or 0)),
                     )
-                    # DAMM v2 burns the position NFT on a full withdrawal, so a 100%
-                    # remove is the close — there is no separate close route.
+                    # A 100% remove is the close: Gateway closes the position account in
+                    # the same transaction, which is what returns its rent. There is no
+                    # separate close route, and positionRentRefunded arrives only on this
+                    # path — a partial removal leaves the account open and refunds
+                    # nothing, so its absence there is a fact rather than a gap.
                     if position and float(request.percentage_to_remove) >= 100:
-                        await repo.close_position(request.position_address)
+                        rent_refunded = data.get("positionRentRefunded")
+                        await repo.close_position(
+                            request.position_address,
+                            position_rent_refunded=(Decimal(str(rent_refunded))
+                                                    if rent_refunded is not None else None),
+                        )
             except Exception as db_error:
                 logger.error(f"Error booking AMM removal for {request.position_address}: "
                              f"{db_error}", exc_info=True)

@@ -53,10 +53,11 @@ PASSTHROUGH_MODELS = [
     ("AMMQuoteLiquidityResponse", "QuoteLiquidityResponse"),
     ("AMMCreatePoolResponse", "CreatePoolResponse"),
     ("AMMCreatePoolResponse", "ClmmCreatePoolResponse"),
+    # Gateway dropped /trading/amm/{open,close}: open was a synonym for add without a
+    # position address, and close is now what remove does at 100%, which is why the
+    # remove response is the one that carries positionRentRefunded.
     ("AMMTransactionResponse", "AmmAddLiquidityResponse"),
     ("AMMTransactionResponse", "AmmRemoveLiquidityResponse"),
-    ("AMMTransactionResponse", "AmmOpenPositionResponse"),
-    ("AMMTransactionResponse", "AmmClosePositionResponse"),
 ]
 
 # camelCase strings in the client that address Gateway's YAML config tree rather than an

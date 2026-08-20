@@ -107,12 +107,24 @@ class GatewayAMMRepository:
             await self.session.flush()
         return position
 
-    async def close_position(self, position_address: str) -> Optional[GatewayAMMPosition]:
-        """Mark a position closed. DAMM v2 closes when its liquidity is fully removed."""
+    async def close_position(
+        self,
+        position_address: str,
+        position_rent_refunded: Optional[Decimal] = None
+    ) -> Optional[GatewayAMMPosition]:
+        """Mark a position closed, recording the rent the chain gave back.
+
+        A DAMM v2 position closes when its liquidity is fully removed: Gateway closes the
+        position account in the same transaction, which is what returns its rent. The
+        refund needs recording separately because the rent was never liquidity —
+        subtracting the removed amounts does not account for it.
+        """
         position = await self.get_position_by_address(position_address)
         if position:
             position.status = "CLOSED"
             position.closed_at = datetime.now(timezone.utc)
+            if position_rent_refunded is not None:
+                position.position_rent_refunded = position_rent_refunded
             await self.session.flush()
         return position
 
