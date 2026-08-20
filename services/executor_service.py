@@ -6,6 +6,7 @@ without Docker containers or full strategy setup.
 import asyncio
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from decimal import Decimal
 from enum import Enum
@@ -32,7 +33,7 @@ from hummingbot.strategy_v2.executors.xemm_executor.data_types import XEMMExecut
 from hummingbot.strategy_v2.executors.xemm_executor.xemm_executor import XEMMExecutor
 from hummingbot.strategy_v2.models.executors import CloseType, TrackedOrder
 
-from database import AsyncDatabaseManager, ExecutorRepository
+from database import AsyncDatabaseManager, ExecutorRepository, GatewayCLMMRepository
 from models.executors import PositionHold
 from services.trading_service import AccountTradingInterface, TradingService
 from utils.executor_log_capture import ExecutorLogCapture, current_executor_id
@@ -110,6 +111,10 @@ class ExecutorService:
     - Database persistence of executor state and history
     """
 
+    # How long to wait before looking again for a position row that was not there. The
+    # poller creates it on discovery, which is far slower than the control loop's tick.
+    LP_RENT_RETRY_SECONDS = 30.0
+
     # Mapping of executor type strings to (executor_class, config_class)
     EXECUTOR_REGISTRY: Dict[str, tuple[Type[ExecutorBase], Type[ExecutorConfigBase]]] = {
         "position_executor": (PositionExecutor, PositionExecutorConfig),
@@ -162,6 +167,19 @@ class ExecutorService:
         # Executor log capture
         self._log_capture = ExecutorLogCapture()
         self._log_capture.install()
+
+        # An LP executor's position address, learned while the executor is live. A
+        # successful close clears it from custom_info before the executor terminates, so
+        # by completion — which is when the rent refund is finally known — there is
+        # nothing left to file it under. See _record_lp_position_rent.
+        self._lp_position_addresses: Dict[str, str] = {}
+        # Executors whose locked rent is already stored, so the control loop stops
+        # re-reading and re-writing a figure that cannot change.
+        self._lp_rent_recorded: set = set()
+        # Earliest monotonic time to retry an executor whose position row did not exist
+        # yet. Discovery runs on its own schedule, so retrying at the control loop's 1 Hz
+        # would be a query a second against a row that appears about once a minute.
+        self._lp_rent_retry_after: Dict[str, float] = {}
 
         # Control loop task
         self._control_loop_task: Optional[asyncio.Task] = None
@@ -298,11 +316,23 @@ class ExecutorService:
                 # Update timestamps for all trading interfaces via TradingService
                 self._trading_service.update_all_timestamps()
 
-                # Check for completed executors
+                # Check for completed executors. Iterate a snapshot: the rent recording
+                # below awaits, and create_executor runs in a request task that can add to
+                # or remove from _active_executors while this loop is suspended.
                 completed_ids = []
-                for executor_id, executor in self._active_executors.items():
+                for executor_id, executor in list(self._active_executors.items()):
                     if executor.is_closed:
                         completed_ids.append(executor_id)
+                    elif (
+                        self._executor_metadata.get(executor_id, {}).get("executor_type") == "lp_executor"
+                        and executor_id not in self._lp_rent_recorded
+                        and time.monotonic() >= self._lp_rent_retry_after.get(executor_id, 0.0)
+                    ):
+                        # Locked rent, stored while the position is still held rather than
+                        # at completion — a position open for days should be answerable
+                        # for the whole time it is open. Drops out of this branch as soon
+                        # as it lands, so it is one read per executor, not one per tick.
+                        await self._record_lp_position_rent(executor_id, executor)
 
                 # Handle completed executors
                 for executor_id in completed_ids:
@@ -312,6 +342,95 @@ class ExecutorService:
                 logger.error(f"Error in executor control loop: {e}", exc_info=True)
 
             await asyncio.sleep(self.update_interval)
+
+    @staticmethod
+    def _measured_rent(custom_info: Dict[str, Any], key: str) -> Optional[Decimal]:
+        """A rent figure the executor actually observed, or None.
+
+        The LP executor reports these as plain floats and defaults them to 0.0, so zero
+        means "never measured" far more often than it means "measured and empty": a
+        position still open has no refund yet, and an EVM CLMM has no rent at all. Rent
+        that was genuinely locked is never zero. Storing the 0.0 would put a figure in
+        the table that reads as an observation and is not one — the mistake GW-18 made,
+        where a hardcoded 0 refund was indistinguishable from a position that earned
+        nothing.
+        """
+        value = custom_info.get(key)
+        if value is None:
+            return None
+        try:
+            amount = Decimal(str(value))
+        except (ArithmeticError, ValueError):
+            return None
+        return amount if amount > 0 else None
+
+    async def _record_lp_position_rent(self, executor_id: str, executor: ExecutorBase) -> None:
+        """Carry an LP executor's rent figures into the CLMM position table.
+
+        `gateway_clmm_positions.position_rent` is written by hummingbot-api's OPEN route
+        and `position_rent_refunded` by its CLOSE route. An executor holds its position
+        through the wheel, talking to Gateway directly, so neither route runs: the poller
+        discovers the position and files it with both columns NULL, and the close leaves
+        no refund behind either. That is the recommended way to hold a CLMM position and
+        the one path whose rent went unrecorded — ~0.0100572 SOL on Orca, more than the
+        liquidity in a small position.
+
+        The executor knows both figures; nothing was asking it. Locked rent is written as
+        soon as the position row exists, rather than at completion, so a position held for
+        days is answerable while it is held. The row may not exist yet on an early tick —
+        discovery runs on its own schedule — in which case this is a no-op and the next
+        tick tries again.
+        """
+        try:
+            custom_info = executor.get_custom_info()
+        except Exception as e:
+            logger.debug(f"Could not read custom_info for {executor_id} while recording rent: {e}")
+            return
+
+        position_address = custom_info.get("position_address")
+        if position_address:
+            self._lp_position_addresses[executor_id] = position_address
+        else:
+            # Cleared by a successful close. The refund is only known now, so fall back to
+            # the address this executor was holding.
+            position_address = self._lp_position_addresses.get(executor_id)
+        if not position_address:
+            return
+
+        position_rent = self._measured_rent(custom_info, "position_rent")
+        position_rent_refunded = self._measured_rent(custom_info, "position_rent_refunded")
+        if position_rent is None and position_rent_refunded is None:
+            return
+
+        try:
+            async with self.db_manager.get_session_context() as session:
+                position = await GatewayCLMMRepository(session).record_position_rent(
+                    position_address,
+                    position_rent=position_rent,
+                    position_rent_refunded=position_rent_refunded,
+                )
+        except Exception as e:
+            logger.error(f"Error recording rent for LP position {position_address}: {e}", exc_info=True)
+            return
+
+        if position is None:
+            self._lp_rent_retry_after[executor_id] = time.monotonic() + self.LP_RENT_RETRY_SECONDS
+            # Only worth a warning once the figure is final: while the executor runs, the
+            # poller has simply not discovered the position yet and a later tick retries.
+            if position_rent_refunded is not None:
+                logger.warning(
+                    f"LP executor {executor_id} closed position {position_address} with a rent "
+                    f"refund of {position_rent_refunded}, but no row exists for it — the poller "
+                    "never discovered the position, so the refund has nowhere to be recorded."
+                )
+            return
+
+        if position_rent is not None:
+            self._lp_rent_recorded.add(executor_id)
+        logger.debug(
+            f"Recorded rent for LP position {position_address}: locked={position_rent}, "
+            f"refunded={position_rent_refunded}"
+        )
 
     def _get_trading_interface(self, account_name: str) -> AccountTradingInterface:
         """Get or create an AccountTradingInterface for the account."""
@@ -815,6 +934,15 @@ class ExecutorService:
 
         # Persist final state to database
         await self._persist_executor_completed(executor_id, executor)
+
+        # The rent refund is only known once the close confirms, which is here. A
+        # successful close has already cleared position_address from custom_info, so this
+        # relies on the address remembered while the executor was live.
+        if metadata.get("executor_type") == "lp_executor":
+            await self._record_lp_position_rent(executor_id, executor)
+        self._lp_position_addresses.pop(executor_id, None)
+        self._lp_rent_recorded.discard(executor_id)
+        self._lp_rent_retry_after.pop(executor_id, None)
 
         # Active executor already claimed via pop above; drop its metadata last
         # (metadata is read above and re-fetched inside the persist/aggregate

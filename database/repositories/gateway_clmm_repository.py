@@ -103,6 +103,43 @@ class GatewayCLMMRepository:
             await self.session.flush()
         return position
 
+    async def record_position_rent(
+        self,
+        position_address: str,
+        position_rent: Optional[Decimal] = None,
+        position_rent_refunded: Optional[Decimal] = None,
+    ) -> Optional[GatewayCLMMPosition]:
+        """Fill in rent figures the write routes never saw, without disturbing ones they did.
+
+        Both columns are written by hummingbot-api's own routes: `position_rent` by OPEN,
+        `position_rent_refunded` by CLOSE. A position an executor opened talks to Gateway
+        directly through the wheel, so neither route ran and both columns stay NULL — on
+        the workflow that is actually recommended for holding a position. Rent is
+        ~0.0100572 SOL on Orca, larger than the liquidity on a small position.
+
+        Only NULL columns are filled. A figure already recorded came from the transaction
+        that produced it and is not replaced by one carried in from elsewhere, and a
+        second call cannot rewrite what the first stored.
+
+        Callers must not pass zero for an unmeasured figure. NULL means "no rent was
+        observed", which is the truth both for a reading that never happened and for a
+        chain without rent at all; a stored 0.0 claims a measurement was taken and came
+        back empty, which nothing downstream can tell from the real thing (see GW-18).
+        """
+        result = await self.session.execute(
+            select(GatewayCLMMPosition).where(GatewayCLMMPosition.position_address == position_address)
+        )
+        position = result.scalar_one_or_none()
+        if position is None:
+            return None
+
+        if position_rent is not None and position.position_rent is None:
+            position.position_rent = position_rent
+        if position_rent_refunded is not None and position.position_rent_refunded is None:
+            position.position_rent_refunded = position_rent_refunded
+        await self.session.flush()
+        return position
+
     async def reopen_position(self, position_address: str) -> Optional[GatewayCLMMPosition]:
         """
         Reopen a position that was incorrectly marked as closed.
