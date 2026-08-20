@@ -554,14 +554,14 @@ class ClmmExecuteSwapRequest(BaseModel):
 
 class AllowancesRequest(BaseModel):
     network: str | None = Field('mainnet', description='The Ethereum network to use')
-    address: str | None = Field('0xDA50C69342216b538Daf06FfECDa7363E0B96684', description='Ethereum wallet address')
+    address: str | None = Field('<ethereum-wallet-address>', description='Ethereum wallet address')
     spender: str = Field(..., description='Connector name (e.g., uniswap/clmm, uniswap/amm, 0x/router) or contract address', examples=['uniswap/router'])
     tokens: list[str] = Field(..., description='Array of token symbols or addresses', examples=[['USDC', 'WETH']])
 
 
 class ApproveRequest(BaseModel):
     network: str | None = Field('mainnet', description='The Ethereum network to use')
-    address: str | None = Field('0xDA50C69342216b538Daf06FfECDa7363E0B96684', description='Ethereum wallet address')
+    address: str | None = Field('<ethereum-wallet-address>', description='Ethereum wallet address')
     spender: str = Field(..., description='Connector name (e.g., uniswap/clmm, uniswap/amm, 0x/router) contract address', examples=['uniswap/router'])
     token: str = Field(..., description='Token symbol or address', examples=['USDC'])
     amount: str | None = Field('', description='The amount to approve. If not provided, defaults to maximum amount (unlimited approval).')
