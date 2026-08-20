@@ -74,6 +74,26 @@ class AsyncDatabaseManager:
                 "position_holds", "cum_fees_quote",
                 "ALTER TABLE position_holds ADD COLUMN cum_fees_quote NUMERIC(30,18) NOT NULL DEFAULT 0"
             ),
+            # Position-account rent, locked on open and refunded on close. create_all only
+            # creates missing tables, so a model gaining a column reaches an existing
+            # database only through this list. Both position tables carry the pair: DAMM v2
+            # positions are NFTs with their own account, exactly like CLMM ones.
+            (
+                "gateway_clmm_positions", "position_rent",
+                "ALTER TABLE gateway_clmm_positions ADD COLUMN position_rent NUMERIC(30,18)"
+            ),
+            (
+                "gateway_clmm_positions", "position_rent_refunded",
+                "ALTER TABLE gateway_clmm_positions ADD COLUMN position_rent_refunded NUMERIC(30,18)"
+            ),
+            (
+                "gateway_amm_positions", "position_rent",
+                "ALTER TABLE gateway_amm_positions ADD COLUMN position_rent NUMERIC(30,18)"
+            ),
+            (
+                "gateway_amm_positions", "position_rent_refunded",
+                "ALTER TABLE gateway_amm_positions ADD COLUMN position_rent_refunded NUMERIC(30,18)"
+            ),
         ]
         for table, column, sql in migrations:
             try:

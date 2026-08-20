@@ -387,6 +387,13 @@ class GatewayAMMPosition(Base):
     quote_token_amount = Column(Numeric(precision=30, scale=18), nullable=False, default=0)
     lp_token_amount = Column(Numeric(precision=30, scale=18), nullable=True)
 
+    # Rent for the position account, locked on open and returned by the chain on close.
+    # DAMM v2 positions are NFTs with their own account, so they carry rent exactly as
+    # CLMM positions do — it is not liquidity, and a close that refunds less than was
+    # locked means an account was left behind.
+    position_rent = Column(Numeric(precision=30, scale=18), nullable=True)
+    position_rent_refunded = Column(Numeric(precision=30, scale=18), nullable=True)
+
     entry_price = Column(Numeric(precision=30, scale=18), nullable=True)  # base-weighted across adds
     current_price = Column(Numeric(precision=30, scale=18), nullable=True)
 
