@@ -416,8 +416,7 @@ class GatewayClient:
     async def get_tokens(self, chain: str, network: str) -> Dict:
         """Get available tokens for a chain/network"""
         return await self._request("GET", "tokens", params={
-            "chain": chain,
-            "network": network
+            "chainNetwork": f"{chain}-{network}"
         })
 
     async def _get_token_symbols(self, chain: str, network: str) -> Dict[str, str]:
@@ -448,8 +447,7 @@ class GatewayClient:
     async def add_token(self, chain: str, network: str, address: str, symbol: str, name: str, decimals: int) -> Dict:
         """Add a custom token to Gateway's token list"""
         return await self._request("POST", "tokens", json={
-            "chain": chain,
-            "network": network,
+            "chainNetwork": f"{chain}-{network}",
             "token": {
                 "address": address,
                 "symbol": symbol,
@@ -461,8 +459,7 @@ class GatewayClient:
     async def delete_token(self, chain: str, network: str, token_address: str) -> Dict:
         """Delete a custom token from Gateway's token list"""
         return await self._request("DELETE", f"tokens/{token_address}", params={
-            "chain": chain,
-            "network": network
+            "chainNetwork": f"{chain}-{network}"
         })
 
     async def save_token(self, chain: str, network: str, token_address: str) -> Dict:
@@ -519,8 +516,7 @@ class GatewayClient:
     ) -> List[Dict]:
         """Get pools for a chain and network with optional filtering"""
         params = {
-            "chain": chain,
-            "network": network
+            "chainNetwork": f"{chain}-{network}"
         }
         if connector:
             params["connector"] = connector
@@ -545,10 +541,9 @@ class GatewayClient:
     ) -> Dict:
         """Add a new pool"""
         payload = {
-            "chain": chain,
+            "chainNetwork": f"{chain}-{network}",
             "connector": connector,
             "type": pool_type.lower(),  # Gateway expects lowercase (amm, clmm)
-            "network": network,
             "address": address,
             "baseSymbol": base_symbol,
             "quoteSymbol": quote_symbol,
@@ -568,8 +563,7 @@ class GatewayClient:
     async def delete_pool(self, chain: str, network: str, address: str) -> Dict:
         """Delete a pool from Gateway's pool list"""
         return await self._request("DELETE", f"pools/{address}", params={
-            "chain": chain,
-            "network": network
+            "chainNetwork": f"{chain}-{network}"
         })
 
     # ============================================
