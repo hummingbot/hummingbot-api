@@ -28,6 +28,7 @@ from models.gateway_generated import (
     ClmmQuoteLiquidityRequest,
     ClmmQuoteSwapRequest,
     ClmmRemoveRequest,
+    RouterExecuteQuoteRequest,
     RouterExecuteSwapRequest,
     RouterQuoteSwapRequest,
 )
@@ -671,6 +672,35 @@ class GatewayClient:
                 params[key] = str(value).lower() if isinstance(value, bool) else str(value)
 
         return await self._request("GET", f"trading/{trading_type}/quote-swap", params=params)
+
+    async def execute_quote(
+        self,
+        connector: str,
+        chain_network: str,
+        wallet_address: str,
+        quote_id: str,
+    ) -> Dict:
+        """Execute a quote the caller already holds, by its id.
+
+        Router-only, and deliberately so: a quote id refers to route calldata Gateway
+        cached, which pool-scoped amm/clmm swaps have no equivalent of — they price
+        against a pool at execution time. Naming a non-router connector therefore fails
+        here rather than silently re-pricing, which would defeat the point of the flow.
+        """
+        name, trading_type = await self.resolve_swap_route(connector)
+        if trading_type != "router":
+            raise ValueError(
+                f"Connector '{name}' is a {trading_type} connector: only routers hold a quote to "
+                "execute. Use /swap/execute for a pool-scoped swap, which prices at execution."
+            )
+        return await self._request("POST", "trading/router/execute-quote", json=_body(
+            RouterExecuteQuoteRequest(
+                chainNetwork=chain_network,
+                connector=name,
+                walletAddress=wallet_address,
+                quoteId=quote_id,
+            )
+        ))
 
     async def execute_swap(
         self,

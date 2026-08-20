@@ -59,6 +59,30 @@ class SwapQuoteResponse(BaseModel):
     slippage_pct: Optional[Decimal] = Field(
         default=None,
         description="Slippage percentage Gateway applied to the quote (the request value when Gateway omits it)")
+    quote_id: Optional[str] = Field(
+        default=None,
+        description="Identifier for this quote, on the router connectors that hold a price. Pass it "
+                    "to /swap/execute-quote to execute THIS quote instead of re-pricing. Absent on "
+                    "pool-scoped connectors, which price against the pool at execution time.")
+
+
+class SwapExecuteQuoteRequest(BaseModel):
+    """Request to execute a quote the caller already has.
+
+    The two-step flow — quote, decide, then commit to that quote — is the reason dflow,
+    titan and 0x return a held price at all. Routing them through /swap/execute instead
+    throws the quote away and prices again, which is what every swap on record did,
+    because until now nothing downstream exposed Gateway's execute-quote route.
+    """
+    connector: str = Field(description="Router connector the quote came from (e.g., 'jupiter', '0x')")
+    network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta')")
+    quote_id: str = Field(description="quote_id from a prior /swap/quote on the same connector")
+    trading_pair: str = Field(
+        description="Trading pair the quote was for (e.g., 'SOL-USDC'). Gateway identifies the swap "
+                    "by quote_id alone; this is what the recorded trade is filed under.")
+    side: str = Field(description="Trade side the quote was for: 'BUY' or 'SELL'")
+    amount: Decimal = Field(description="Base-token amount the quote was for, recorded as the request")
+    wallet_address: Optional[str] = Field(default=None, description="Wallet address (optional, uses default if not provided)")
 
 
 class SwapExecuteRequest(BaseModel):
