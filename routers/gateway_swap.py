@@ -18,6 +18,7 @@ from models import SwapExecuteRequest, SwapExecuteResponse, SwapQuoteRequest, Sw
 from routers.gateway_extras import ExtraParamsSpec, get_transaction_status_from_response, validate_extra_params
 from services.accounts_service import AccountsService
 from services.gateway_client import GatewayError, check_gateway_error, get_native_gas_token
+from utils.trading_pair import split_trading_pair
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +60,7 @@ async def get_swap_quote(
             raise HTTPException(status_code=503, detail="Gateway service is not available")
 
         # Parse trading pair
-        base, quote = request.trading_pair.split("-")
+        base, quote = split_trading_pair(request.trading_pair)
 
         # Get quote from Gateway
         result = check_gateway_error(await accounts_service.gateway_client.quote_swap(
@@ -145,7 +146,7 @@ async def execute_swap(
         )
 
         # Parse trading pair
-        base, quote = request.trading_pair.split("-")
+        base, quote = split_trading_pair(request.trading_pair)
 
         # Execute swap
         result = check_gateway_error(await accounts_service.gateway_client.execute_swap(

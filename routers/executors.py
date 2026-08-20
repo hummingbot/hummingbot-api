@@ -28,6 +28,7 @@ from models.executors import (
 from models.pagination import PaginatedResponse
 from services.executor_service import ExecutorService
 from services.market_data_service import MarketDataService
+from utils.trading_pair import InvalidTradingPair, split_trading_pair
 
 logger = logging.getLogger(__name__)
 
@@ -435,9 +436,15 @@ async def get_positions_summary(
 
         for p in positions:
             unrealized_pnl = None
-            parts = p.trading_pair.split("-")
-            if len(parts) == 2:
-                base, quote = parts
+            # A pair whose base symbol contains a hyphen used to split into three parts
+            # and fail this length check, leaving the PnL silently absent. Tolerance is
+            # still right here — one unreadable pair should not fail the whole listing —
+            # but it now applies only to pairs that really are unreadable.
+            try:
+                base, quote = split_trading_pair(p.trading_pair)
+            except InvalidTradingPair:
+                base = quote = None
+            if base and quote:
                 rate = market_data_service.get_rate(base, quote)
                 if rate is not None:
                     unrealized_pnl = float(p.get_unrealized_pnl(rate))
@@ -514,9 +521,11 @@ async def get_position_held(
             )
 
         unrealized_pnl = None
-        parts = trading_pair.split("-")
-        if len(parts) == 2:
-            base, quote = parts
+        try:
+            base, quote = split_trading_pair(trading_pair)
+        except InvalidTradingPair:
+            base = quote = None
+        if base and quote:
             rate = market_data_service.get_rate(base, quote)
             if rate is not None:
                 unrealized_pnl = float(position.get_unrealized_pnl(rate))

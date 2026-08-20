@@ -36,6 +36,7 @@ from database import AsyncDatabaseManager, ExecutorRepository
 from models.executors import PositionHold
 from services.trading_service import AccountTradingInterface, TradingService
 from utils.executor_log_capture import ExecutorLogCapture, current_executor_id
+from utils.trading_pair import InvalidTradingPair, split_trading_pair
 
 logger = logging.getLogger(__name__)
 
@@ -1069,10 +1070,12 @@ class ExecutorService:
             # First pass: try oracle for each position, collect misses grouped by connector
             missing_by_connector: Dict[str, List[tuple]] = {}  # connector_key -> [(position, trading_pair)]
             for p in positions:
-                parts = p.trading_pair.split("-")
-                if len(parts) != 2:
+                # A hyphenated base symbol produced three parts and was skipped here,
+                # so the position simply contributed nothing to unrealized PnL.
+                try:
+                    base, quote = split_trading_pair(p.trading_pair)
+                except InvalidTradingPair:
                     continue
-                base, quote = parts
                 rate = market_data_service.get_rate(base, quote)
                 if rate is not None:
                     unrealized_pnl += float(p.get_unrealized_pnl(rate))
