@@ -2,7 +2,8 @@
 Tests for Gateway LP Executor functionality.
 
 Tests the following fixes:
-1. KeyError: 'meteora/clmm' - Gateway connectors should use GatewayLp directly
+1. KeyError: 'meteora/clmm' - the DEX and trading type belong in lp_provider,
+   not in connector_name, which names the network
 2. Script config staging compatibility - candles_config and markets removed
 
 Run with: pytest test/test_gateway_lp_executor.py -v
@@ -18,39 +19,48 @@ pytest.importorskip("hummingbot")
 
 
 class TestGatewayConnectorFix:
-    """Tests for Fix 1: KeyError 'meteora/clmm' resolution."""
+    """Tests for how a Gateway connector is created.
 
-    def test_gateway_lp_import(self):
-        """GatewayLp should be importable from hummingbot."""
-        from hummingbot.connector.gateway.gateway_lp import GatewayLp
-        assert GatewayLp is not None
+    The connector used to be GatewayLp, addressed per DEX-and-type ("meteora/clmm"),
+    which is what produced the KeyError this file was written for. It is now a single
+    Gateway connector addressed by NETWORK ("solana-mainnet-beta"): the DEX and the
+    trading type are arguments to its methods, not part of its identity. So the thing
+    worth pinning is no longer "does the slash get detected" but "does a name Gateway
+    owns produce a Gateway, and a name an exchange owns still produce that exchange".
+    """
 
-    def test_gateway_lp_instantiation(self):
-        """GatewayLp should instantiate with meteora/clmm connector name."""
-        from hummingbot.connector.gateway.gateway_lp import GatewayLp
+    def test_gateway_import(self):
+        """Gateway should be importable from hummingbot."""
+        from hummingbot.connector.gateway.gateway import Gateway
+        assert Gateway is not None
 
-        connector = GatewayLp(
-            connector_name="meteora/clmm",
+    def test_gateway_instantiation(self):
+        """Gateway should instantiate against a network name."""
+        from hummingbot.connector.gateway.gateway import Gateway
+
+        connector = Gateway(
+            connector_name="solana-mainnet-beta",
             trading_pairs=[],
             trading_required=True,
         )
-        assert connector.connector_name == "meteora/clmm"
-        assert connector.name == "meteora/clmm"
+        assert connector.connector_name == "solana-mainnet-beta"
+        assert connector.name == "solana-mainnet-beta"
 
-    def test_gateway_lp_has_required_methods(self):
-        """GatewayLp should have methods required by LP executor."""
-        from hummingbot.connector.gateway.gateway_lp import GatewayLp
+    def test_gateway_has_required_methods(self):
+        """Gateway should have the methods the LP executor calls."""
+        from hummingbot.connector.gateway.gateway import Gateway
 
-        connector = GatewayLp(
-            connector_name="meteora/clmm",
+        connector = Gateway(
+            connector_name="solana-mainnet-beta",
             trading_pairs=[],
             trading_required=True,
         )
 
         required_methods = [
             "get_position_info",
-            "_clmm_add_liquidity",
-            "create_market_order_id",
+            "add_liquidity",
+            "remove_liquidity",
+            "get_pool_info",
             "start_network",
             "stop_network",
         ]
@@ -58,43 +68,10 @@ class TestGatewayConnectorFix:
         for method in required_methods:
             assert hasattr(connector, method), f"Missing method: {method}"
 
-    def test_gateway_detection_in_unified_connector_service(self):
-        """_create_trading_connector should detect gateway connectors."""
-        from services.unified_connector_service import UnifiedConnectorService
-
-        source = inspect.getsource(UnifiedConnectorService._create_trading_connector)
-
-        # Check gateway detection logic exists
-        assert "'/' in connector_name" in source, "Gateway detection condition not found"
-        assert "GatewayLp(" in source, "GatewayLp instantiation not found"
-
-    def test_gateway_connector_names_detected(self):
-        """Gateway connector names (with /) should be detected correctly."""
-        gateway_connectors = [
-            "meteora/clmm",
-            "raydium/clmm",
-            "uniswap/amm",
-            "jupiter/router",
-            "orca/whirlpool",
-        ]
-
-        regular_connectors = [
-            "binance",
-            "binance_perpetual",
-            "kucoin",
-            "gate_io",
-        ]
-
-        for name in gateway_connectors:
-            assert "/" in name, f"{name} should be detected as gateway"
-
-        for name in regular_connectors:
-            assert "/" not in name, f"{name} should NOT be detected as gateway"
-
     @pytest.mark.asyncio
     async def test_create_trading_connector_for_gateway(self):
-        """_create_trading_connector should return GatewayLp for gateway connectors."""
-        from hummingbot.connector.gateway.gateway_lp import GatewayLp
+        """A network name should build a Gateway connector."""
+        from hummingbot.connector.gateway.gateway import Gateway
 
         from services.unified_connector_service import UnifiedConnectorService
 
@@ -103,17 +80,49 @@ class TestGatewayConnectorFix:
         service._conn_settings = {}
         service.secrets_manager = MagicMock()
 
-        # Mock BackendAPISecurity
         with patch("services.unified_connector_service.BackendAPISecurity") as mock_security:
             mock_security.login_account = MagicMock()
 
             connector = service._create_trading_connector(
                 account_name="master_account",
-                connector_name="meteora/clmm"
+                connector_name="solana-mainnet-beta"
             )
 
-            assert isinstance(connector, GatewayLp)
-            assert connector.connector_name == "meteora/clmm"
+            assert isinstance(connector, Gateway)
+            assert connector.connector_name == "solana-mainnet-beta"
+
+    @pytest.mark.asyncio
+    async def test_exchange_name_does_not_build_a_gateway_connector(self):
+        """A name AllConnectorSettings knows must still build that exchange's connector.
+
+        Guards the other side of the branch: the Gateway path is reached by a name being
+        ABSENT from _conn_settings, so an empty _conn_settings would send every exchange
+        down it too.
+        """
+        from hummingbot.connector.gateway.gateway import Gateway
+
+        from services.unified_connector_service import UnifiedConnectorService
+
+        service = UnifiedConnectorService.__new__(UnifiedConnectorService)
+        service.secrets_manager = MagicMock()
+
+        conn_setting = MagicMock()
+        conn_setting.conn_init_parameters.return_value = {}
+        service._conn_settings = {"binance": conn_setting}
+
+        with patch("services.unified_connector_service.BackendAPISecurity") as mock_security, \
+                patch("services.unified_connector_service.get_connector_class") as mock_class:
+            mock_security.login_account = MagicMock()
+            mock_security.api_keys = MagicMock(return_value={})
+            mock_class.return_value = MagicMock(return_value="binance-connector")
+
+            connector = service._create_trading_connector(
+                account_name="master_account",
+                connector_name="binance"
+            )
+
+            assert not isinstance(connector, Gateway)
+            mock_class.assert_called_once_with("binance")
 
 
 class TestScriptConfigFix:
@@ -246,11 +255,12 @@ class TestGatewayIntegration:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_create_lp_executor_no_keyerror(self, api_url, api_auth):
-        """Creating LP executor should not raise KeyError for meteora/clmm.
+        """Creating an LP executor should not raise KeyError over the provider name.
 
-        This test verifies the fix for the KeyError: 'meteora/clmm' issue.
-        The request may fail due to Gateway not running, but should NOT fail
-        with KeyError.
+        The DEX and trading type now travel as lp_provider, while connector_name is the
+        network -- the split that removed the KeyError this test is named for. The
+        request may still fail because Gateway is not running; it must not fail with a
+        KeyError.
         """
         import aiohttp
 
@@ -258,7 +268,8 @@ class TestGatewayIntegration:
             "account_name": "master_account",
             "executor_config": {
                 "type": "lp_executor",
-                "connector_name": "meteora/clmm",
+                "connector_name": "solana-mainnet-beta",
+                "lp_provider": "meteora/clmm",
                 "trading_pair": "SOL-USDC",
                 "pool_address": "BGm1av58oGcsQJehL9WXBFXF7D27vZsKefj4xJKD5Y",
                 "lower_price": "84",
