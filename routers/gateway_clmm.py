@@ -1300,8 +1300,12 @@ async def get_clmm_positions_owned(
                 current_price=current_price,
                 lower_price=lower_price,
                 upper_price=upper_price,
-                base_fee_amount=Decimal(str(pos.get("baseFeeAmount", 0))) if pos.get("baseFeeAmount") else None,
-                quote_fee_amount=Decimal(str(pos.get("quoteFeeAmount", 0))) if pos.get("quoteFeeAmount") else None,
+                # `is not None`, not truthiness: a position with nothing uncollected has
+                # fees of 0, and reporting that as None says "Gateway did not tell us"
+                # instead of "there are none". The single-position read below already
+                # draws the distinction this way.
+                base_fee_amount=Decimal(str(pos["baseFeeAmount"])) if pos.get("baseFeeAmount") is not None else None,
+                quote_fee_amount=Decimal(str(pos["quoteFeeAmount"])) if pos.get("quoteFeeAmount") is not None else None,
                 lower_bin_id=pos.get("lowerBinId"),
                 upper_bin_id=pos.get("upperBinId"),
                 in_range=in_range
