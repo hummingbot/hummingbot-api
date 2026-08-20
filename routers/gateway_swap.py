@@ -172,7 +172,11 @@ async def execute_swap(
         amount_out_raw = data.get("amountOut")
 
         side = request.side.upper()
-        if amount_in_raw is not None and amount_out_raw is not None:
+        # Whether the fill is known. A submitted-not-confirmed swap has placeholders
+        # below, and publishing those as the fill would restate the request as the
+        # result — the defect these fields were added to end.
+        fill_known = amount_in_raw is not None and amount_out_raw is not None
+        if fill_known:
             input_amount = Decimal(str(amount_in_raw))
             output_amount = Decimal(str(amount_out_raw))
             # Price in quote-per-base for both sides: SELL flows base->quote (out/in),
@@ -249,6 +253,11 @@ async def execute_swap(
             trading_pair=request.trading_pair,
             side=side,
             amount=request.amount,
+            # What actually moved, alongside what was asked for. Same values the swap
+            # history row above records, so a caller no longer has to go and read it.
+            input_amount=input_amount if fill_known else None,
+            output_amount=output_amount if fill_known else None,
+            price=price if fill_known else None,
             # "confirmed" / "submitted" / "failed" — a failed EVM swap comes back as
             # status -1 with zeroed amounts, which must not read as in-flight.
             status=tx_status

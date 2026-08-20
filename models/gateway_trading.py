@@ -79,11 +79,37 @@ class SwapExecuteRequest(BaseModel):
 
 
 class SwapExecuteResponse(BaseModel):
-    """Response after executing swap"""
+    """Response after executing swap.
+
+    `amount` is what was asked for; the three fill fields are what happened. They were
+    missing entirely, so a caller reconciling a position against this response was
+    reconciling against its own intent: a BUY of 1000 tokens that delivered 951.68
+    answered `amount: 1000` under the description "Amount swapped". Every one of these
+    numbers was already in hand — the same call writes them to the swap history — so the
+    only way to learn what a swap did was to execute it, discard the answer, and search
+    the history by transaction hash.
+    """
     transaction_hash: str = Field(description="Transaction hash")
     trading_pair: str = Field(description="Trading pair")
     side: str = Field(description="Trade side")
-    amount: Decimal = Field(description="Amount swapped")
+    amount: Decimal = Field(
+        description="Amount REQUESTED, denominated in the base token (SELL: base sold; BUY: base "
+                    "wanted). This is the request echoed back, not the fill — see input_amount / "
+                    "output_amount for what actually moved.")
+    # None until the transaction confirms: a submitted swap has no fill yet, and echoing
+    # the request into these would reintroduce the defect they exist to fix.
+    input_amount: Optional[Decimal] = Field(
+        default=None,
+        description="Amount actually spent, denominated in the input token (quote for BUY, base "
+                    "for SELL). None until the transaction confirms.")
+    output_amount: Optional[Decimal] = Field(
+        default=None,
+        description="Amount actually received, denominated in the output token (base for BUY, "
+                    "quote for SELL). None until the transaction confirms.")
+    price: Optional[Decimal] = Field(
+        default=None,
+        description="Executed price in quote per base, computed from the amounts that moved. "
+                    "None until the transaction confirms.")
     status: str = Field(default="submitted", description="Transaction status")
 
 
