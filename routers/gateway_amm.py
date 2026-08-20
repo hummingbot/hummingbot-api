@@ -70,43 +70,6 @@ async def _resolve_wallet(accounts_service: AccountsService, network: str, walle
     )
 
 
-async def _resolve_new_position_address(
-    accounts_service: AccountsService,
-    db_manager: AsyncDatabaseManager,
-    connector: str,
-    network: str,
-    wallet_address: str,
-    pool_address: str,
-) -> Optional[str]:
-    """Find the position address an add just created, by diffing against what we track.
-
-    Workaround for a Gateway gap (GW-6): the AMM add-liquidity response carries no
-    positionAddress, even though Gateway generates the NFT keypair itself and logs the
-    address. Delete this the moment that field exists — a diff cannot attribute an
-    address to a transaction and loses to a concurrent write on the same pool.
-    """
-    try:
-        live = check_gateway_error(await accounts_service.gateway_client.amm_position_info(
-            connector=connector, chain_network=network,
-            pool_address=pool_address, wallet_address=wallet_address,
-        ))
-        on_chain = {p.get("positionAddress") for p in (live.get("positions") or []) if p.get("positionAddress")}
-        if not on_chain:
-            return None
-        async with db_manager.get_session_context() as session:
-            known = await GatewayAMMRepository(session).get_open_position_addresses(
-                wallet_address, pool_address)
-        new = on_chain - known
-        if len(new) == 1:
-            return new.pop()
-        if len(new) > 1:
-            logger.warning(f"{len(new)} untracked DAMM v2 positions in pool {pool_address}; "
-                           "cannot attribute the add to one of them")
-    except Exception as e:
-        logger.warning(f"Could not resolve the new DAMM v2 position in pool {pool_address}: {e}")
-    return None
-
-
 async def _read_pool(
     accounts_service: AccountsService,
     connector: str,
@@ -142,6 +105,12 @@ async def _book_position_add(
     """Create or top up the DAMM v2 position row for a confirmed add."""
     base_added = data.get("baseTokenAmountAdded") or 0
     quote_added = data.get("quoteTokenAmountAdded") or 0
+    # Rent is locked, not spent: the chain returns it when the position account closes,
+    # and Gateway reports it separately for exactly that reason. Recorded here so the
+    # close can be checked against it — a refund smaller than what was locked means an
+    # account was left behind. Present only when this add opened the position; adding to
+    # one that already exists locks no further rent.
+    position_rent = data.get("positionRent")
 
     try:
         async with db_manager.get_session_context() as session:
@@ -176,6 +145,7 @@ async def _book_position_add(
                     "initial_quote_token_amount": quote_added,
                     "base_token_amount": base_added,
                     "quote_token_amount": quote_added,
+                    "position_rent": Decimal(str(position_rent)) if position_rent is not None else None,
                     "entry_price": price,
                     "current_price": price,
                 })
@@ -381,9 +351,12 @@ async def add_amm_liquidity(
         # its price — is the entire record.
         if confirmed and has_nft_positions(request.connector):
             if position_address is None:
-                position_address = await _resolve_new_position_address(
-                    accounts_service, db_manager, request.connector, request.network,
-                    wallet_address, request.pool_address)
+                # An add that opened a position names it in the response. This used to be
+                # a diff of on-chain positions against tracked ones (GW-6), which could
+                # not attribute an address to a transaction and gave up whenever two were
+                # new — Gateway generates the NFT keypair, so it is the only thing that
+                # can say which position this write created.
+                position_address = data.get("positionAddress")
             if position_address:
                 await _book_position_add(
                     accounts_service, db_manager, request, wallet_address, position_address,

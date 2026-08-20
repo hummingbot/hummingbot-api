@@ -35,16 +35,6 @@ class GatewayAMMRepository:
         )
         return result.scalar_one_or_none()
 
-    async def get_open_position_addresses(self, wallet_address: str, pool_address: str) -> set:
-        """Addresses this API already tracks for a wallet/pool, used to spot a new one."""
-        result = await self.session.execute(
-            select(GatewayAMMPosition.position_address).where(
-                GatewayAMMPosition.wallet_address == wallet_address,
-                GatewayAMMPosition.pool_address == pool_address,
-            )
-        )
-        return set(result.scalars().all())
-
     async def create_position(self, position_data: Dict) -> GatewayAMMPosition:
         position = GatewayAMMPosition(**position_data)
         self.session.add(position)
@@ -174,6 +164,11 @@ class GatewayAMMRepository:
             "base_token_amount": num(position.base_token_amount),
             "quote_token_amount": num(position.quote_token_amount),
             "lp_token_amount": num(position.lp_token_amount),
+            # Rent locked at open and what came back at close, kept apart so the two can
+            # be compared: a refund short of what was locked means an account was left
+            # behind. Neither is liquidity, so neither is in the amounts above.
+            "position_rent": num(position.position_rent),
+            "position_rent_refunded": num(position.position_rent_refunded),
             "entry_price": num(position.entry_price),
             "current_price": num(position.current_price),
         }
