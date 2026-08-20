@@ -44,14 +44,18 @@ CLIENT_PATH = _REPO_ROOT / "services" / "gateway_client.py"
 # and write-transaction responses are shared across the AMM and CLMM surfaces, and each
 # of those schemas must independently satisfy it.
 PASSTHROUGH_MODELS = [
-    ("CLMMPoolInfoResponse", "PoolInfo"),
+    # Gateway prefixed its response components so an AMM shape and its CLMM twin no
+    # longer share a name: PoolInfo became ClmmPoolInfo against AmmPoolInfo, and
+    # QuotePositionResponse became ClmmQuoteLiquidityResponse — the route had been
+    # renamed to quote-liquidity and the response had kept the older word.
+    ("CLMMPoolInfoResponse", "ClmmPoolInfo"),
     ("CLMMPoolBin", "BinLiquidity"),
-    ("CLMMQuotePositionResponse", "QuotePositionResponse"),
+    ("CLMMQuotePositionResponse", "ClmmQuoteLiquidityResponse"),
     ("AMMPoolInfoResponse", "AmmPoolInfo"),
     ("AMMPositionInfoResponse", "AmmPositionInfo"),
     ("AMMPositionDetail", "PositionDetail"),
-    ("AMMQuoteLiquidityResponse", "QuoteLiquidityResponse"),
-    ("AMMCreatePoolResponse", "CreatePoolResponse"),
+    ("AMMQuoteLiquidityResponse", "AmmQuoteLiquidityResponse"),
+    ("AMMCreatePoolResponse", "AmmCreatePoolResponse"),
     ("AMMCreatePoolResponse", "ClmmCreatePoolResponse"),
     # Gateway dropped /trading/amm/{open,close}: open was a synonym for add without a
     # position address, and close is now what remove does at 100%, which is why the
