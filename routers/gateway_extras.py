@@ -7,6 +7,7 @@ body and silently ignores everything else, so hapi rejects loudly instead of
 letting a typo'd key, a key sent to a connector that ignores it, or a value of
 the wrong type get silently dropped or misparsed downstream.
 """
+import re
 from typing import Any, Dict, Optional, Set, Tuple
 
 from fastapi import HTTPException
@@ -30,6 +31,23 @@ def get_transaction_status_from_response(gateway_response: dict) -> str:
     if isinstance(status, (int, float)) and status < 0:
         return "FAILED"
     return "SUBMITTED"
+
+
+# A Solana signature or an EVM transaction hash, as they appear inside Gateway's
+# landed-but-failed message: "Transaction <id> landed on-chain but failed: <reason>".
+_TRANSACTION_ID = re.compile(r"[Tt]ransaction ([1-9A-HJ-NP-Za-km-z]{43,88}|0x[0-9a-fA-F]{64})")
+
+
+def transaction_id_from_error(error: Exception) -> Optional[str]:
+    """The transaction a failed Gateway call actually sent, if it sent one.
+
+    This is the distinction worth keeping: a pre-flight simulation failure never got a
+    signature and cost nothing, while a transaction that landed and reverted has one and
+    paid gas for the privilege. Gateway names it in the message either way it can, and it
+    was reaching a log line and nowhere else.
+    """
+    match = _TRANSACTION_ID.search(str(error))
+    return match.group(1) if match else None
 
 
 # Spec entry: key -> (allowed value types, connectors that honor the key).

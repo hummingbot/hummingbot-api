@@ -31,7 +31,12 @@ from models import (
     CLMMQuotePositionResponse,
     CLMMRemoveLiquidityRequest,
 )
-from routers.gateway_extras import ExtraParamsSpec, get_transaction_status_from_response, validate_extra_params
+from routers.gateway_extras import (
+    ExtraParamsSpec,
+    get_transaction_status_from_response,
+    transaction_id_from_error,
+    validate_extra_params,
+)
 from services.accounts_service import AccountsService
 from services.gateway_client import GatewayError, check_gateway_error, get_native_gas_token
 
@@ -150,6 +155,56 @@ async def _refresh_position_data(position, accounts_service: AccountsService, cl
     except Exception as e:
         logger.error(f"Error refreshing position {position.position_address}: {e}", exc_info=True)
         raise
+
+
+async def _record_failed_write(
+    db_manager: AsyncDatabaseManager,
+    error: Exception,
+    *,
+    event_type: str,
+    position_address: Optional[str],
+) -> None:
+    """Record a write that reached the chain and reverted, before the error is re-raised.
+
+    The recording code below only runs when Gateway *returns*. A transaction that landed
+    and reverted does not return: Gateway raises, the client turns it into a GatewayError,
+    and control skips every `create_event` call to land in an `except` that persists
+    nothing. So the database said every operation ever attempted had succeeded, while a
+    close that reverted at slot 440494812 — costing 0.000011772 SOL — left no row at all.
+
+    Only failures carrying a transaction id are recorded. A pre-flight simulation failure
+    never got one and cost nothing, and inventing an identifier for it would put a row in
+    the table that no lookup by hash could ever match.
+
+    Recording never masks the original failure: the caller still gets Gateway's error.
+    """
+    transaction_hash = transaction_id_from_error(error)
+    if not transaction_hash or not position_address:
+        return
+
+    try:
+        async with db_manager.get_session_context() as session:
+            repo = GatewayCLMMRepository(session)
+            position = await repo.get_position_by_address(position_address)
+            if position is None:
+                logger.warning(
+                    f"CLMM {event_type} {transaction_hash} reverted on-chain for position "
+                    f"{position_address}, which has no database record — no event written."
+                )
+                return
+            await repo.create_event({
+                "position_id": position.id,
+                "transaction_hash": transaction_hash,
+                "event_type": event_type,
+                "status": "FAILED",
+                "error_message": str(error),
+            })
+        logger.error(
+            f"CLMM {event_type} {transaction_hash} landed on-chain and FAILED for position "
+            f"{position_address}; recorded. {error}"
+        )
+    except Exception as db_error:
+        logger.error(f"Error recording failed CLMM {event_type}: {db_error}", exc_info=True)
 
 
 @router.get("/clmm/pool-info", response_model=CLMMPoolInfoResponse, response_model_by_alias=False)
@@ -543,6 +598,10 @@ async def open_clmm_position(
     except HTTPException:
         raise
     except GatewayError as e:
+        # No row for a failed OPEN: gateway_clmm_events keys every row to a position, and
+        # an open that reverted created none. The transaction id is in the message and the
+        # error reaches the caller; inventing a position to hang it from would be worse
+        # than the gap. See GW-26.
         raise HTTPException(status_code=e.status, detail=f"Gateway error opening CLMM position: {e}")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -698,6 +757,9 @@ async def add_liquidity_to_clmm_position(
     except HTTPException:
         raise
     except GatewayError as e:
+        await _record_failed_write(
+            db_manager, e, event_type="ADD_LIQUIDITY", position_address=request.position_address
+        )
         raise HTTPException(status_code=e.status, detail=f"Gateway error adding liquidity: {e}")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -822,6 +884,9 @@ async def remove_liquidity_from_clmm_position(
     except HTTPException:
         raise
     except GatewayError as e:
+        await _record_failed_write(
+            db_manager, e, event_type="REMOVE_LIQUIDITY", position_address=request.position_address
+        )
         raise HTTPException(status_code=e.status, detail=f"Gateway error removing liquidity: {e}")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1055,6 +1120,9 @@ async def close_clmm_position(
     except HTTPException:
         raise
     except GatewayError as e:
+        await _record_failed_write(
+            db_manager, e, event_type="CLOSE", position_address=request.position_address
+        )
         raise HTTPException(status_code=e.status, detail=f"Gateway error closing CLMM position: {e}")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1220,6 +1288,9 @@ async def collect_fees_from_clmm_position(
     except HTTPException:
         raise
     except GatewayError as e:
+        await _record_failed_write(
+            db_manager, e, event_type="COLLECT_FEES", position_address=request.position_address
+        )
         raise HTTPException(status_code=e.status, detail=f"Gateway error collecting fees: {e}")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

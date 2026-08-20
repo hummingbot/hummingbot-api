@@ -41,7 +41,12 @@ from models import (
     AMMRemoveLiquidityRequest,
     AMMTransactionResponse,
 )
-from routers.gateway_extras import ExtraParamsSpec, get_transaction_status_from_response, validate_extra_params
+from routers.gateway_extras import (
+    ExtraParamsSpec,
+    get_transaction_status_from_response,
+    transaction_id_from_error,
+    validate_extra_params,
+)
 from services.accounts_service import AccountsService
 from services.gateway_client import GatewayError, check_gateway_error, get_native_gas_token
 
@@ -206,6 +211,56 @@ async def _record_event(
 
 # ----------------------------- Reads -----------------------------
 
+
+async def _record_failed_event(
+    db_manager: AsyncDatabaseManager,
+    error: Exception,
+    *,
+    event_type: str,
+    connector: str,
+    network: str,
+    wallet_address: str,
+    pool_address: str,
+    position_address: Optional[str] = None,
+) -> None:
+    """Record a write that reached the chain and reverted, before the error is re-raised.
+
+    `_record_event` above only runs when Gateway *returns*. A transaction that landed and
+    reverted does not return: Gateway raises, the client turns it into a GatewayError, and
+    control skips the whole recording block. That is why every row in both event tables
+    read CONFIRMED with no error_message — not because nothing had ever failed, but
+    because a failure could not be written.
+
+    Only failures carrying a transaction id are recorded: a pre-flight simulation failure
+    never got one and cost nothing, while a landed revert has one and paid gas. Recording
+    never masks the original failure.
+    """
+    transaction_hash = transaction_id_from_error(error)
+    if not transaction_hash:
+        return
+
+    chain, _ = network.split("-", 1) if "-" in network else (network, "")
+    try:
+        async with db_manager.get_session_context() as session:
+            await GatewayAMMRepository(session).create_event({
+                "transaction_hash": transaction_hash,
+                "connector": connector,
+                "network": network,
+                "wallet_address": wallet_address,
+                "pool_address": pool_address,
+                "position_address": position_address,
+                "event_type": event_type,
+                "status": "FAILED",
+                "error_message": str(error),
+            })
+        logger.error(
+            f"AMM {event_type} {transaction_hash} landed on-chain and FAILED on {connector}/"
+            f"{network}; recorded. {error}"
+        )
+    except Exception as db_error:
+        logger.error(f"Error recording failed AMM {event_type}: {db_error}", exc_info=True)
+
+
 @router.get("/amm/pool-info", response_model=AMMPoolInfoResponse, response_model_by_alias=False)
 async def get_amm_pool_info(
     connector: str,
@@ -328,6 +383,9 @@ async def add_amm_liquidity(
     Meteora DAMM v2: pass position_address to add to that NFT position; omit it to open a new one.
     Fungible-LP AMMs ignore position_address.
     """
+    # Bound before the try so the failure recorder in `except` cannot NameError
+    # over the top of Gateway's own error when the wallet lookup is what failed.
+    wallet_address = ""
     try:
         await _require_gateway(accounts_service)
         wallet_address = await _resolve_wallet(accounts_service, request.network, request.wallet_address)
@@ -374,6 +432,11 @@ async def add_amm_liquidity(
     except HTTPException:
         raise
     except GatewayError as e:
+        await _record_failed_event(
+            db_manager, e, event_type="ADD_LIQUIDITY", connector=request.connector,
+            network=request.network, wallet_address=wallet_address,
+            pool_address=request.pool_address, position_address=request.position_address,
+        )
         raise HTTPException(status_code=e.status, detail=f"Gateway error adding AMM liquidity: {e}")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -394,6 +457,9 @@ async def remove_amm_liquidity(
     Meteora DAMM v2 requires position_address (positions are NFTs); Gateway rejects a missing one
     with a 400, surfaced here unchanged, so "remove 100%" is a true exit of the named position.
     """
+    # Bound before the try so the failure recorder in `except` cannot NameError
+    # over the top of Gateway's own error when the wallet lookup is what failed.
+    wallet_address = ""
     try:
         await _require_gateway(accounts_service)
         wallet_address = await _resolve_wallet(accounts_service, request.network, request.wallet_address)
@@ -446,6 +512,11 @@ async def remove_amm_liquidity(
     except HTTPException:
         raise
     except GatewayError as e:
+        await _record_failed_event(
+            db_manager, e, event_type="REMOVE_LIQUIDITY", connector=request.connector,
+            network=request.network, wallet_address=wallet_address,
+            pool_address=request.pool_address, position_address=request.position_address,
+        )
         raise HTTPException(status_code=e.status, detail=f"Gateway error removing AMM liquidity: {e}")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
