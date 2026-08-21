@@ -74,6 +74,7 @@ from services.trading_service import TradingService  # noqa: E402
 from services.unified_connector_service import UnifiedConnectorService  # noqa: E402
 from services.websocket_manager import WebSocketManager  # noqa: E402
 from utils.bot_archiver import BotArchiver  # noqa: E402
+from utils.core_compatibility import require_core_surface  # noqa: E402
 from utils.security import BackendAPISecurity  # noqa: E402
 
 # Set up logging configuration
@@ -99,6 +100,12 @@ async def lifespan(app: FastAPI):
     Lifespan context manager for the FastAPI application.
     Handles startup and shutdown events.
     """
+    # The installed core is unpinned (see environment.yml), so check it carries the
+    # fields this API reads before anything reads them — the read path substitutes
+    # zeros for a missing attribute and logs at DEBUG, which turns a wrong install
+    # into silently zeroed accounting rather than a failure.
+    require_core_surface()
+
     # SEC-018: warn loudly if USERNAME/PASSWORD/CONFIG_PASSWORD are still the insecure defaults
     warn_if_insecure_security_defaults(settings.security)
 
