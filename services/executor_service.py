@@ -33,8 +33,9 @@ from hummingbot.strategy_v2.executors.xemm_executor.data_types import XEMMExecut
 from hummingbot.strategy_v2.executors.xemm_executor.xemm_executor import XEMMExecutor
 from hummingbot.strategy_v2.models.executors import CloseType, TrackedOrder
 
-from database import AsyncDatabaseManager, ExecutorRepository, GatewayCLMMRepository
+from database import AsyncDatabaseManager, ExecutorRepository, GatewayCLMMRepository, GatewaySwapRepository
 from models.executors import PositionHold
+from services.gateway_client import get_native_gas_token
 from services.trading_service import AccountTradingInterface, TradingService
 from utils.executor_log_capture import ExecutorLogCapture, current_executor_id
 from utils.trading_pair import InvalidTradingPair, split_trading_pair
@@ -431,6 +432,101 @@ class ExecutorService:
             f"Recorded rent for LP position {position_address}: locked={position_rent}, "
             f"refunded={position_rent_refunded}"
         )
+
+    async def _record_executor_swap(self, executor_id: str, executor: ExecutorBase) -> None:
+        """Record a swap an executor made, so the swap history covers the recommended path.
+
+        `gateway_swaps` is written by hummingbot-api's own /gateway/swap/* routes. An
+        executor holds its connector through the wheel and talks to Gateway directly, so
+        hummingbot-api never sees the call and had nothing to record. The table was not
+        wrong, it was silently partial: POST /gateway/swaps/search and the swap summary
+        described only swaps made by hand, and a caller reading "9 SOL-USDC swaps" had no
+        way to learn that the most recent ones were missing.
+
+        Same shape as _record_lp_position_rent: the executor knows what it did, so ask it
+        at completion rather than waiting for a route that will never be called. Keyed on
+        the transaction hash, which is what GW-43 added to custom_info — `order_id` is
+        internal (buy-SOL-USDC-1787271213996599) and appears nowhere on chain, so before
+        that there was nothing to key a row on.
+
+        Skipped silently when there is no hash: a Gateway swap that never reached the
+        chain has nothing to record, and an executor on a CEX is not a Gateway swap at all.
+        """
+        try:
+            custom_info = executor.get_custom_info()
+        except Exception as e:
+            logger.debug(f"Could not read custom_info for {executor_id} while recording its swap: {e}")
+            return
+
+        transaction_hash = custom_info.get("transaction_hash")
+        swap_provider = custom_info.get("swap_provider")
+        if not transaction_hash or not swap_provider:
+            return
+
+        metadata = self._executor_metadata.get(executor_id, {})
+        network = metadata.get("connector_name") or ""
+        trading_pair = metadata.get("trading_pair") or ""
+        if not network or "-" not in trading_pair:
+            logger.warning(
+                f"Executor {executor_id} swapped in {transaction_hash} but reports "
+                f"network={network!r} pair={trading_pair!r}; not recorded."
+            )
+            return
+
+        base_token, quote_token = split_trading_pair(trading_pair)
+        side = str(custom_info.get("side") or "").upper()
+        side = "BUY" if "BUY" in side else "SELL"
+
+        amount_base = Decimal(str(custom_info.get("executed_amount_base") or 0))
+        price = Decimal(str(custom_info.get("average_executed_price") or 0))
+        if amount_base <= 0 or price <= 0:
+            logger.warning(
+                f"Executor {executor_id} swapped in {transaction_hash} but reports no "
+                f"realized amounts (base={amount_base}, price={price}); not recorded."
+            )
+            return
+        amount_quote = amount_base * price
+
+        # A BUY spends quote to receive base; a SELL is the mirror image.
+        input_amount, output_amount = (
+            (amount_quote, amount_base) if side == "BUY" else (amount_base, amount_quote)
+        )
+
+        chain = network.split("-", 1)[0]
+        # The provider travels as "jupiter/router"; the table stores the bare DEX name,
+        # which is what the /gateway/swap routes write.
+        connector = swap_provider.split("/", 1)[0]
+
+        try:
+            async with self.db_manager.get_session_context() as session:
+                repo = GatewaySwapRepository(session)
+                if await repo.get_swap_by_tx_hash(transaction_hash):
+                    return
+                await repo.create_swap({
+                    "transaction_hash": transaction_hash,
+                    "network": network,
+                    "connector": connector,
+                    "wallet_address": custom_info.get("wallet_address") or "",
+                    "trading_pair": trading_pair,
+                    "base_token": base_token,
+                    "quote_token": quote_token,
+                    "side": side,
+                    "input_amount": input_amount,
+                    "output_amount": output_amount,
+                    "price": price,
+                    # The LIVE tolerance the swap went out with, which is not
+                    # config.slippage_pct when earlier attempts failed and widened it.
+                    "slippage_pct": (Decimal(str(custom_info["slippage_pct"]))
+                                     if custom_info.get("slippage_pct") is not None else None),
+                    "gas_token": get_native_gas_token(chain),
+                    "status": "CONFIRMED",
+                })
+            logger.info(
+                f"Recorded executor swap {transaction_hash}: {side} {amount_base} "
+                f"{base_token} @ {price} on {connector}/{network}"
+            )
+        except Exception as e:
+            logger.error(f"Error recording executor swap {transaction_hash}: {e}", exc_info=True)
 
     def _get_trading_interface(self, account_name: str) -> AccountTradingInterface:
         """Get or create an AccountTradingInterface for the account."""
@@ -940,6 +1036,11 @@ class ExecutorService:
         # relies on the address remembered while the executor was live.
         if metadata.get("executor_type") == "lp_executor":
             await self._record_lp_position_rent(executor_id, executor)
+        # A Gateway swap an executor made, which no /gateway/swap route ever saw. See
+        # _record_executor_swap; non-Gateway executors carry no transaction hash and fall
+        # straight back out.
+        if self.db_manager:
+            await self._record_executor_swap(executor_id, executor)
         self._lp_position_addresses.pop(executor_id, None)
         self._lp_rent_recorded.discard(executor_id)
         self._lp_rent_retry_after.pop(executor_id, None)
