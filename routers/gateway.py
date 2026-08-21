@@ -530,7 +530,7 @@ async def get_network_tokens(
 
     Args:
         network_id: Network ID in format 'chain-network' (e.g., 'solana-mainnet-beta')
-        search: Filter tokens by symbol or name
+        search: Filter tokens by symbol, name, or address (case-insensitive substring)
 
     Example: GET /gateway/networks/solana-mainnet-beta/tokens?search=USDC
     """
@@ -546,13 +546,20 @@ async def get_network_tokens(
         chain, network = parts
         result = check_gateway_error(await accounts_service.gateway_client.get_tokens(chain, network))
 
-        # Apply search filter
+        # Apply search filter. Address is matched as well as symbol and name, because
+        # the address is what a caller usually has: a user pastes a mint, and a search
+        # that only knows symbols answers "no such token" for one that is registered.
+        # That false negative reads as "not in Gateway" and invites a duplicate add.
+        # Gateway's own /tokens filter already matches all three (token-service.ts
+        # listTokens); this re-implements it here because the search term is not
+        # forwarded, so the two have to agree by hand.
         if search and "tokens" in result:
             search_lower = search.lower()
             result["tokens"] = [
                 token for token in result["tokens"]
                 if (search_lower in token.get("symbol", "").lower() or
-                    search_lower in token.get("name", "").lower())
+                    search_lower in token.get("name", "").lower() or
+                    search_lower in token.get("address", "").lower())
             ]
 
         return result
