@@ -94,6 +94,21 @@ class AsyncDatabaseManager:
                 "gateway_amm_positions", "position_rent_refunded",
                 "ALTER TABLE gateway_amm_positions ADD COLUMN position_rent_refunded NUMERIC(30,18)"
             ),
+            # Volume generated, split from capital deployed. Existing rows are backfilled
+            # from filled_amount_quote for every executor type EXCEPT lp_executor, because
+            # for an executor that places orders the amount it filled IS the volume it
+            # traded, while an LP position's filled amount is the capital it put up. The
+            # real volume of a historical LP position is not recoverable — its fees were
+            # never stored — so those rows keep 0 rather than a number that was wrong.
+            (
+                "executors", "volume_traded_quote",
+                (
+                    "ALTER TABLE executors ADD COLUMN volume_traded_quote "
+                    "NUMERIC(30,18) NOT NULL DEFAULT 0",
+                    "UPDATE executors SET volume_traded_quote = filled_amount_quote "
+                    "WHERE executor_type <> 'lp_executor'",
+                ),
+            ),
         ]
         for table, column, sql in migrations:
             try:
@@ -106,7 +121,10 @@ class AsyncDatabaseManager:
                     {"table": table, "column": column}
                 )
                 if result.fetchone() is None:
-                    await conn.execute(text(sql))
+                    # A migration may need more than the ALTER — a backfill, say — so an
+                    # entry can carry several statements, run in order.
+                    for statement in ((sql,) if isinstance(sql, str) else sql):
+                        await conn.execute(text(statement))
                     logger.info(f"Migration: added {column} to {table}")
             except Exception as e:
                 # Column-already-exists is expected on repeat startups

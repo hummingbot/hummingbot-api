@@ -482,6 +482,10 @@ class ExecutorRecord(Base):
     net_pnl_pct = Column(Numeric(precision=10, scale=6), nullable=False, default=0)
     cum_fees_quote = Column(Numeric(precision=30, scale=18), nullable=False, default=0)
     filled_amount_quote = Column(Numeric(precision=30, scale=18), nullable=False, default=0)
+    # Trading volume generated. The same number as filled_amount_quote for any executor
+    # that places orders, and deliberately not for an LP executor, whose filled amount is
+    # the capital it deposited — depositing capital trades nothing.
+    volume_traded_quote = Column(Numeric(precision=30, scale=18), nullable=False, default=0)
 
     # Error tracking
     error_log = Column(Text, nullable=True)  # JSON: last errors captured during execution
