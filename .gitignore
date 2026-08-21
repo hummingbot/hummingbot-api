@@ -171,6 +171,11 @@ gateway-files/
 # Hummingbot credentials and local data
 bots/credentials/
 bots/instances/
+# Archived bot instances: hummingbot-api moves a stopped bot's whole working
+# directory here, credentials included — conf/connectors/*.yml holds encrypted
+# API keys and conf/.password_verification the password check. Nothing under it
+# belongs in git, and `git add -A` will sweep the lot without this line.
+bots/archived/
 bots/conf/
 
 # Local MCP configuration (project-specific overrides)
