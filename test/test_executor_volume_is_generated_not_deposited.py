@@ -207,3 +207,30 @@ def test_decimal_precision_matches_the_filled_amount_column():
 
     assert (volume.precision, volume.scale) == (filled.precision, filled.scale)
     assert Decimal(10) ** -volume.scale > 0
+
+
+def test_the_api_response_declares_volume_so_it_reaches_a_caller():
+    """FastAPI filters a response to the fields its model declares, so a figure the
+    service computes and the model omits is silently dropped at the boundary — the
+    executor knows its volume, the row stores it, and the caller never sees it.
+    """
+    from models.executors import ExecutorResponse
+
+    assert "volume_traded_quote" in ExecutorResponse.model_fields
+    assert "filled_amount_quote" in ExecutorResponse.model_fields
+
+
+def test_a_response_carries_a_volume_that_differs_from_the_capital():
+    """The pair a defect would collapse back into one number."""
+    from models.executors import ExecutorResponse
+
+    response = ExecutorResponse(
+        executor_id="e-1", executor_type="lp_executor", account_name="master_account",
+        connector_name="solana-mainnet-beta", trading_pair="SOL-USDC", status="RUNNING",
+        is_active=True, is_trading=True, net_pnl_quote=3.0, net_pnl_pct=0.01,
+        cum_fees_quote=1.0, filled_amount_quote=200.0, volume_traded_quote=2500.0,
+    )
+
+    dumped = response.model_dump()
+    assert dumped["volume_traded_quote"] == 2500.0
+    assert dumped["filled_amount_quote"] == 200.0

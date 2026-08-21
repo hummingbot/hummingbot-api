@@ -368,7 +368,8 @@ class ExecutorResponse(BaseModel):
                 "net_pnl_quote": 125.50,
                 "net_pnl_pct": 2.5,
                 "cum_fees_quote": 1.25,
-                "filled_amount_quote": 5000.0
+                "filled_amount_quote": 5000.0,
+                "volume_traded_quote": 5000.0
             }
         }
     )
@@ -391,6 +392,15 @@ class ExecutorResponse(BaseModel):
     net_pnl_pct: float = Field(description="Net PnL percentage")
     cum_fees_quote: float = Field(description="Cumulative fees in quote currency")
     filled_amount_quote: float = Field(description="Total filled amount in quote currency")
+    volume_traded_quote: float = Field(
+        default=0.0,
+        description="Trading volume generated, in quote currency. The same number as "
+                    "filled_amount_quote for any executor that places orders — the amount "
+                    "it filled IS its volume. Deliberately different for an LP executor, "
+                    "whose filled amount is the capital it deposited: depositing capital "
+                    "trades nothing. An LP position's volume is derived from the fees it "
+                    "earned, which are a fixed fraction of the swaps that crossed its "
+                    "range, and is 0 while it has earned none.")
     error_count: int = Field(default=0, description="Number of ERROR-level log entries captured")
     last_error: Optional[str] = Field(default=None, description="Most recent error message, if any")
 
@@ -500,7 +510,9 @@ class ExecutorsSummaryResponse(BaseModel):
 
     total_active: int = Field(description="Number of active executors")
     total_pnl_quote: float = Field(description="Total PnL across active executors")
-    total_volume_quote: float = Field(description="Total volume across active executors")
+    total_volume_quote: float = Field(
+        description="Total volume traded across active executors. Volume GENERATED, not "
+                    "capital deployed — see volume_traded_quote on an executor.")
     by_type: Dict[str, int] = Field(description="Executor count by type")
     by_connector: Dict[str, int] = Field(description="Executor count by connector")
     by_status: Dict[str, int] = Field(description="Executor count by status")
@@ -513,7 +525,9 @@ class ExecutorTypeBreakdown(BaseModel):
     completed: int = Field(description="Completed executors")
     running: int = Field(description="Currently running executors")
     pnl_quote: float = Field(description="Net PnL in quote currency")
-    volume_quote: float = Field(description="Total filled volume in quote currency")
+    volume_quote: float = Field(
+        description="Total volume traded in quote currency for this executor type. Volume "
+                    "GENERATED, not capital deployed.")
     fees_quote: float = Field(description="Cumulative fees in quote currency")
 
 
@@ -527,7 +541,10 @@ class PerformanceReportResponse(BaseModel):
     global_pnl_quote: float = Field(description="Global PnL (realized + unrealized)")
     pnl_pct_avg: float = Field(description="Average PnL percentage across completed executors")
     fees_total_quote: float = Field(description="Total cumulative fees in quote currency")
-    volume_total_quote: float = Field(description="Total filled volume in quote currency")
+    volume_total_quote: float = Field(
+        description="Total volume traded in quote currency. Volume GENERATED, not capital "
+                    "deployed: an LP position's deposit is excluded, and the volume its "
+                    "range actually saw is derived from the fees it earned.")
     win_rate: float = Field(description="Win rate: fraction of completed executors with positive PnL")
     sharpe_ratio: Optional[float] = Field(None, description="Sharpe ratio of PnL returns (null if <2 executors)")
     by_type: List[ExecutorTypeBreakdown] = Field(description="Performance breakdown by executor type")
