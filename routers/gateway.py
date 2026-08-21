@@ -880,27 +880,45 @@ async def add_network_pool(
 async def save_network_pool(
     network_id: str,
     pool_address: str,
+    connector: Optional[str] = Query(default=None),
+    type: Optional[str] = Query(default=None),
     accounts_service: AccountsService = Depends(get_accounts_service)
 ) -> Dict:
     """
-    Save a pool by address using GeckoTerminal lookup.
-    This automatically fetches pool info and token info from GeckoTerminal.
+    Save a pool by address, auto-adding any missing tokens.
+
+    Gateway only needs GeckoTerminal to answer one question: which DEX does this
+    address belong to, and is it amm or clmm. The pool's base, quote and fee always
+    come from the connector. Pass connector and type to answer that directly and skip
+    the lookup — which is what a caller holding an LP provider config like
+    'meteora/clmm' can always do, and what makes this work for a token or pool
+    GeckoTerminal has not indexed.
 
     Args:
         network_id: Network ID in format 'chain-network' (e.g., 'solana-mainnet-beta')
         pool_address: Pool contract address
+        connector: DEX connector ('meteora', 'raydium', 'orca', 'uniswap'). With type.
+        type: Pool type, 'amm' or 'clmm'. With connector.
 
-    Example: POST /gateway/networks/solana-mainnet-beta/pools/save/58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2
-
-    Note: This will auto-add any missing tokens to the network's token list.
+    Example: POST /gateway/networks/solana-mainnet-beta/pools/save/2sf5NYcY...?connector=meteora&type=clmm
     """
     try:
         if not await accounts_service.gateway_client.ping():
             raise HTTPException(status_code=503, detail="Gateway service is not available")
 
+        if (connector is None) != (type is None):
+            raise HTTPException(
+                status_code=400,
+                detail="connector and type must be given together, or both omitted",
+            )
+        if type is not None and type not in ("amm", "clmm"):
+            raise HTTPException(status_code=400, detail=f"Invalid type '{type}': use 'amm' or 'clmm'")
+
         result = await accounts_service.gateway_client.save_pool(
             chain_network=network_id,
-            address=pool_address
+            address=pool_address,
+            connector=connector,
+            pool_type=type,
         )
 
         if result is None:

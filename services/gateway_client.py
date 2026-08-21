@@ -555,11 +555,25 @@ class GatewayClient:
             payload["feePct"] = fee_pct
         return await self._request("POST", "pools", json=payload)
 
-    async def save_pool(self, chain_network: str, address: str) -> Dict:
-        """Save a pool by address using GeckoTerminal lookup"""
-        return await self._request("POST", f"pools/save/{address}", params={
-            "chainNetwork": chain_network
-        }, json={})
+    async def save_pool(
+        self,
+        chain_network: str,
+        address: str,
+        connector: Optional[str] = None,
+        pool_type: Optional[str] = None,
+    ) -> Dict:
+        """Save a pool by address.
+
+        Gateway asks GeckoTerminal which DEX an address belongs to, and whether it is
+        amm or clmm; the pool's own facts always come from the connector. Passing
+        connector and pool_type answers that question directly and skips the lookup —
+        a caller holding an LP provider config such as 'meteora/clmm' already knows it.
+        """
+        params = {"chainNetwork": chain_network}
+        if connector and pool_type:
+            params["connector"] = connector
+            params["type"] = pool_type
+        return await self._request("POST", f"pools/save/{address}", params=params, json={})
 
     async def delete_pool(self, chain: str, network: str, address: str) -> Dict:
         """Delete a pool from Gateway's pool list"""
