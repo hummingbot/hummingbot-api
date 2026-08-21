@@ -262,6 +262,39 @@ async def get_clmm_pool_info(
         raise HTTPException(status_code=500, detail=f"Error getting CLMM pool info: {str(e)}")
 
 
+# Sort keys each connector's upstream actually accepts, mapped to the field name it wants.
+# Probed against the live APIs rather than transcribed from a docstring, because the
+# docstring was wrong: "volume, tvl, feetvlratio, etc." advertised two keys that 400'd.
+# Meteora (dlmm.datapi.meteora.ag) takes exactly these three — bare `volume`, `fees`,
+# `fees_24h`, `apr` and `liquidity` are all rejected — and wants "field:direction".
+_METEORA_SORT_KEYS = {
+    "tvl": "tvl",
+    "volume": "volume_24h",
+    "feetvlratio": "fee_tvl_ratio_24h",
+}
+# Orca takes the field alone plus a separate sortDirection.
+_ORCA_SORT_KEYS = {"volume", "tvl", "fees", "rewards", "yieldovertvl"}
+
+
+def _sort_field(connector: str, sort_key: Optional[str]) -> Optional[str]:
+    """Translate a sort key to what this connector's upstream accepts, or reject it here.
+
+    An unsupported key used to travel all the way to the DEX's API, come back a bare 400,
+    and surface as an opaque hapi 500 — so `feetvlratio`, which the tool documented,
+    looked like a server fault rather than a wrong field name.
+    """
+    if not sort_key:
+        return None
+    legal = _METEORA_SORT_KEYS if connector == "meteora" else {k: k for k in _ORCA_SORT_KEYS}
+    if sort_key not in legal:
+        raise HTTPException(
+            status_code=400,
+            detail=f"sort_key '{sort_key}' is not supported by {connector}. "
+                   f"Supported: {', '.join(sorted(legal))}.",
+        )
+    return legal[sort_key]
+
+
 @router.get("/clmm/pools", response_model=CLMMPoolListResponse)
 async def get_clmm_pools(
     connector: str,
@@ -271,7 +304,13 @@ async def get_clmm_pools(
     page: int = Query(0, ge=0, description="Page number"),
     limit: int = Query(50, ge=1, le=100, description="Results per page (max 100)"),
     search_term: Optional[str] = Query(None, description="Search query to filter pools"),
-    sort_key: Optional[str] = Query("volume", description="Sort key (volume, tvl, etc.)"),
+    sort_key: Optional[str] = Query(
+        "tvl",
+        description="Sort key. Defaults to tvl: volume ranks pools by how much others "
+                    "traded, while the LP question is how much depth is there — and on a "
+                    "quiet pair every pool ties at zero volume, making that order "
+                    "arbitrary. meteora: tvl, volume, feetvlratio. "
+                    "orca: tvl, volume, fees, rewards, yieldovertvl."),
     order_by: Optional[str] = Query("desc", description="Sort order (asc, desc)"),
     include_unknown: bool = Query(True, description="Include pools with unverified tokens"),
     accounts_service: AccountsService = Depends(get_accounts_service)
@@ -287,7 +326,8 @@ async def get_clmm_pools(
         page: Page number (default: 0)
         limit: Results per page (default: 50, max: 100)
         search_term: Search query to filter pools (optional)
-        sort_key: Sort by field (volume, tvl, etc.)
+        sort_key: Sort by field. Defaults to tvl — see the parameter description for
+            why, and for the keys each connector accepts.
         order_by: Sort order (asc, desc)
         include_unknown: Include pools with unverified tokens
 
@@ -313,15 +353,16 @@ async def get_clmm_pools(
         # The two fetch-pools routes take different params: meteora paginates and
         # filters via page/includeUnverified with "field:direction" sortBy; orca does
         # not paginate and uses sortBy + sortDirection + verifiedOnly.
+        sort_field = _sort_field(connector.lower(), sort_key)
+
         if connector.lower() == "meteora":
-            time_suffix = "_24h" if sort_key in ["volume", "fees"] else ""
             direction = order_by if order_by else "desc"
             gateway_data = check_gateway_error(await accounts_service.gateway_client.clmm_fetch_pools(
                 connector="meteora",
                 chain_network=f"solana-{network}",
                 limit=limit,
                 query=search_term,
-                sort_by=f"{sort_key}{time_suffix}:{direction}" if sort_key else None,
+                sort_by=f"{sort_field}:{direction}" if sort_field else None,
                 page=page,
                 include_unverified=include_unknown
             ))
@@ -337,7 +378,7 @@ async def get_clmm_pools(
                 chain_network=f"solana-{network}",
                 limit=limit,
                 query=search_term,
-                sort_by=sort_key,
+                sort_by=sort_field,
                 sort_direction=order_by,
                 verified_only=not include_unknown
             ))
