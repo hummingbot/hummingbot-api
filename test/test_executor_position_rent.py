@@ -251,13 +251,49 @@ async def test_a_refund_with_nowhere_to_go_is_reported(caplog):
     service = _service(repo)
     service._lp_position_addresses["e-1"] = "B7nHjtVByQ"
 
-    with caplog.at_level("WARNING"):
+    with caplog.at_level("ERROR"):
         await service._record_lp_position_rent(
-            "e-1", _executor(position_address=None, position_rent_refunded=0.0100572)
+            "e-1",
+            _executor(position_address=None, position_rent_refunded=0.0100572),
+            final=True,
         )
 
     assert "B7nHjtVByQ" in caplog.text
     assert "0.0100572" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_the_last_call_does_not_schedule_a_retry_it_cannot_run(caplog):
+    """A position opened and closed inside one discovery sweep has no row to write to,
+    and completion tears this executor's retry state down on the very next line. Arming
+    a back-off here would read as a safety net while being unreachable code, so the
+    figures are reported instead — the log is the only place they survive.
+    """
+    repo = _RecordingRepo(found=False)
+    service = _service(repo)
+
+    with caplog.at_level("ERROR"):
+        await service._record_lp_position_rent(
+            "e-1",
+            _executor(position_address="B7nHjtVByQ", position_rent_refunded=0.0100572),
+            final=True,
+        )
+
+    assert "e-1" not in service._lp_rent_retry_after
+    assert "0.0100572" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_live_executor_still_backs_off_rather_than_shouting():
+    """The same missing row mid-flight means only that discovery has not run yet."""
+    repo = _RecordingRepo(found=False)
+    service = _service(repo)
+
+    await service._record_lp_position_rent(
+        "e-1", _executor(position_address="B7nHjtVByQ", position_rent=0.0100572)
+    )
+
+    assert service._lp_rent_retry_after["e-1"] > 0
 
 
 # --------------------------------------------------------------------------------------

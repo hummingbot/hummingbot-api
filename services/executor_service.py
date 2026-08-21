@@ -365,8 +365,14 @@ class ExecutorService:
             return None
         return amount if amount > 0 else None
 
-    async def _record_lp_position_rent(self, executor_id: str, executor: ExecutorBase) -> None:
+    async def _record_lp_position_rent(
+        self, executor_id: str, executor: ExecutorBase, *, final: bool = False
+    ) -> None:
         """Carry an LP executor's rent figures into the CLMM position table.
+
+        ``final`` marks the call made from executor completion, which is the last one
+        this executor will ever get: its retry state is torn down immediately after,
+        so there is no later tick to hand the work to.
 
         `gateway_clmm_positions.position_rent` is written by hummingbot-api's OPEN route
         and `position_rent_refunded` by its CLOSE route. An executor holds its position
@@ -415,15 +421,21 @@ class ExecutorService:
             return
 
         if position is None:
-            self._lp_rent_retry_after[executor_id] = time.monotonic() + self.LP_RENT_RETRY_SECONDS
-            # Only worth a warning once the figure is final: while the executor runs, the
-            # poller has simply not discovered the position yet and a later tick retries.
-            if position_rent_refunded is not None:
-                logger.warning(
-                    f"LP executor {executor_id} closed position {position_address} with a rent "
-                    f"refund of {position_rent_refunded}, but no row exists for it — the poller "
-                    "never discovered the position, so the refund has nowhere to be recorded."
-                )
+            if not final:
+                # The poller has simply not discovered the position yet; back off and let a
+                # later tick try again. Not worth a warning while the executor still runs.
+                self._lp_rent_retry_after[executor_id] = time.monotonic() + self.LP_RENT_RETRY_SECONDS
+                return
+            # Last call: scheduling a retry here would be theatre, since the caller clears
+            # this executor's retry state on the next line. Say plainly what was lost and
+            # what it was worth, so the figures can be recovered from the log.
+            logger.error(
+                f"LP executor {executor_id} finished holding position {position_address} "
+                f"(rent={position_rent}, refund={position_rent_refunded}), but no row exists "
+                "for it: the position was opened and closed inside a single discovery "
+                "sweep, so it was never filed and these figures are not recorded anywhere "
+                "but this log line."
+            )
             return
 
         if position_rent is not None:
@@ -1035,7 +1047,7 @@ class ExecutorService:
         # successful close has already cleared position_address from custom_info, so this
         # relies on the address remembered while the executor was live.
         if metadata.get("executor_type") == "lp_executor":
-            await self._record_lp_position_rent(executor_id, executor)
+            await self._record_lp_position_rent(executor_id, executor, final=True)
         # A Gateway swap an executor made, which no /gateway/swap route ever saw. See
         # _record_executor_swap; non-Gateway executors carry no transaction hash and fall
         # straight back out.
