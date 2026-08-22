@@ -58,7 +58,6 @@ class ExecutorRepository:
             net_pnl_pct: Optional[Decimal] = None,
             cum_fees_quote: Optional[Decimal] = None,
             filled_amount_quote: Optional[Decimal] = None,
-            volume_traded_quote: Optional[Decimal] = None,
             final_state: Optional[str] = None,
             error_log: Optional[str] = None
     ) -> Optional[ExecutorRecord]:
@@ -81,8 +80,6 @@ class ExecutorRepository:
                 executor.cum_fees_quote = cum_fees_quote
             if filled_amount_quote is not None:
                 executor.filled_amount_quote = filled_amount_quote
-            if volume_traded_quote is not None:
-                executor.volume_traded_quote = volume_traded_quote
             if final_state is not None:
                 executor.final_state = final_state
             if error_log is not None:
@@ -338,7 +335,7 @@ class ExecutorRepository:
         total_pnl = pnl_result.scalar() or Decimal("0")
 
         # Total volume — the volume generated, not the capital deployed.
-        volume_stmt = select(func.sum(ExecutorRecord.volume_traded_quote))
+        volume_stmt = select(func.sum(ExecutorRecord.filled_amount_quote))
         volume_result = await self.session.execute(volume_stmt)
         total_volume = volume_result.scalar() or Decimal("0")
 
@@ -409,7 +406,7 @@ class ExecutorRepository:
         agg_stmt = select(
             func.coalesce(func.sum(ExecutorRecord.net_pnl_quote), Decimal(0)).label("pnl"),
             func.coalesce(func.sum(ExecutorRecord.cum_fees_quote), Decimal(0)).label("fees"),
-            func.coalesce(func.sum(ExecutorRecord.volume_traded_quote), Decimal(0)).label("vol"),
+            func.coalesce(func.sum(ExecutorRecord.filled_amount_quote), Decimal(0)).label("vol"),
             func.coalesce(func.avg(ExecutorRecord.net_pnl_pct), Decimal(0)).label("pnl_pct_avg"),
             func.count(ExecutorRecord.id).label("completed_count"),
             func.sum(case(
@@ -443,7 +440,7 @@ class ExecutorRepository:
                 else_=0,
             )).label("running"),
             func.coalesce(func.sum(ExecutorRecord.net_pnl_quote), Decimal(0)).label("pnl"),
-            func.coalesce(func.sum(ExecutorRecord.volume_traded_quote), Decimal(0)).label("vol"),
+            func.coalesce(func.sum(ExecutorRecord.filled_amount_quote), Decimal(0)).label("vol"),
             func.coalesce(func.sum(ExecutorRecord.cum_fees_quote), Decimal(0)).label("fees"),
         ).where(
             and_(*completed_filter)

@@ -1178,7 +1178,6 @@ class ExecutorService:
             "net_pnl_pct": float(record.net_pnl_pct) if record.net_pnl_pct else 0.0,
             "cum_fees_quote": float(record.cum_fees_quote) if record.cum_fees_quote else 0.0,
             "filled_amount_quote": float(record.filled_amount_quote) if record.filled_amount_quote else 0.0,
-            "volume_traded_quote": float(record.volume_traded_quote) if record.volume_traded_quote else 0.0,
             "config": json.loads(record.config) if record.config else None,
             "custom_info": self._strip_heavy_fields(
                 json.loads(record.final_state), record.executor_type
@@ -1202,9 +1201,10 @@ class ExecutorService:
 
         active_count = len(executors)
         total_pnl = sum(e.get("net_pnl_quote", 0) for e in executors)
-        # Volume generated, not capital deployed: an LP executor's filled amount is the
-        # money it put up, and putting up money trades nothing.
-        total_volume = sum(e.get("volume_traded_quote", 0) for e in executors)
+        # filled_amount_quote is the volume traded on every executor type — an LP
+        # executor derives it from the fees it earned rather than the capital it put up,
+        # so this sums like with like and no separate field is needed.
+        total_volume = sum(e.get("filled_amount_quote", 0) for e in executors)
 
         by_type: Dict[str, int] = {}
         by_connector: Dict[str, int] = {}
@@ -1399,14 +1399,12 @@ class ExecutorService:
                 net_pnl_pct = executor_info.net_pnl_pct
                 cum_fees_quote = executor_info.cum_fees_quote
                 filled_amount_quote = executor_info.filled_amount_quote
-                volume_traded_quote = executor_info.volume_traded_quote
             except Exception as e:
                 logger.debug(f"Error accessing executor_info for persistence: {e}")
                 net_pnl_quote = Decimal("0")
                 net_pnl_pct = Decimal("0")
                 cum_fees_quote = Decimal("0")
                 filled_amount_quote = Decimal("0")
-                volume_traded_quote = Decimal("0")
 
             # Get custom_info directly from executor to avoid Pydantic serialization issues
             # with TrackedOrder and other complex types
@@ -1475,7 +1473,6 @@ class ExecutorService:
                     net_pnl_pct=net_pnl_pct,
                     cum_fees_quote=cum_fees_quote,
                     filled_amount_quote=filled_amount_quote,
-                    volume_traded_quote=volume_traded_quote,
                     final_state=final_state_json,
                     error_log=error_log_json
                 )

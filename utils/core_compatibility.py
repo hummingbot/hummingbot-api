@@ -18,16 +18,10 @@ from typing import List, Tuple
 # (import path, attribute, what it is for) — each one a field this API reads off the
 # core and cannot substitute.
 REQUIRED_CORE_SURFACE: List[Tuple[str, str, str]] = [
-    (
-        "hummingbot.strategy_v2.models.executors_info:ExecutorInfo",
-        "volume_traded_quote",
-        "volume an executor generated, as distinct from the capital it deposited",
-    ),
-    (
-        "hummingbot.strategy_v2.executors.executor_base:ExecutorBase",
-        "volume_traded_quote",
-        "the executor-side source of that figure",
-    ),
+    # Empty on purpose. This guard exists for a core field this API reads that a released
+    # hummingbot may not carry yet; there is no such field right now. volume_traded_quote
+    # was the last one, and it is gone: filled_amount_quote means the volume traded on
+    # every executor, including LP, so there is nothing extra to require.
 ]
 
 

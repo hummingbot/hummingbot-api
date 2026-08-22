@@ -21,12 +21,16 @@ def test_the_installed_core_carries_everything_this_api_reads():
     require_core_surface()
 
 
-def test_the_list_names_the_field_the_volume_work_added():
-    checked = {(path, attribute) for path, attribute, _ in REQUIRED_CORE_SURFACE}
-    assert (
-        "hummingbot.strategy_v2.models.executors_info:ExecutorInfo",
-        "volume_traded_quote",
-    ) in checked
+def test_the_list_is_empty_because_nothing_extra_is_required_right_now():
+    """The guard stays; its contents do not.
+
+    It exists for a core field this API reads that a released hummingbot may not carry
+    yet. volume_traded_quote was the last such field and is gone — filled_amount_quote
+    means the volume traded on every executor type, LP included — so there is nothing
+    to require. An empty list is the honest state, and require_core_surface() passing
+    trivially is the point: no patched core needed to boot.
+    """
+    assert list(REQUIRED_CORE_SURFACE) == []
 
 
 def test_a_missing_field_is_a_startup_error_naming_it(monkeypatch):
