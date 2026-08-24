@@ -6,7 +6,7 @@ A REST API for managing Hummingbot trading bots across multiple exchanges, with 
 >
 > Hummingbot API controls real trading: orders, balances, bots, and stored exchange keys. That has always required strong passwords and careful configuration—but **the risk surface has grown**. Tools like **MCP**, **Condor agents**, and other AI assistants make powerful API actions easier to trigger, while cloud VPSes are constantly scanned for open ports like **8000**.
 >
-> **Tailscale is one safeguard you can add**: it puts the API on a private encrypted network so only your devices can reach it, without publishing port 8000 to the internet. It does **not** replace proper security—use strong API and config passwords, keep exchange keys protected, and avoid exposing sensitive services publicly. Tailscale also works when the API and clients run on the **same machine**.
+> **Tailscale is one safeguard you can add**: it puts the API on a private encrypted network so only your devices can reach it, without publishing port 8000 to the internet. It does **not** replace proper security—use strong API and config passwords, keep exchange keys protected, and avoid exposing sensitive services publicly. Tailscale also works when the API and clients run on the **same machine**. But if your only client is co-located too (e.g. Condor deploying this API for itself), it already reaches you over `localhost` regardless — this API's own tailnet node is only needed for *other* devices to reach it directly.
 
 ## Quick Start
 
@@ -154,7 +154,7 @@ TAILSCALE_HOSTNAME=hummingbot-api   # MagicDNS hostname on your tailnet
 # Docker port binding for hummingbot-api:8000 (set automatically by setup.sh:
 # 127.0.0.1 when Tailscale is enabled, 0.0.0.0 otherwise) — see
 # docker-compose.yml / docker-compose.tailscale.yml
-API_BIND_HOST=0.0.0.0
+API_BIND_HOST=127.0.0.1
 ```
 
 Edit `.env` and restart with `make deploy` to apply changes.
