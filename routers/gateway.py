@@ -593,7 +593,8 @@ async def add_network_token(
         "decimals": 6
     }
 
-    Note: After adding a token, restart Gateway for changes to take effect.
+    No Gateway restart is needed: the token list is read off disk per request, so
+    the token is live as soon as this returns.
     """
     try:
         if not await accounts_service.gateway_client.ping():
@@ -707,7 +708,8 @@ async def delete_network_token(
 
     Example: DELETE /gateway/networks/solana-mainnet-beta/tokens/9QFfgxdSqH5zT7j6rZb1y6SZhw2aFtcQu2r6BuYpump
 
-    Note: After deleting a token, restart Gateway for changes to take effect.
+    No Gateway restart is needed: the token list is read off disk per request, so
+    the deletion is live as soon as this returns.
     """
     try:
         if not await accounts_service.gateway_client.ping():
@@ -824,7 +826,8 @@ async def add_network_pool(
         "fee_pct": 0.25
     }
 
-    Note: After adding a pool, restart Gateway for changes to take effect.
+    No Gateway restart is needed: the pool list is read off disk per request, so the
+    pool is listed and priced as soon as this returns.
     """
     try:
         if not await accounts_service.gateway_client.ping():
@@ -959,7 +962,8 @@ async def delete_network_pool(
 
     Example: DELETE /gateway/networks/solana-mainnet-beta/pools/58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2
 
-    Note: After deleting a pool, restart Gateway for changes to take effect.
+    No Gateway restart is needed: the pool list is read off disk per request, so the
+    deletion is live as soon as this returns.
     """
     try:
         if not await accounts_service.gateway_client.ping():
