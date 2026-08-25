@@ -1,4 +1,4 @@
-.PHONY: setup run deploy stop install uninstall build install-pre-commit tailscale-status reset
+.PHONY: setup run deploy stop install uninstall build install-pre-commit tailscale-status doctor reset
 
 SETUP_SENTINEL := .setup-complete
 
@@ -42,6 +42,11 @@ deploy: $(SETUP_SENTINEL)
 	else \
 		docker compose up -d; \
 	fi
+
+# Verify dependencies, .env, containers, port exposure and API access.
+# Read-only; exits non-zero when a check actually fails.
+doctor:
+	@chmod +x doctor.sh && ./doctor.sh
 
 TAILSCALE_CONTAINER := hummingbot-tailscale
 

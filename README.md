@@ -61,6 +61,7 @@ Use your API username and password for all requests. **Do not open port 8000 on 
 | `make install` | Install conda environment for development |
 | `make build` | Build Docker image |
 | `make tailscale-status` | Show Tailscale connection + serve (proxy) status |
+| `make doctor` | Verify dependencies, `.env`, containers, port exposure and API access |
 
 ## Services
 
@@ -251,6 +252,16 @@ make run                  # Run with hot-reload
 ```
 
 ## Troubleshooting
+
+**Start here:**
+```bash
+make doctor
+```
+Checks dependencies, `.env` (including credentials still left at well-known
+defaults), the `hummingbot-api` / `hummingbot-broker` / `hummingbot-postgres`
+containers, which ports are on a public interface, Tailscale's tailnet *and*
+serve status, and whether the API actually answers an authenticated request.
+Read-only, and it names the fix for whatever it finds.
 
 **API won't start?**
 ```bash
