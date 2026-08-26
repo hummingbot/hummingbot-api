@@ -306,8 +306,14 @@ async def update_api_keys(
 
         results = await accounts_service.gateway_client.update_api_keys(request.api_keys)
 
-        # Check for any errors in the results
-        errors = [r for r in results if r and "error" in r]
+        # A None result means the request never reached Gateway (connection
+        # error mid-batch) — that is a failure, not a success to filter out.
+        if any(r is None for r in results):
+            raise HTTPException(
+                status_code=503,
+                detail="Gateway became unreachable while updating API keys; not all keys were applied",
+            )
+        errors = [r for r in results if "error" in r]
         if errors:
             raise HTTPException(status_code=400, detail=f"Failed to update some API keys: {errors}")
 
@@ -369,9 +375,11 @@ async def list_pools_legacy(
         if not await accounts_service.gateway_client.ping():
             raise HTTPException(status_code=503, detail="Gateway service is not available")
 
-        # Determine chain from connector (legacy behavior)
-        # This is a simple mapping - in production, you'd want to look this up
-        chain = "solana" if connector_name in ["raydium", "meteora", "orca", "pancakeswap-sol"] else "ethereum"
+        # Determine chain from connector (legacy behavior). Solana routers
+        # (jupiter/dflow/okx/titan) must map to solana too, or this returns the
+        # (empty) ethereum pool list for them.
+        solana_connectors = {"raydium", "meteora", "orca", "pancakeswap-sol", "jupiter", "dflow", "okx", "titan"}
+        chain = "solana" if connector_name in solana_connectors else "ethereum"
 
         pools = check_gateway_error(
             await accounts_service.gateway_client.get_pools(chain, network, connector=connector_name)
@@ -522,7 +530,7 @@ async def get_network_tokens(
 
     Args:
         network_id: Network ID in format 'chain-network' (e.g., 'solana-mainnet-beta')
-        search: Filter tokens by symbol or name
+        search: Filter tokens by symbol, name, or address (case-insensitive substring)
 
     Example: GET /gateway/networks/solana-mainnet-beta/tokens?search=USDC
     """
@@ -538,13 +546,20 @@ async def get_network_tokens(
         chain, network = parts
         result = check_gateway_error(await accounts_service.gateway_client.get_tokens(chain, network))
 
-        # Apply search filter
+        # Apply search filter. Address is matched as well as symbol and name, because
+        # the address is what a caller usually has: a user pastes a mint, and a search
+        # that only knows symbols answers "no such token" for one that is registered.
+        # That false negative reads as "not in Gateway" and invites a duplicate add.
+        # Gateway's own /tokens filter already matches all three (token-service.ts
+        # listTokens); this re-implements it here because the search term is not
+        # forwarded, so the two have to agree by hand.
         if search and "tokens" in result:
             search_lower = search.lower()
             result["tokens"] = [
                 token for token in result["tokens"]
                 if (search_lower in token.get("symbol", "").lower() or
-                    search_lower in token.get("name", "").lower())
+                    search_lower in token.get("name", "").lower() or
+                    search_lower in token.get("address", "").lower())
             ]
 
         return result
@@ -578,7 +593,8 @@ async def add_network_token(
         "decimals": 6
     }
 
-    Note: After adding a token, restart Gateway for changes to take effect.
+    No Gateway restart is needed: the token list is read off disk per request, so
+    the token is live as soon as this returns.
     """
     try:
         if not await accounts_service.gateway_client.ping():
@@ -692,7 +708,8 @@ async def delete_network_token(
 
     Example: DELETE /gateway/networks/solana-mainnet-beta/tokens/9QFfgxdSqH5zT7j6rZb1y6SZhw2aFtcQu2r6BuYpump
 
-    Note: After deleting a token, restart Gateway for changes to take effect.
+    No Gateway restart is needed: the token list is read off disk per request, so
+    the deletion is live as soon as this returns.
     """
     try:
         if not await accounts_service.gateway_client.ping():
@@ -809,7 +826,8 @@ async def add_network_pool(
         "fee_pct": 0.25
     }
 
-    Note: After adding a pool, restart Gateway for changes to take effect.
+    No Gateway restart is needed: the pool list is read off disk per request, so the
+    pool is listed and priced as soon as this returns.
     """
     try:
         if not await accounts_service.gateway_client.ping():
@@ -865,27 +883,45 @@ async def add_network_pool(
 async def save_network_pool(
     network_id: str,
     pool_address: str,
+    connector: Optional[str] = Query(default=None),
+    type: Optional[str] = Query(default=None),
     accounts_service: AccountsService = Depends(get_accounts_service)
 ) -> Dict:
     """
-    Save a pool by address using GeckoTerminal lookup.
-    This automatically fetches pool info and token info from GeckoTerminal.
+    Save a pool by address, auto-adding any missing tokens.
+
+    Gateway only needs GeckoTerminal to answer one question: which DEX does this
+    address belong to, and is it amm or clmm. The pool's base, quote and fee always
+    come from the connector. Pass connector and type to answer that directly and skip
+    the lookup — which is what a caller holding an LP provider config like
+    'meteora/clmm' can always do, and what makes this work for a token or pool
+    GeckoTerminal has not indexed.
 
     Args:
         network_id: Network ID in format 'chain-network' (e.g., 'solana-mainnet-beta')
         pool_address: Pool contract address
+        connector: DEX connector ('meteora', 'raydium', 'orca', 'uniswap'). With type.
+        type: Pool type, 'amm' or 'clmm'. With connector.
 
-    Example: POST /gateway/networks/solana-mainnet-beta/pools/save/58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2
-
-    Note: This will auto-add any missing tokens to the network's token list.
+    Example: POST /gateway/networks/solana-mainnet-beta/pools/save/2sf5NYcY...?connector=meteora&type=clmm
     """
     try:
         if not await accounts_service.gateway_client.ping():
             raise HTTPException(status_code=503, detail="Gateway service is not available")
 
+        if (connector is None) != (type is None):
+            raise HTTPException(
+                status_code=400,
+                detail="connector and type must be given together, or both omitted",
+            )
+        if type is not None and type not in ("amm", "clmm"):
+            raise HTTPException(status_code=400, detail=f"Invalid type '{type}': use 'amm' or 'clmm'")
+
         result = await accounts_service.gateway_client.save_pool(
             chain_network=network_id,
-            address=pool_address
+            address=pool_address,
+            connector=connector,
+            pool_type=type,
         )
 
         if result is None:
@@ -926,7 +962,8 @@ async def delete_network_pool(
 
     Example: DELETE /gateway/networks/solana-mainnet-beta/pools/58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2
 
-    Note: After deleting a pool, restart Gateway for changes to take effect.
+    No Gateway restart is needed: the pool list is read off disk per request, so the
+    deletion is live as soon as this returns.
     """
     try:
         if not await accounts_service.gateway_client.ping():

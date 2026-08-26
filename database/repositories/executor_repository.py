@@ -134,6 +134,28 @@ class ExecutorRepository:
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
+    async def get_executors_by_close_types(
+            self,
+            close_types: List[str],
+            executor_type: Optional[str] = None,
+            limit: Optional[int] = 500,
+    ) -> List[ExecutorRecord]:
+        """Get executors whose close_type is one of the given values, newest first.
+
+        Filter by executor_type in SQL where possible: applying `limit` to a broad
+        candidate set and filtering in Python can silently drop the very rows the
+        caller is looking for once the newest N candidates are all irrelevant.
+        """
+        stmt = select(ExecutorRecord).where(ExecutorRecord.close_type.in_(close_types))
+        if executor_type:
+            stmt = stmt.where(ExecutorRecord.executor_type == executor_type)
+        stmt = stmt.order_by(desc(ExecutorRecord.created_at))
+        if limit is not None:
+            stmt = stmt.limit(limit)
+
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     async def get_active_executors(
             self,
             account_name: Optional[str] = None,
@@ -312,7 +334,7 @@ class ExecutorRepository:
         pnl_result = await self.session.execute(pnl_stmt)
         total_pnl = pnl_result.scalar() or Decimal("0")
 
-        # Total volume
+        # Total volume — the volume generated, not the capital deployed.
         volume_stmt = select(func.sum(ExecutorRecord.filled_amount_quote))
         volume_result = await self.session.execute(volume_stmt)
         total_volume = volume_result.scalar() or Decimal("0")

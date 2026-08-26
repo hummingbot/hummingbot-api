@@ -390,7 +390,13 @@ class ExecutorResponse(BaseModel):
     net_pnl_quote: float = Field(description="Net PnL in quote currency")
     net_pnl_pct: float = Field(description="Net PnL percentage")
     cum_fees_quote: float = Field(description="Cumulative fees in quote currency")
-    filled_amount_quote: float = Field(description="Total filled amount in quote currency")
+    filled_amount_quote: float = Field(
+        description="Volume traded, in quote currency. For an executor that places "
+                    "orders the amount it filled IS its volume. An LP executor reports "
+                    "the same thing rather than the capital it deposited — depositing "
+                    "trades nothing — deriving it from the fees it earned, which are a "
+                    "fixed fraction of the swaps that crossed its range, and is 0 while "
+                    "it has earned none.")
     error_count: int = Field(default=0, description="Number of ERROR-level log entries captured")
     last_error: Optional[str] = Field(default=None, description="Most recent error message, if any")
 
@@ -421,8 +427,66 @@ class CreateExecutorResponse(BaseModel):
 class StopExecutorResponse(BaseModel):
     """Response after stopping an executor."""
     executor_id: str = Field(description="Executor identifier")
-    status: str = Field(description="New status (usually 'stopping')")
+    status: str = Field(description="New status: 'stopping', or 'already_terminated' when the stop was a no-op")
     keep_position: bool = Field(description="Whether position was kept open")
+    close_type: Optional[str] = Field(default=None, description="Final close_type when already terminated")
+    position_address: Optional[str] = Field(
+        default=None, description="On-chain position address from the executor's final state, if any"
+    )
+    orphaned_position: bool = Field(
+        default=False,
+        description="True when the executor terminated with a live on-chain position that needs recovery"
+    )
+    hold_reason: Optional[str] = Field(
+        default=None,
+        description="Why a POSITION_HOLD terminal was involuntary (e.g. close_retries_exhausted); None for voluntary holds"
+    )
+
+
+class OrphanedPositionRecord(BaseModel):
+    """A terminated executor that may still own an on-chain position."""
+    executor_id: str = Field(description="Executor identifier")
+    executor_type: str = Field(description="Executor type (e.g. lp_executor)")
+    account_name: Optional[str] = Field(default=None, description="Account name")
+    connector_name: Optional[str] = Field(
+        default=None,
+        description="Connector name. For lp_executor this is the network id (e.g. 'solana-mainnet-beta'), "
+                    "not the DEX - see lp_provider for the DEX"
+    )
+    trading_pair: Optional[str] = Field(default=None, description="Trading pair")
+    lp_provider: Optional[str] = Field(
+        default=None,
+        description="DEX connector that holds the position (e.g. 'orca/clmm'), read from the executor config. "
+                    "Pass its base name to the CLMM close endpoint"
+    )
+    pool_address: Optional[str] = Field(
+        default=None,
+        description="Pool the position was opened against, read from the executor config. Required to close a "
+                    "position that was never recorded in the API database (LP-executor positions never are)"
+    )
+    controller_id: str = Field(default="main", description="Controller/agent grouping label")
+    close_type: Optional[str] = Field(
+        default=None, description="POSITION_HOLD (involuntary hold), FAILED, or SYSTEM_CLEANUP"
+    )
+    closed_at: Optional[str] = Field(default=None, description="Termination timestamp (ISO format)")
+    position_address: Optional[str] = Field(
+        default=None, description="On-chain position address (None for restart cleanups, which never persisted state)"
+    )
+    state: Optional[str] = Field(default=None, description="Executor state at termination (e.g. FAILED, CLOSING)")
+    hold_reason: Optional[str] = Field(
+        default=None,
+        description="Why the hold was involuntary (e.g. close_retries_exhausted); None for legacy FAILED/SYSTEM_CLEANUP records"
+    )
+    needs_onchain_reconciliation: bool = Field(
+        default=False,
+        description="True when the position address is unknown and on-chain state must be checked externally"
+    )
+
+
+class OrphanedPositionsResponse(BaseModel):
+    """Terminated executors that may have stranded on-chain positions."""
+    count: int = Field(description="Number of orphan candidates")
+    orphans: List[OrphanedPositionRecord] = Field(description="Orphan candidate records")
 
 
 class ExecutorsSummaryResponse(BaseModel):
@@ -442,7 +506,10 @@ class ExecutorsSummaryResponse(BaseModel):
 
     total_active: int = Field(description="Number of active executors")
     total_pnl_quote: float = Field(description="Total PnL across active executors")
-    total_volume_quote: float = Field(description="Total volume across active executors")
+    total_volume_quote: float = Field(
+        description="Total volume traded across active executors, summing each one's "
+                    "filled_amount_quote. Volume GENERATED, not capital deployed: an LP "
+                    "executor reports the swaps that crossed it, not its deposit.")
     by_type: Dict[str, int] = Field(description="Executor count by type")
     by_connector: Dict[str, int] = Field(description="Executor count by connector")
     by_status: Dict[str, int] = Field(description="Executor count by status")
@@ -455,7 +522,9 @@ class ExecutorTypeBreakdown(BaseModel):
     completed: int = Field(description="Completed executors")
     running: int = Field(description="Currently running executors")
     pnl_quote: float = Field(description="Net PnL in quote currency")
-    volume_quote: float = Field(description="Total filled volume in quote currency")
+    volume_quote: float = Field(
+        description="Total volume traded in quote currency for this executor type. Volume "
+                    "GENERATED, not capital deployed.")
     fees_quote: float = Field(description="Cumulative fees in quote currency")
 
 
@@ -469,7 +538,10 @@ class PerformanceReportResponse(BaseModel):
     global_pnl_quote: float = Field(description="Global PnL (realized + unrealized)")
     pnl_pct_avg: float = Field(description="Average PnL percentage across completed executors")
     fees_total_quote: float = Field(description="Total cumulative fees in quote currency")
-    volume_total_quote: float = Field(description="Total filled volume in quote currency")
+    volume_total_quote: float = Field(
+        description="Total volume traded in quote currency. Volume GENERATED, not capital "
+                    "deployed: an LP position's deposit is excluded, and the volume its "
+                    "range actually saw is derived from the fees it earned.")
     win_rate: float = Field(description="Win rate: fraction of completed executors with positive PnL")
     sharpe_ratio: Optional[float] = Field(None, description="Sharpe ratio of PnL returns (null if <2 executors)")
     by_type: List[ExecutorTypeBreakdown] = Field(description="Performance breakdown by executor type")

@@ -171,7 +171,18 @@ gateway-files/
 # Hummingbot credentials and local data
 bots/credentials/
 bots/instances/
-bots/conf/
+# Archived bot instances: hummingbot-api moves a stopped bot's whole working
+# directory here, credentials included — conf/connectors/*.yml holds encrypted
+# API keys and conf/.password_verification the password check. Nothing under it
+# belongs in git, and `git add -A` will sweep the lot without this line.
+bots/archived/
+# Any bot's conf directory, at any depth and whatever its state — active,
+# archived, or a layout that does not exist yet. A running bot's conf/ holds the
+# same credentials an archived one does: conf/connectors/*.yml carries encrypted
+# API keys and conf/.password_verification the password check. Naming the parent
+# directories one at a time is how bots/archived/ was missed while
+# bots/instances/ was covered.
+conf/
 
 # Local MCP configuration (project-specific overrides)
 .mcp.json
@@ -181,3 +192,5 @@ bots/conf/
 .idea/
 improvements
 bots/gateway-files/
+.DS_Store
+Dockerfile.patched-hummingbot

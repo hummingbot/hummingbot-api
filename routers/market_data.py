@@ -37,6 +37,7 @@ from models.market_data import CandlesConfigRequest
 from services.market_data_service import MarketDataService
 from services.ticker_sources import TickerFetchError, TickerUnsupportedError
 from services.unified_connector_service import UnknownConnectorError
+from utils.trading_pair import split_trading_pair
 
 logger = logging.getLogger(__name__)
 
@@ -379,7 +380,7 @@ async def get_rates(
     rates = {}
     for pair in request.trading_pairs:
         if request.connector:
-            base, quote = pair.split("-") if "-" in pair else (pair, None)
+            base, quote = split_trading_pair(pair) if "-" in pair else (pair, None)
             rate = market_data_manager.get_rate_for_connector(request.connector, base, quote) if quote else None
         else:
             rate = market_data_manager.get_pair_rate(pair)
@@ -403,7 +404,7 @@ async def get_single_rate(
     Pass ``?connector=<name>`` to restrict resolution to a single exchange's tickers.
     """
     if connector:
-        base, quote = trading_pair.split("-") if "-" in trading_pair else (trading_pair, None)
+        base, quote = split_trading_pair(trading_pair) if "-" in trading_pair else (trading_pair, None)
         rate = market_data_manager.get_rate_for_connector(connector, base, quote) if quote else None
     else:
         rate = market_data_manager.get_pair_rate(trading_pair)

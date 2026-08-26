@@ -18,6 +18,7 @@ from models.executors import (
     ExecutorFilterRequest,
     ExecutorLogsResponse,
     ExecutorsSummaryResponse,
+    OrphanedPositionsResponse,
     PerformanceReportResponse,
     PositionHoldResponse,
     PositionsSummaryResponse,
@@ -27,6 +28,7 @@ from models.executors import (
 from models.pagination import PaginatedResponse
 from services.executor_service import ExecutorService
 from services.market_data_service import MarketDataService
+from utils.trading_pair import InvalidTradingPair, split_trading_pair
 
 logger = logging.getLogger(__name__)
 
@@ -357,6 +359,57 @@ async def stop_executor(
 # Position Hold Endpoints
 # ========================================
 
+@router.get("/positions/orphaned", response_model=OrphanedPositionsResponse)
+async def get_orphaned_positions(
+    executor_service: ExecutorService = Depends(get_executor_service)
+):
+    """
+    List terminated executors that may still own an on-chain position.
+
+    Covers three orphan classes:
+    - Involuntary holds: close_type POSITION_HOLD with hold_reason set (an LP close
+      that exhausted its retries): the position is live on-chain with no automated
+      owner.
+    - Legacy FAILED records whose final state still reported a position_address
+      (force-stop stragglers, records persisted by older executors).
+    - Executors terminated by SYSTEM_CLEANUP after an API restart: their on-chain
+      state was never persisted, so they need external reconciliation.
+
+    This is a DB-side listing. Before recovering, cross-check candidates against
+    on-chain reality via the gateway positions-owned endpoints
+    (/trading/clmm/positions-owned, /trading/amm/positions-owned).
+    """
+    try:
+        orphans = await executor_service.get_orphaned_positions()
+        return OrphanedPositionsResponse(count=len(orphans), orphans=orphans)
+    except Exception as e:
+        logger.error(f"Error listing orphaned positions: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error listing orphaned positions: {str(e)}")
+
+
+@router.post("/{executor_id}/resolve-orphan")
+async def resolve_orphaned_position(
+    executor_id: str,
+    executor_service: ExecutorService = Depends(get_executor_service)
+):
+    """
+    Mark an orphaned position as recovered.
+
+    Call after the stranded on-chain position has been closed (or adopted)
+    externally. Removes the executor from /executors/positions/orphaned and from
+    agent-facing orphan warnings. Only valid for terminated executors that are
+    orphan candidates: an involuntary hold (POSITION_HOLD with hold_reason or the
+    orphaned_position flag), FAILED, or SYSTEM_CLEANUP.
+    """
+    try:
+        return await executor_service.resolve_orphaned_position(executor_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error resolving orphaned position for {executor_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error resolving orphaned position: {str(e)}")
+
+
 @router.get("/positions/summary", response_model=PositionsSummaryResponse)
 async def get_positions_summary(
     controller_id: Optional[str] = None,
@@ -383,9 +436,15 @@ async def get_positions_summary(
 
         for p in positions:
             unrealized_pnl = None
-            parts = p.trading_pair.split("-")
-            if len(parts) == 2:
-                base, quote = parts
+            # A pair whose base symbol contains a hyphen used to split into three parts
+            # and fail this length check, leaving the PnL silently absent. Tolerance is
+            # still right here — one unreadable pair should not fail the whole listing —
+            # but it now applies only to pairs that really are unreadable.
+            try:
+                base, quote = split_trading_pair(p.trading_pair)
+            except InvalidTradingPair:
+                base = quote = None
+            if base and quote:
                 rate = market_data_service.get_rate(base, quote)
                 if rate is not None:
                     unrealized_pnl = float(p.get_unrealized_pnl(rate))
@@ -462,9 +521,11 @@ async def get_position_held(
             )
 
         unrealized_pnl = None
-        parts = trading_pair.split("-")
-        if len(parts) == 2:
-            base, quote = parts
+        try:
+            base, quote = split_trading_pair(trading_pair)
+        except InvalidTradingPair:
+            base = quote = None
+        if base and quote:
             rate = market_data_service.get_rate(base, quote)
             if rate is not None:
                 unrealized_pnl = float(position.get_unrealized_pnl(rate))

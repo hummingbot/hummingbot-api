@@ -1,8 +1,8 @@
 """
-Models for Gateway DEX trading operations.
-Supports swaps via routers (Jupiter, 0x) and CLMM liquidity positions (Meteora, Raydium, Uniswap V3).
-
-Note: AMM support has been removed. Use Router for simple swaps, CLMM for liquidity provision.
+Models for Gateway DEX trading operations, mirroring Gateway's unified /trading routes:
+swaps (routers like Jupiter and pool-scoped AMM swaps), CLMM liquidity positions
+(Meteora, Raydium, Orca, Uniswap V3, PancakeSwap), and AMM liquidity/pool creation
+(Meteora DAMM v2, Raydium CPMM, Uniswap V2).
 """
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
@@ -13,27 +13,87 @@ from pydantic import BaseModel, Field
 # Swap Models (Router: Jupiter, 0x)
 # ============================================
 
+
 class SwapQuoteRequest(BaseModel):
     """Request for swap price quote"""
     connector: str = Field(description="DEX router connector (e.g., 'jupiter', '0x')")
     network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta', 'ethereum-mainnet')")
     trading_pair: str = Field(description="Trading pair in BASE-QUOTE format (e.g., 'SOL-USDC')")
     side: str = Field(description="Trade side: 'BUY' or 'SELL'")
-    amount: Decimal = Field(description="Amount to swap (in base token for SELL, quote token for BUY)")
-    slippage_pct: Optional[Decimal] = Field(default=1.0, description="Maximum slippage percentage (default: 1.0)")
+    amount: Decimal = Field(
+        description="Amount denominated in the BASE token (SELL: base to sell; BUY: base to receive — "
+        "Gateway quotes BUY as ExactOut)")
+    slippage_pct: Optional[Decimal] = Field(
+        default=None, description="Maximum slippage percentage; omit to use the connector's configured slippagePct")
+    extra_params: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Connector-specific params passed through to Gateway under its own names: "
+        "approximateIfNoExactOut (Solana routers). Unknown keys are rejected.")
 
 
 class SwapQuoteResponse(BaseModel):
-    """Response with swap quote details"""
+    """Swap quote, re-framed from Gateway's token-flow response into trading-pair terms.
+
+    Gateway's quote-swap routes speak tokenIn/tokenOut; this keeps the base/quote +
+    side framing bots use and passes Gateway's execution-safety fields through in
+    snake_case. No gas estimate: Gateway's quote does not return one.
+    """
     base: str = Field(description="Base token symbol")
     quote: str = Field(description="Quote token symbol")
     price: Decimal = Field(description="Quoted price (base/quote)")
     amount: Decimal = Field(description="Amount specified in request (BUY: base amount to receive, SELL: base amount to sell)")
-    amount_in: Optional[Decimal] = Field(default=None, description="Actual input amount (BUY: quote to spend, SELL: base to sell)")
-    amount_out: Optional[Decimal] = Field(default=None, description="Actual output amount (BUY: base to receive, SELL: quote to receive)")
-    expected_amount: Optional[Decimal] = Field(default=None, description="Deprecated: use amount_out instead")
-    slippage_pct: Decimal = Field(description="Applied slippage percentage")
-    gas_estimate: Optional[Decimal] = Field(default=None, description="Estimated gas cost")
+    amount_in: Optional[Decimal] = Field(
+        default=None, description="Actual input amount (BUY: quote to spend, SELL: base to sell)"
+    )
+    amount_out: Optional[Decimal] = Field(
+        default=None, description="Actual output amount (BUY: base to receive, SELL: quote to receive)"
+    )
+    min_amount_out: Optional[Decimal] = Field(
+        default=None, description="Minimum output the transaction will accept after slippage")
+    max_amount_in: Optional[Decimal] = Field(
+        default=None, description="Maximum input the transaction will spend after slippage")
+    price_impact_pct: Optional[Decimal] = Field(
+        default=None, description="Price impact of this trade size on the route")
+    pool_address: Optional[str] = Field(default=None, description="Pool the quote was priced against")
+    route_path: Optional[str] = Field(default=None, description="Route taken (router connectors)")
+    slippage_pct: Optional[Decimal] = Field(
+        default=None,
+        description="Slippage percentage Gateway applied to the quote (the request value when Gateway omits it)")
+    quote_id: Optional[str] = Field(
+        default=None,
+        description="Identifier for this quote, on the router connectors that hold a price. Pass it "
+                    "to /swap/execute-quote to execute THIS quote instead of re-pricing. Absent on "
+                    "pool-scoped connectors, which price against the pool at execution time.")
+    approximation: Optional[bool] = Field(
+        default=None,
+        description="True when amount_out is an ESTIMATE rather than the exact-out amount asked "
+                    "for. A BUY is an ExactOut order, and many thin tokens have no ExactOut route, "
+                    "so Gateway falls back to quoting the sell leg and then quoting that input "
+                    "forward — which pays the pool fee and crosses the spread twice. Measured at a "
+                    "near-constant ~2.5% across eleven pools spanning $17 to $1,963 of liquidity, "
+                    "and it is reached for ONLY on the thin, high-fee pools where it hurts most. "
+                    "The caller is not overcharged; the order is silently resized, which is what "
+                    "matters to a strategy that asked for a specific quantity. Set "
+                    "extra_params={'approximateIfNoExactOut': false} to require an exact route.")
+
+
+class SwapExecuteQuoteRequest(BaseModel):
+    """Request to execute a quote the caller already has.
+
+    The two-step flow — quote, decide, then commit to that quote — is the reason dflow,
+    titan and 0x return a held price at all. Routing them through /swap/execute instead
+    throws the quote away and prices again, which is what every swap on record did,
+    because until now nothing downstream exposed Gateway's execute-quote route.
+    """
+    connector: str = Field(description="Router connector the quote came from (e.g., 'jupiter', '0x')")
+    network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta')")
+    quote_id: str = Field(description="quote_id from a prior /swap/quote on the same connector")
+    trading_pair: str = Field(
+        description="Trading pair the quote was for (e.g., 'SOL-USDC'). Gateway identifies the swap "
+                    "by quote_id alone; this is what the recorded trade is filed under.")
+    side: str = Field(description="Trade side the quote was for: 'BUY' or 'SELL'")
+    amount: Decimal = Field(description="Base-token amount the quote was for, recorded as the request")
+    wallet_address: Optional[str] = Field(default=None, description="Wallet address (optional, uses default if not provided)")
 
 
 class SwapExecuteRequest(BaseModel):
@@ -42,17 +102,49 @@ class SwapExecuteRequest(BaseModel):
     network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta')")
     trading_pair: str = Field(description="Trading pair (e.g., 'SOL-USDC')")
     side: str = Field(description="Trade side: 'BUY' or 'SELL'")
-    amount: Decimal = Field(description="Amount to swap")
-    slippage_pct: Optional[Decimal] = Field(default=1.0, description="Maximum slippage percentage (default: 1.0)")
+    amount: Decimal = Field(
+        description="Amount denominated in the BASE token (SELL: base to sell; BUY: base to receive)")
+    slippage_pct: Optional[Decimal] = Field(
+        default=None, description="Maximum slippage percentage; omit to use the connector's configured slippagePct")
     wallet_address: Optional[str] = Field(default=None, description="Wallet address (optional, uses default if not provided)")
+    extra_params: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Connector-specific params passed through to Gateway under its own names: "
+        "approximateIfNoExactOut (Solana routers). Unknown keys are rejected.")
 
 
 class SwapExecuteResponse(BaseModel):
-    """Response after executing swap"""
+    """Response after executing swap.
+
+    `amount` is what was asked for; the three fill fields are what happened. They were
+    missing entirely, so a caller reconciling a position against this response was
+    reconciling against its own intent: a BUY of 1000 tokens that delivered 951.68
+    answered `amount: 1000` under the description "Amount swapped". Every one of these
+    numbers was already in hand — the same call writes them to the swap history — so the
+    only way to learn what a swap did was to execute it, discard the answer, and search
+    the history by transaction hash.
+    """
     transaction_hash: str = Field(description="Transaction hash")
     trading_pair: str = Field(description="Trading pair")
     side: str = Field(description="Trade side")
-    amount: Decimal = Field(description="Amount swapped")
+    amount: Decimal = Field(
+        description="Amount REQUESTED, denominated in the base token (SELL: base sold; BUY: base "
+                    "wanted). This is the request echoed back, not the fill — see input_amount / "
+                    "output_amount for what actually moved.")
+    # None until the transaction confirms: a submitted swap has no fill yet, and echoing
+    # the request into these would reintroduce the defect they exist to fix.
+    input_amount: Optional[Decimal] = Field(
+        default=None,
+        description="Amount actually spent, denominated in the input token (quote for BUY, base "
+                    "for SELL). None until the transaction confirms.")
+    output_amount: Optional[Decimal] = Field(
+        default=None,
+        description="Amount actually received, denominated in the output token (base for BUY, "
+                    "quote for SELL). None until the transaction confirms.")
+    price: Optional[Decimal] = Field(
+        default=None,
+        description="Executed price in quote per base, computed from the amounts that moved. "
+                    "None until the transaction confirms.")
     status: str = Field(default="submitted", description="Transaction status")
 
 
@@ -73,7 +165,8 @@ class CLMMOpenPositionRequest(BaseModel):
     # Initial liquidity
     base_token_amount: Optional[Decimal] = Field(default=None, description="Amount of base token to add")
     quote_token_amount: Optional[Decimal] = Field(default=None, description="Amount of quote token to add")
-    slippage_pct: Optional[Decimal] = Field(default=1.0, description="Maximum slippage percentage (default: 1.0)")
+    slippage_pct: Optional[Decimal] = Field(
+        default=None, description="Maximum slippage percentage; omit to use the connector's configured slippagePct")
     wallet_address: Optional[str] = Field(default=None, description="Wallet address (optional, uses default if not provided)")
 
     # Connector-specific parameters (e.g., strategyType for Meteora)
@@ -83,11 +176,23 @@ class CLMMOpenPositionRequest(BaseModel):
 class CLMMOpenPositionResponse(BaseModel):
     """Response after opening a new CLMM position"""
     transaction_hash: str = Field(description="Transaction hash")
-    position_address: str = Field(description="Address of the newly created position")
+    position_address: Optional[str] = Field(
+        default=None,
+        description="Address of the newly created position. None when the transaction was "
+        "submitted but not yet confirmed (Gateway only knows the address once the tx lands) — "
+        "poll the transaction; the poller records the position once it appears on-chain")
     trading_pair: str = Field(description="Trading pair")
     pool_address: str = Field(description="Pool address")
     lower_price: Decimal = Field(description="Lower price bound")
     upper_price: Decimal = Field(description="Upper price bound")
+    base_token_amount_added: Optional[Decimal] = Field(
+        default=None,
+        description="Base amount actually added on-chain (confirmed txs only; the requested amount otherwise)")
+    quote_token_amount_added: Optional[Decimal] = Field(
+        default=None,
+        description="Quote amount actually added on-chain (confirmed txs only; the requested amount otherwise)")
+    position_rent: Optional[Decimal] = Field(
+        default=None, description="Native token locked as rent for the position account (refunded on close)")
     status: str = Field(default="submitted", description="Transaction status")
 
 
@@ -98,8 +203,12 @@ class CLMMAddLiquidityRequest(BaseModel):
     position_address: str = Field(description="Existing position address to add liquidity to")
     base_token_amount: Optional[Decimal] = Field(default=None, description="Amount of base token to add")
     quote_token_amount: Optional[Decimal] = Field(default=None, description="Amount of quote token to add")
-    slippage_pct: Optional[Decimal] = Field(default=1.0, description="Maximum slippage percentage (default: 1.0)")
+    slippage_pct: Optional[Decimal] = Field(
+        default=None, description="Maximum slippage percentage; omit to use the connector's configured slippagePct")
     wallet_address: Optional[str] = Field(default=None, description="Wallet address (optional, uses default if not provided)")
+
+    # Connector-specific parameters (e.g., strategyType for Meteora)
+    extra_params: Optional[Dict[str, Any]] = Field(default=None, description="Additional connector-specific parameters")
 
 
 class CLMMRemoveLiquidityRequest(BaseModel):
@@ -107,7 +216,13 @@ class CLMMRemoveLiquidityRequest(BaseModel):
     connector: str = Field(description="CLMM connector (e.g., 'meteora', 'raydium', 'uniswap')")
     network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta')")
     position_address: str = Field(description="Position address to remove liquidity from")
-    percentage: Decimal = Field(description="Percentage of liquidity to remove (0-100)")
+    # Same name as the AMM remove model and Gateway's percentageToRemove — and distinct
+    # from the position row's `percentage`, which means price-range width.
+    percentage_to_remove: Decimal = Field(description="Percentage of liquidity to remove (0-100)")
+    slippage_pct: Optional[Decimal] = Field(
+        default=None,
+        description="Maximum slippage percentage. Only honored by the Orca connector; "
+        "omit to use the connector's configured slippagePct")
     wallet_address: Optional[str] = Field(default=None, description="Wallet address (optional, uses default if not provided)")
 
 
@@ -116,6 +231,19 @@ class CLMMClosePositionRequest(BaseModel):
     connector: str = Field(description="CLMM connector (e.g., 'meteora', 'raydium', 'uniswap')")
     network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta')")
     position_address: str = Field(description="Position address to close")
+    slippage_pct: Optional[Decimal] = Field(
+        default=None,
+        description="Maximum acceptable slippage percentage for the withdrawal. Enforced by orca, "
+                    "uniswap and pancakeswap; meteora, raydium and pancakeswap-sol close with no "
+                    "minimum-amount check at all, so it changes nothing there. Omit to use the "
+                    "connector's configured slippagePct. An executor widening this across retries "
+                    "is what it exists for: a narrow in-range close can fail on slippage at the "
+                    "configured value with no way to say \"accept more to get out\".")
+    pool_address: Optional[str] = Field(
+        default=None,
+        description="Pool the position belongs to. Informational only — neither Gateway's call "
+                    "nor the fee snapshot needs it, and unrecorded positions work without it"
+    )
     wallet_address: Optional[str] = Field(default=None, description="Wallet address (optional, uses default if not provided)")
 
 
@@ -124,6 +252,11 @@ class CLMMCollectFeesRequest(BaseModel):
     connector: str = Field(description="CLMM connector (e.g., 'meteora', 'raydium', 'uniswap')")
     network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta')")
     position_address: str = Field(description="Position address to collect fees from")
+    pool_address: Optional[str] = Field(
+        default=None,
+        description="Pool the position belongs to. Informational only — neither Gateway's call "
+                    "nor the fee snapshot needs it, and unrecorded positions work without it"
+    )
     wallet_address: Optional[str] = Field(default=None, description="Wallet address (optional, uses default if not provided)")
 
 
@@ -136,21 +269,93 @@ class CLMMCollectFeesResponse(BaseModel):
     status: str = Field(default="submitted", description="Transaction status")
 
 
+class CLMMClosePositionResponse(CLMMCollectFeesResponse):
+    """Response after closing a position: fees collected plus what the close returned.
+
+    The removed amounts and rent refund come from Gateway's confirmed transaction data,
+    so they are None for submitted-not-confirmed transactions.
+    """
+    base_token_amount_removed: Optional[Decimal] = Field(
+        default=None, description="Base liquidity actually withdrawn on-chain")
+    quote_token_amount_removed: Optional[Decimal] = Field(
+        default=None, description="Quote liquidity actually withdrawn on-chain")
+    position_rent_refunded: Optional[Decimal] = Field(
+        default=None, description="Native token rent refunded when the position account closed")
+
+
+class CLMMQuotePositionRequest(BaseModel):
+    """Request to quote a candidate CLMM position before opening or adding.
+
+    Mirrors Gateway's GET /trading/clmm/quote-position: given the price range and
+    one or both deposit amounts, returns the actual base/quote split the pool
+    would take (and which side limits it) without signing anything.
+    """
+    connector: str = Field(description="CLMM connector (e.g., 'meteora', 'raydium', 'orca')")
+    network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta')")
+    pool_address: str = Field(description="Pool contract address")
+    lower_price: Decimal = Field(description="Lower price bound")
+    upper_price: Decimal = Field(description="Upper price bound")
+    base_token_amount: Optional[Decimal] = Field(default=None, description="Base amount to deposit (one side may be omitted)")
+    quote_token_amount: Optional[Decimal] = Field(default=None, description="Quote amount to deposit (one side may be omitted)")
+    slippage_pct: Optional[Decimal] = Field(default=None, description="Max acceptable slippage percentage")
+
+
+class CLMMQuotePositionResponse(BaseModel):
+    """Gateway's position quote: the deposit split the pool would actually take."""
+    base_limited: bool = Field(alias="baseLimited", description="True when the base side limits the deposit")
+    base_token_amount: Decimal = Field(alias="baseTokenAmount", description="Base amount the position would take")
+    quote_token_amount: Decimal = Field(alias="quoteTokenAmount", description="Quote amount the position would take")
+    base_token_amount_max: Decimal = Field(alias="baseTokenAmountMax", description="Base ceiling after slippage")
+    quote_token_amount_max: Decimal = Field(alias="quoteTokenAmountMax", description="Quote ceiling after slippage")
+
+    model_config = {"populate_by_name": True}
+
+
+class CLMMCreatePoolRequest(BaseModel):
+    """Request to create a new (empty) CLMM pool — liquidity is added by opening positions.
+
+    Mirrors Gateway's POST /trading/clmm/create-pool. Connector extras are consumed
+    only by their owning connector.
+    """
+    connector: str = Field(description="CLMM connector (e.g., 'meteora', 'raydium', 'orca', 'uniswap')")
+    network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta')")
+    base_token: str = Field(description="Base token symbol or address")
+    quote_token: str = Field(description="Quote token symbol or address")
+    initial_price: Optional[Decimal] = Field(
+        default=None, description="Initial price (quote per base); market price when omitted")
+    wallet_address: Optional[str] = Field(default=None, description="Wallet address (optional, uses default)")
+    extra_params: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Connector-specific create params, passed through to Gateway under its own "
+        "names: binStep (meteora, orca), feeBps (meteora; required for uniswap/pancakeswap — the "
+        "V3 fee tier in basis points), ammConfigIndex (raydium, pancakeswap-sol). "
+        "Unknown keys are rejected.")
+
+
 class CLMMPositionsOwnedRequest(BaseModel):
-    """Request to get all CLMM positions owned by a wallet for a specific pool"""
+    """Request to get all CLMM positions owned by a wallet.
+
+    Mirrors Gateway's /trading/clmm/positions-owned, which takes no pool filter —
+    every CLMM position the wallet owns on the connector is returned, each row
+    carrying its own pool_address.
+    """
     connector: str = Field(description="CLMM connector (e.g., 'meteora', 'raydium', 'uniswap')")
     network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta')")
-    pool_address: str = Field(description="Pool contract address to filter positions")
     wallet_address: Optional[str] = Field(default=None, description="Wallet address (optional, uses default if not provided)")
 
 
 class CLMMPositionInfo(BaseModel):
-    """Information about a CLMM liquidity position"""
+    """Information about a CLMM liquidity position.
+
+    Note: in_range here is a bool (live Gateway read); the DB-backed
+    /clmm/positions/search endpoint reports in_range as the string enum
+    IN_RANGE / OUT_OF_RANGE / UNKNOWN (three states, so not collapsible to bool).
+    """
     position_address: str = Field(description="Position address")
     pool_address: str = Field(description="Pool address")
-    trading_pair: str = Field(description="Trading pair")
-    base_token: str = Field(description="Base token symbol")
-    quote_token: str = Field(description="Quote token symbol")
+    trading_pair: str = Field(description="Trading pair (address-derived identifiers, not symbols)")
+    base_token: str = Field(description="Base token identifier (derived from the token address; not a symbol)")
+    quote_token: str = Field(description="Quote token identifier (derived from the token address; not a symbol)")
     base_token_amount: Decimal = Field(description="Base token amount in position")
     quote_token_amount: Decimal = Field(description="Quote token amount in position")
     current_price: Decimal = Field(description="Current pool price")
@@ -161,20 +366,6 @@ class CLMMPositionInfo(BaseModel):
     lower_bin_id: Optional[int] = Field(default=None, description="Lower bin ID (Meteora)")
     upper_bin_id: Optional[int] = Field(default=None, description="Upper bin ID (Meteora)")
     in_range: bool = Field(description="Whether position is currently in range")
-
-
-class CLMMGetPositionInfoRequest(BaseModel):
-    """Request to get detailed info about a specific CLMM position"""
-    connector: str = Field(description="CLMM connector (e.g., 'meteora', 'raydium', 'uniswap')")
-    network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta')")
-    position_address: str = Field(description="Position address to query")
-
-
-class CLMMPoolInfoRequest(BaseModel):
-    """Request to get CLMM pool information by pool address"""
-    connector: str = Field(description="CLMM connector (e.g., 'meteora', 'raydium')")
-    network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta')")
-    pool_address: str = Field(description="Pool contract address")
 
 
 class CLMMPoolBin(BaseModel):
@@ -207,10 +398,10 @@ class CLMMPoolInfoResponse(BaseModel):
     price: Decimal = Field(description="Current pool price")
     base_token_amount: Decimal = Field(alias="baseTokenAmount", description="Total base token liquidity")
     quote_token_amount: Decimal = Field(alias="quoteTokenAmount", description="Total quote token liquidity")
-    active_bin_id: Optional[int] = Field(None, alias="activeBinId", description="Currently active bin ID (Meteora DLMM only)")
-    dynamic_fee_pct: Optional[Decimal] = Field(None, alias="dynamicFeePct", description="Dynamic fee percentage")
-    min_bin_id: Optional[int] = Field(None, alias="minBinId", description="Minimum bin ID (Meteora-specific)")
-    max_bin_id: Optional[int] = Field(None, alias="maxBinId", description="Maximum bin ID (Meteora-specific)")
+    active_bin_id: Optional[int] = Field(None, alias="activeBinId", description="Currently active bin/tick ID")
+    # No dynamicFeePct/minBinId/maxBinId: those are Meteora connector extensions that
+    # Gateway's unified /trading/clmm/pool-info response schema strips before serialization,
+    # so they can never arrive here — and nothing downstream consumes them.
     bins: List[CLMMPoolBin] = Field(default_factory=list, description="List of bins with liquidity")
 
     model_config = {
@@ -226,9 +417,6 @@ class CLMMPoolInfoResponse(BaseModel):
                 "base_token_amount": 8645709.142366,
                 "quote_token_amount": 1095942.335132,
                 "active_bin_id": -374,
-                "dynamic_fee_pct": 0.2,
-                "min_bin_id": -21835,
-                "max_bin_id": 21835,
                 "bins": []
             }
         }
@@ -283,49 +471,14 @@ class AMMPositionInfoResponse(BaseModel):
     model_config = {"populate_by_name": True}
 
 
-class AMMQuoteSwapRequest(BaseModel):
-    """Request to quote a swap against a specific AMM pool."""
-    connector: str = Field(description="AMM connector (e.g., 'meteora', 'raydium', 'uniswap')")
-    network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta')")
-    pool_address: str = Field(description="Pool contract address")
-    base_token: str = Field(description="Token that defines the swap direction (symbol or address)")
-    side: str = Field(description="Trade direction: BUY or SELL")
-    amount: Decimal = Field(description="Amount to swap (of base for SELL, of base to receive for BUY)")
-    slippage_pct: Optional[Decimal] = Field(default=None, description="Maximum slippage percentage")
-
-
-class AMMQuoteSwapResponse(BaseModel):
-    """Response with an AMM swap quote."""
-    pool_address: str = Field(alias="poolAddress", description="Pool address")
-    token_in: str = Field(alias="tokenIn", description="Input token address")
-    token_out: str = Field(alias="tokenOut", description="Output token address")
-    amount_in: Decimal = Field(alias="amountIn", description="Input amount")
-    amount_out: Decimal = Field(alias="amountOut", description="Output amount")
-    price: Decimal = Field(description="Execution price")
-    min_amount_out: Decimal = Field(alias="minAmountOut", description="Minimum output after slippage")
-    max_amount_in: Decimal = Field(alias="maxAmountIn", description="Maximum input after slippage")
-    price_impact_pct: Decimal = Field(alias="priceImpactPct", description="Price impact percentage")
-    slippage_pct: Optional[Decimal] = Field(default=None, alias="slippagePct", description="Slippage percentage used")
-
-    model_config = {"populate_by_name": True}
-
-
-class AMMExecuteSwapRequest(BaseModel):
-    """Request to execute a swap against a specific AMM pool."""
-    connector: str = Field(description="AMM connector (e.g., 'meteora', 'raydium', 'uniswap')")
-    network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta')")
-    pool_address: str = Field(description="Pool contract address")
-    base_token: str = Field(description="Token that defines the swap direction (symbol or address)")
-    side: str = Field(description="Trade direction: BUY or SELL")
-    amount: Decimal = Field(description="Amount to swap")
-    slippage_pct: Optional[Decimal] = Field(default=1.0, description="Maximum slippage percentage (default: 1.0)")
-    wallet_address: Optional[str] = Field(default=None, description="Wallet address (optional, uses default)")
-
-
 class AMMTransactionResponse(BaseModel):
     """Chain-neutral write response. `signature` holds the tx signature (Solana) or tx hash (EVM)."""
     signature: str = Field(description="Transaction signature (Solana) or transaction hash (EVM)")
-    status: int = Field(description="TransactionStatus enum value from Gateway")
+    status: str = Field(
+        description="Transaction status: SUBMITTED, CONFIRMED or FAILED. Mapped from "
+                    "Gateway's TransactionStatus enum by the same helper the swap and "
+                    "CLMM surfaces use, so one vocabulary spans all three."
+    )
     data: Optional[Dict[str, Any]] = Field(default=None, description="Connector-specific confirmed-tx details")
 
     model_config = {"populate_by_name": True}
@@ -359,7 +512,8 @@ class AMMAddLiquidityRequest(BaseModel):
     pool_address: str = Field(description="Pool contract address")
     base_token_amount: Decimal = Field(description="Amount of base token to add")
     quote_token_amount: Decimal = Field(description="Amount of quote token to add")
-    slippage_pct: Optional[Decimal] = Field(default=1.0, description="Maximum slippage percentage (default: 1.0)")
+    slippage_pct: Optional[Decimal] = Field(
+        default=None, description="Maximum slippage percentage; omit to use the connector's configured slippagePct")
     wallet_address: Optional[str] = Field(default=None, description="Wallet address (optional, uses default)")
     # Meteora DAMM v2: add to this specific NFT position; omit to open a NEW position. Ignored by fungible-LP AMMs.
     position_address: Optional[str] = Field(default=None, description="Meteora position to add to (omit = new position)")
@@ -386,18 +540,26 @@ class AMMCreatePoolRequest(BaseModel):
     base_token_amount: Decimal = Field(description="Amount of base token to seed the pool with")
     quote_token_amount: Optional[Decimal] = Field(default=None, description="Amount of quote to seed (sets price if given)")
     initial_price: Optional[Decimal] = Field(default=None, description="Initial price (quote per base); overrides quote amount")
+    slippage_pct: Optional[Decimal] = Field(
+        default=None,
+        description="Seeding slippage percentage (uniswap/pancakeswap only); "
+        "omit to use the connector's configured slippagePct")
     wallet_address: Optional[str] = Field(default=None, description="Wallet address (optional, uses default)")
-    # Connector-specific create-pool extras (only consumed by their owning connector):
-    config_address: Optional[str] = Field(default=None, description="Meteora DAMM v2 config account (required for meteora)")
-    fee_config_index: Optional[int] = Field(default=None, description="Raydium CPMM fee config index (optional)")
-    gas_price: Optional[Decimal] = Field(default=None, description="Uniswap (EVM) gas price in gwei (optional)")
-    max_gas: Optional[int] = Field(default=None, description="Uniswap (EVM) max gas limit (optional)")
+    extra_params: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Connector-specific create params, passed through to Gateway under its own "
+        "names: configAddress (meteora DAMM v2, required there), ammConfigIndex (raydium CPMM). "
+        "Unknown keys are rejected.")
 
 
 class AMMCreatePoolResponse(BaseModel):
     """Response after creating an AMM pool."""
     signature: str = Field(description="Transaction signature (Solana) or transaction hash (EVM)")
-    status: int = Field(description="TransactionStatus enum value from Gateway")
+    status: str = Field(
+        description="Transaction status: SUBMITTED, CONFIRMED or FAILED. Mapped from "
+                    "Gateway's TransactionStatus enum by the same helper the swap and "
+                    "CLMM surfaces use, so one vocabulary spans all three."
+    )
     pool_address: str = Field(alias="poolAddress", description="Address of the newly created pool")
     price: Optional[Decimal] = Field(default=None, description="Initial price the pool was seeded at (quote per base)")
     data: Optional[Dict[str, Any]] = Field(default=None, description="Connector-specific confirmed-tx details")
@@ -413,45 +575,8 @@ class AMMPositionsOwnedRequest(BaseModel):
 
 
 # ============================================
-# Pool Information Models
-# ============================================
-
-class GetPoolInfoRequest(BaseModel):
-    """Request to get pool information"""
-    connector: str = Field(description="DEX connector (e.g., 'meteora', 'raydium', 'jupiter')")
-    network: str = Field(description="Network ID in 'chain-network' format (e.g., 'solana-mainnet-beta')")
-    trading_pair: str = Field(description="Trading pair (e.g., 'SOL-USDC')")
-
-
-class PoolInfo(BaseModel):
-    """Information about a liquidity pool"""
-    type: str = Field(description="Pool type: 'clmm' or 'router'")
-    address: str = Field(description="Pool address")
-    trading_pair: str = Field(description="Trading pair")
-    base_token: str = Field(description="Base token symbol")
-    quote_token: str = Field(description="Quote token symbol")
-    current_price: Decimal = Field(description="Current pool price")
-    base_token_amount: Decimal = Field(description="Base token liquidity in pool")
-    quote_token_amount: Decimal = Field(description="Quote token liquidity in pool")
-    fee_pct: Decimal = Field(description="Pool fee percentage")
-
-    # CLMM-specific
-    bin_step: Optional[int] = Field(default=None, description="Bin step (CLMM)")
-    active_bin_id: Optional[int] = Field(default=None, description="Active bin ID (CLMM)")
-
-
-# ============================================
 # CLMM Pool Listing Models
 # ============================================
-
-class TimeBasedMetrics(BaseModel):
-    """Time-based metrics (volume, fees, fee-to-TVL ratio) for different time periods"""
-    min_30: Optional[Decimal] = Field(default=None, description="30 minute metric")
-    hour_1: Optional[Decimal] = Field(default=None, description="1 hour metric")
-    hour_2: Optional[Decimal] = Field(default=None, description="2 hour metric")
-    hour_4: Optional[Decimal] = Field(default=None, description="4 hour metric")
-    hour_12: Optional[Decimal] = Field(default=None, description="12 hour metric")
-    hour_24: Optional[Decimal] = Field(default=None, description="24 hour metric")
 
 
 class CLMMPoolListItem(BaseModel):
@@ -476,4 +601,4 @@ class CLMMPoolListResponse(BaseModel):
     pools: List[CLMMPoolListItem] = Field(description="List of available pools")
     total: int = Field(description="Total number of matching pools")
     page: int = Field(description="Current page number")
-    pageSize: int = Field(description="Number of pools per page")
+    page_size: int = Field(description="Number of pools per page")

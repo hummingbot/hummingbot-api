@@ -11,6 +11,7 @@ from hummingbot.core.event.event_forwarder import SourceInfoEventForwarder
 from hummingbot.core.event.events import BuyOrderCreatedEvent, MarketEvent, OrderFilledEvent, SellOrderCreatedEvent, TradeType
 
 from database import AsyncDatabaseManager, OrderRepository, TradeRepository
+from utils.trading_pair import split_trading_pair
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -223,7 +224,7 @@ class OrdersRecorder:
 
                 if event.trade_fee:
                     try:
-                        base_asset, quote_asset = event.trading_pair.split("-")
+                        base_asset, quote_asset = split_trading_pair(event.trading_pair)
                         fee_in_quote = event.trade_fee.fee_amount_in_token(
                             trading_pair=event.trading_pair,
                             price=event.price,
@@ -235,7 +236,7 @@ class OrdersRecorder:
                     except Exception as e:
                         logger.warning(f"Primary fee calculation failed: {e}. Attempting fallback...")
                         try:
-                            base_asset, quote_asset = event.trading_pair.split("-")
+                            base_asset, quote_asset = split_trading_pair(event.trading_pair)
                             fallback_fee = await self._calculate_fee_fallback(
                                 trade_fee=event.trade_fee,
                                 base_asset=base_asset,

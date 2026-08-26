@@ -14,9 +14,10 @@ from typing import Any, Dict, Optional
 
 from fastapi import WebSocket
 
+from services.bots_orchestrator import BotsOrchestrator
 from services.executor_service import ExecutorService
 from services.market_data_service import MarketDataService
-from services.bots_orchestrator import BotsOrchestrator
+from utils.trading_pair import InvalidTradingPair, split_trading_pair
 
 logger = logging.getLogger(__name__)
 
@@ -376,9 +377,13 @@ class ExecutorWebSocketManager:
 
                     for p in positions:
                         unrealized_pnl = None
-                        parts = p.trading_pair.split("-")
-                        if len(parts) == 2:
-                            base, quote = parts
+                        # See routers/executors.py: a hyphenated base symbol failed the
+                        # old length check and dropped the PnL without saying so.
+                        try:
+                            base, quote = split_trading_pair(p.trading_pair)
+                        except InvalidTradingPair:
+                            base = quote = None
+                        if base and quote:
                             rate = self._market_data_service.get_rate(base, quote)
                             if rate is not None:
                                 unrealized_pnl = float(p.get_unrealized_pnl(rate))

@@ -6,6 +6,7 @@ without Docker containers or full strategy setup.
 import asyncio
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from decimal import Decimal
 from enum import Enum
@@ -32,10 +33,12 @@ from hummingbot.strategy_v2.executors.xemm_executor.data_types import XEMMExecut
 from hummingbot.strategy_v2.executors.xemm_executor.xemm_executor import XEMMExecutor
 from hummingbot.strategy_v2.models.executors import CloseType, TrackedOrder
 
-from database import AsyncDatabaseManager, ExecutorRepository
+from database import AsyncDatabaseManager, ExecutorRepository, GatewayCLMMRepository, GatewaySwapRepository
 from models.executors import PositionHold
+from services.gateway_client import get_native_gas_token
 from services.trading_service import AccountTradingInterface, TradingService
 from utils.executor_log_capture import ExecutorLogCapture, current_executor_id
+from utils.trading_pair import InvalidTradingPair, split_trading_pair
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +112,10 @@ class ExecutorService:
     - Database persistence of executor state and history
     """
 
+    # How long to wait before looking again for a position row that was not there. The
+    # poller creates it on discovery, which is far slower than the control loop's tick.
+    LP_RENT_RETRY_SECONDS = 30.0
+
     # Mapping of executor type strings to (executor_class, config_class)
     EXECUTOR_REGISTRY: Dict[str, tuple[Type[ExecutorBase], Type[ExecutorConfigBase]]] = {
         "position_executor": (PositionExecutor, PositionExecutorConfig),
@@ -161,6 +168,19 @@ class ExecutorService:
         # Executor log capture
         self._log_capture = ExecutorLogCapture()
         self._log_capture.install()
+
+        # An LP executor's position address, learned while the executor is live. A
+        # successful close clears it from custom_info before the executor terminates, so
+        # by completion — which is when the rent refund is finally known — there is
+        # nothing left to file it under. See _record_lp_position_rent.
+        self._lp_position_addresses: Dict[str, str] = {}
+        # Executors whose locked rent is already stored, so the control loop stops
+        # re-reading and re-writing a figure that cannot change.
+        self._lp_rent_recorded: set = set()
+        # Earliest monotonic time to retry an executor whose position row did not exist
+        # yet. Discovery runs on its own schedule, so retrying at the control loop's 1 Hz
+        # would be a query a second against a row that appears about once a minute.
+        self._lp_rent_retry_after: Dict[str, float] = {}
 
         # Control loop task
         self._control_loop_task: Optional[asyncio.Task] = None
@@ -297,11 +317,23 @@ class ExecutorService:
                 # Update timestamps for all trading interfaces via TradingService
                 self._trading_service.update_all_timestamps()
 
-                # Check for completed executors
+                # Check for completed executors. Iterate a snapshot: the rent recording
+                # below awaits, and create_executor runs in a request task that can add to
+                # or remove from _active_executors while this loop is suspended.
                 completed_ids = []
-                for executor_id, executor in self._active_executors.items():
+                for executor_id, executor in list(self._active_executors.items()):
                     if executor.is_closed:
                         completed_ids.append(executor_id)
+                    elif (
+                        self._executor_metadata.get(executor_id, {}).get("executor_type") == "lp_executor"
+                        and executor_id not in self._lp_rent_recorded
+                        and time.monotonic() >= self._lp_rent_retry_after.get(executor_id, 0.0)
+                    ):
+                        # Locked rent, stored while the position is still held rather than
+                        # at completion — a position open for days should be answerable
+                        # for the whole time it is open. Drops out of this branch as soon
+                        # as it lands, so it is one read per executor, not one per tick.
+                        await self._record_lp_position_rent(executor_id, executor)
 
                 # Handle completed executors
                 for executor_id in completed_ids:
@@ -311,6 +343,202 @@ class ExecutorService:
                 logger.error(f"Error in executor control loop: {e}", exc_info=True)
 
             await asyncio.sleep(self.update_interval)
+
+    @staticmethod
+    def _measured_rent(custom_info: Dict[str, Any], key: str) -> Optional[Decimal]:
+        """A rent figure the executor actually observed, or None.
+
+        The LP executor reports these as plain floats and defaults them to 0.0, so zero
+        means "never measured" far more often than it means "measured and empty": a
+        position still open has no refund yet, and an EVM CLMM has no rent at all. Rent
+        that was genuinely locked is never zero. Storing the 0.0 would put a figure in
+        the table that reads as an observation and is not one — the mistake GW-18 made,
+        where a hardcoded 0 refund was indistinguishable from a position that earned
+        nothing.
+        """
+        value = custom_info.get(key)
+        if value is None:
+            return None
+        try:
+            amount = Decimal(str(value))
+        except (ArithmeticError, ValueError):
+            return None
+        return amount if amount > 0 else None
+
+    async def _record_lp_position_rent(
+        self, executor_id: str, executor: ExecutorBase, *, final: bool = False
+    ) -> None:
+        """Carry an LP executor's rent figures into the CLMM position table.
+
+        ``final`` marks the call made from executor completion, which is the last one
+        this executor will ever get: its retry state is torn down immediately after,
+        so there is no later tick to hand the work to.
+
+        `gateway_clmm_positions.position_rent` is written by hummingbot-api's OPEN route
+        and `position_rent_refunded` by its CLOSE route. An executor holds its position
+        through the wheel, talking to Gateway directly, so neither route runs: the poller
+        discovers the position and files it with both columns NULL, and the close leaves
+        no refund behind either. That is the recommended way to hold a CLMM position and
+        the one path whose rent went unrecorded — ~0.0100572 SOL on Orca, more than the
+        liquidity in a small position.
+
+        The executor knows both figures; nothing was asking it. Locked rent is written as
+        soon as the position row exists, rather than at completion, so a position held for
+        days is answerable while it is held. The row may not exist yet on an early tick —
+        discovery runs on its own schedule — in which case this is a no-op and the next
+        tick tries again.
+        """
+        try:
+            custom_info = executor.get_custom_info()
+        except Exception as e:
+            logger.debug(f"Could not read custom_info for {executor_id} while recording rent: {e}")
+            return
+
+        position_address = custom_info.get("position_address")
+        if position_address:
+            self._lp_position_addresses[executor_id] = position_address
+        else:
+            # Cleared by a successful close. The refund is only known now, so fall back to
+            # the address this executor was holding.
+            position_address = self._lp_position_addresses.get(executor_id)
+        if not position_address:
+            return
+
+        position_rent = self._measured_rent(custom_info, "position_rent")
+        position_rent_refunded = self._measured_rent(custom_info, "position_rent_refunded")
+        if position_rent is None and position_rent_refunded is None:
+            return
+
+        try:
+            async with self.db_manager.get_session_context() as session:
+                position = await GatewayCLMMRepository(session).record_position_rent(
+                    position_address,
+                    position_rent=position_rent,
+                    position_rent_refunded=position_rent_refunded,
+                )
+        except Exception as e:
+            logger.error(f"Error recording rent for LP position {position_address}: {e}", exc_info=True)
+            return
+
+        if position is None:
+            if not final:
+                # The poller has simply not discovered the position yet; back off and let a
+                # later tick try again. Not worth a warning while the executor still runs.
+                self._lp_rent_retry_after[executor_id] = time.monotonic() + self.LP_RENT_RETRY_SECONDS
+                return
+            # Last call: scheduling a retry here would be theatre, since the caller clears
+            # this executor's retry state on the next line. Say plainly what was lost and
+            # what it was worth, so the figures can be recovered from the log.
+            logger.error(
+                f"LP executor {executor_id} finished holding position {position_address} "
+                f"(rent={position_rent}, refund={position_rent_refunded}), but no row exists "
+                "for it: the position was opened and closed inside a single discovery "
+                "sweep, so it was never filed and these figures are not recorded anywhere "
+                "but this log line."
+            )
+            return
+
+        if position_rent is not None:
+            self._lp_rent_recorded.add(executor_id)
+        logger.debug(
+            f"Recorded rent for LP position {position_address}: locked={position_rent}, "
+            f"refunded={position_rent_refunded}"
+        )
+
+    async def _record_executor_swap(self, executor_id: str, executor: ExecutorBase) -> None:
+        """Record a swap an executor made, so the swap history covers the recommended path.
+
+        `gateway_swaps` is written by hummingbot-api's own /gateway/swap/* routes. An
+        executor holds its connector through the wheel and talks to Gateway directly, so
+        hummingbot-api never sees the call and had nothing to record. The table was not
+        wrong, it was silently partial: POST /gateway/swaps/search and the swap summary
+        described only swaps made by hand, and a caller reading "9 SOL-USDC swaps" had no
+        way to learn that the most recent ones were missing.
+
+        Same shape as _record_lp_position_rent: the executor knows what it did, so ask it
+        at completion rather than waiting for a route that will never be called. Keyed on
+        the transaction hash, which is what GW-43 added to custom_info — `order_id` is
+        internal (buy-SOL-USDC-1787271213996599) and appears nowhere on chain, so before
+        that there was nothing to key a row on.
+
+        Skipped silently when there is no hash: a Gateway swap that never reached the
+        chain has nothing to record, and an executor on a CEX is not a Gateway swap at all.
+        """
+        try:
+            custom_info = executor.get_custom_info()
+        except Exception as e:
+            logger.debug(f"Could not read custom_info for {executor_id} while recording its swap: {e}")
+            return
+
+        transaction_hash = custom_info.get("transaction_hash")
+        swap_provider = custom_info.get("swap_provider")
+        if not transaction_hash or not swap_provider:
+            return
+
+        metadata = self._executor_metadata.get(executor_id, {})
+        network = metadata.get("connector_name") or ""
+        trading_pair = metadata.get("trading_pair") or ""
+        if not network or "-" not in trading_pair:
+            logger.warning(
+                f"Executor {executor_id} swapped in {transaction_hash} but reports "
+                f"network={network!r} pair={trading_pair!r}; not recorded."
+            )
+            return
+
+        base_token, quote_token = split_trading_pair(trading_pair)
+        side = str(custom_info.get("side") or "").upper()
+        side = "BUY" if "BUY" in side else "SELL"
+
+        amount_base = Decimal(str(custom_info.get("executed_amount_base") or 0))
+        price = Decimal(str(custom_info.get("average_executed_price") or 0))
+        if amount_base <= 0 or price <= 0:
+            logger.warning(
+                f"Executor {executor_id} swapped in {transaction_hash} but reports no "
+                f"realized amounts (base={amount_base}, price={price}); not recorded."
+            )
+            return
+        amount_quote = amount_base * price
+
+        # A BUY spends quote to receive base; a SELL is the mirror image.
+        input_amount, output_amount = (
+            (amount_quote, amount_base) if side == "BUY" else (amount_base, amount_quote)
+        )
+
+        chain = network.split("-", 1)[0]
+        # The provider travels as "jupiter/router"; the table stores the bare DEX name,
+        # which is what the /gateway/swap routes write.
+        connector = swap_provider.split("/", 1)[0]
+
+        try:
+            async with self.db_manager.get_session_context() as session:
+                repo = GatewaySwapRepository(session)
+                if await repo.get_swap_by_tx_hash(transaction_hash):
+                    return
+                await repo.create_swap({
+                    "transaction_hash": transaction_hash,
+                    "network": network,
+                    "connector": connector,
+                    "wallet_address": custom_info.get("wallet_address") or "",
+                    "trading_pair": trading_pair,
+                    "base_token": base_token,
+                    "quote_token": quote_token,
+                    "side": side,
+                    "input_amount": input_amount,
+                    "output_amount": output_amount,
+                    "price": price,
+                    # The LIVE tolerance the swap went out with, which is not
+                    # config.slippage_pct when earlier attempts failed and widened it.
+                    "slippage_pct": (Decimal(str(custom_info["slippage_pct"]))
+                                     if custom_info.get("slippage_pct") is not None else None),
+                    "gas_token": get_native_gas_token(chain),
+                    "status": "CONFIRMED",
+                })
+            logger.info(
+                f"Recorded executor swap {transaction_hash}: {side} {amount_base} "
+                f"{base_token} @ {price} on {connector}/{network}"
+            )
+        except Exception as e:
+            logger.error(f"Error recording executor swap {transaction_hash}: {e}", exc_info=True)
 
     def _get_trading_interface(self, account_name: str) -> AccountTradingInterface:
         """Get or create an AccountTradingInterface for the account."""
@@ -629,6 +857,31 @@ class ExecutorService:
         """
         executor = self._active_executors.get(executor_id)
         if not executor:
+            # Terminal executors are popped from memory within one control-loop tick,
+            # so "not in memory" usually means "already terminated", not "unknown".
+            # Fall back to the DB and answer with the final state as a no-op success.
+            # This deliberately includes rows still marked RUNNING in the DB: an
+            # executor known to the DB but absent from memory is dead regardless of
+            # its stored status (completion race, failed persist, restart window),
+            # and answering 404 there is the gateway#678 dead end. 404 is reserved
+            # for executor ids the DB has never seen (or a DB outage, which
+            # get_executor logs and swallows to None).
+            db_record = await self.get_executor(executor_id)
+            if db_record:
+                custom_info = db_record.get("custom_info") or {}
+                logger.info(
+                    f"Stop requested for already-terminated executor {executor_id} "
+                    f"(db status: {db_record.get('status')}, close_type: {db_record.get('close_type')}) - no-op"
+                )
+                return {
+                    "executor_id": executor_id,
+                    "status": "already_terminated",
+                    "keep_position": keep_position,
+                    "close_type": db_record.get("close_type"),
+                    "position_address": custom_info.get("position_address"),
+                    "orphaned_position": bool(custom_info.get("orphaned_position", False)),
+                    "hold_reason": custom_info.get("hold_reason"),
+                }
             raise HTTPException(status_code=404, detail=f"Executor {executor_id} not found")
 
         if executor.is_closed:
@@ -649,6 +902,129 @@ class ExecutorService:
             "keep_position": keep_position
         }
 
+    async def get_orphaned_positions(self) -> List[Dict[str, Any]]:
+        """
+        List executors that terminated while potentially still owning an on-chain position.
+
+        Covers both orphan classes:
+        - close_type FAILED with a position_address in the persisted final state
+          (e.g. an LP close that exhausted retries - gateway#678)
+        - close_type SYSTEM_CLEANUP (RUNNING rows rewritten after an API restart);
+          these have no final state, so the position address is unknown and the
+          on-chain state must be reconciled externally
+
+        This listing is DB-side only: cross-check candidates against on-chain reality
+        (gateway CLMM/AMM positions-owned endpoints) before recovering. Recovered
+        orphans are silenced with resolve_orphaned_position().
+
+        Raises on DB errors rather than returning [] - "no orphans" from a broken DB
+        would read as all-clear on a safety endpoint.
+        """
+        if not self.db_manager:
+            raise RuntimeError("Orphan listing unavailable: no database configured")
+
+        # lp_executor is the only executor type that owns an on-chain position
+        # account; filtering in SQL keeps the limit meaningful (a Python-side filter
+        # over the newest N mixed candidates can silently drop older real orphans).
+        async with self.db_manager.get_session_context() as session:
+            repo = ExecutorRepository(session)
+            records = await repo.get_executors_by_close_types(
+                ["FAILED", "SYSTEM_CLEANUP", "POSITION_HOLD"], executor_type="lp_executor"
+            )
+
+        orphans: List[Dict[str, Any]] = []
+        for record in records:
+            final_state: Dict[str, Any] = {}
+            if record.final_state:
+                try:
+                    final_state = json.loads(record.final_state)
+                except (json.JSONDecodeError, TypeError):
+                    final_state = {}
+
+            if final_state.get("orphan_resolved"):
+                continue
+
+            position_address = final_state.get("position_address")
+            if record.close_type == "FAILED" and not position_address:
+                # Failed without on-chain exposure - not an orphan
+                continue
+            if record.close_type == "POSITION_HOLD" and not (
+                final_state.get("orphaned_position") or final_state.get("hold_reason")
+            ):
+                # Voluntary hold (keep_position=True stop) - position was closed on-chain
+                continue
+
+            # The DEX and pool live in the executor config, not in any column: for lp_executor the
+            # connector_name column carries the network id. Both are needed to close the position,
+            # and LP-executor positions are opened by the bot straight against Gateway so they are
+            # never in the API's own CLMM position table to be looked up there.
+            config: Dict[str, Any] = {}
+            if record.config:
+                try:
+                    config = json.loads(record.config)
+                except (json.JSONDecodeError, TypeError):
+                    config = {}
+
+            orphans.append({
+                "executor_id": record.executor_id,
+                "executor_type": record.executor_type,
+                "account_name": record.account_name,
+                "connector_name": record.connector_name,
+                "trading_pair": record.trading_pair,
+                "lp_provider": config.get("lp_provider"),
+                "pool_address": config.get("pool_address"),
+                "controller_id": record.controller_id or "main",
+                "close_type": record.close_type,
+                "closed_at": record.closed_at.isoformat() if record.closed_at else None,
+                "position_address": position_address,
+                "state": final_state.get("state"),
+                "hold_reason": final_state.get("hold_reason"),
+                "needs_onchain_reconciliation": position_address is None,
+            })
+
+        return orphans
+
+    async def resolve_orphaned_position(self, executor_id: str) -> Dict[str, Any]:
+        """
+        Mark an orphaned position as recovered so it stops surfacing.
+
+        Call this after the stranded on-chain position has been closed (or adopted)
+        externally. Sets orphan_resolved in the persisted final state, which removes
+        the record from get_orphaned_positions() and from agent-facing warnings.
+        """
+        if not self.db_manager:
+            raise HTTPException(status_code=503, detail="No database configured")
+
+        async with self.db_manager.get_session_context() as session:
+            repo = ExecutorRepository(session)
+            record = await repo.get_executor_by_id(executor_id)
+            if not record:
+                raise HTTPException(status_code=404, detail=f"Executor {executor_id} not found")
+            if record.status == "RUNNING":
+                raise HTTPException(status_code=400, detail=f"Executor {executor_id} is still running")
+
+            final_state: Dict[str, Any] = {}
+            if record.final_state:
+                try:
+                    final_state = json.loads(record.final_state)
+                except (json.JSONDecodeError, TypeError):
+                    final_state = {}
+
+            is_involuntary_hold = record.close_type == "POSITION_HOLD" and (
+                final_state.get("orphaned_position") or final_state.get("hold_reason")
+            )
+            if record.close_type not in ("FAILED", "SYSTEM_CLEANUP") and not is_involuntary_hold:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Executor {executor_id} (close_type: {record.close_type}) is not an orphan candidate",
+                )
+            final_state["orphaned_position"] = False
+            final_state["orphan_resolved"] = True
+            await repo.update_executor(executor_id=executor_id, final_state=json.dumps(final_state))
+
+        logger.info(f"Orphaned position for executor {executor_id} marked resolved")
+        return {"executor_id": executor_id, "orphan_resolved": True}
+
     async def _handle_executor_completion(self, executor_id: str):
         """Handle cleanup when an executor completes."""
         # Atomically claim the executor so a concurrent completion (e.g. the
@@ -667,6 +1043,20 @@ class ExecutorService:
         # Persist final state to database
         await self._persist_executor_completed(executor_id, executor)
 
+        # The rent refund is only known once the close confirms, which is here. A
+        # successful close has already cleared position_address from custom_info, so this
+        # relies on the address remembered while the executor was live.
+        if metadata.get("executor_type") == "lp_executor":
+            await self._record_lp_position_rent(executor_id, executor, final=True)
+        # A Gateway swap an executor made, which no /gateway/swap route ever saw. See
+        # _record_executor_swap; non-Gateway executors carry no transaction hash and fall
+        # straight back out.
+        if self.db_manager:
+            await self._record_executor_swap(executor_id, executor)
+        self._lp_position_addresses.pop(executor_id, None)
+        self._lp_rent_recorded.discard(executor_id)
+        self._lp_rent_retry_after.pop(executor_id, None)
+
         # Active executor already claimed via pop above; drop its metadata last
         # (metadata is read above and re-fetched inside the persist/aggregate
         # helpers, so it must stay until after those awaits complete).
@@ -678,6 +1068,24 @@ class ExecutorService:
 
         close_type = executor.close_type.name if executor.close_type else "UNKNOWN"
         logger.info(f"Executor {executor_id} completed with close_type: {close_type}")
+
+        # Surface stranded on-chain exposure loudly: a live position address on an
+        # involuntary hold (hold_reason set) or a legacy FAILED means the position
+        # has no automated owner from this point on.
+        if executor.close_type in (CloseType.FAILED, CloseType.POSITION_HOLD):
+            try:
+                completion_info = executor.get_custom_info()
+                position_address = completion_info.get("position_address")
+                hold_reason = completion_info.get("hold_reason")
+            except Exception:
+                position_address = None
+                hold_reason = None
+            if position_address and (hold_reason or executor.close_type == CloseType.FAILED):
+                logger.error(
+                    f"Executor {executor_id} ended {close_type} with position {position_address} "
+                    f"still open on-chain (hold_reason: {hold_reason}) - orphaned position requires "
+                    "recovery (flagged in DB record; see /executors/positions/orphaned)"
+                )
 
     def _format_executor_info(
         self,
@@ -793,6 +1201,9 @@ class ExecutorService:
 
         active_count = len(executors)
         total_pnl = sum(e.get("net_pnl_quote", 0) for e in executors)
+        # filled_amount_quote is the volume traded on every executor type — an LP
+        # executor derives it from the fees it earned rather than the capital it put up,
+        # so this sums like with like and no separate field is needed.
         total_volume = sum(e.get("filled_amount_quote", 0) for e in executors)
 
         by_type: Dict[str, int] = {}
@@ -903,10 +1314,12 @@ class ExecutorService:
             # First pass: try oracle for each position, collect misses grouped by connector
             missing_by_connector: Dict[str, List[tuple]] = {}  # connector_key -> [(position, trading_pair)]
             for p in positions:
-                parts = p.trading_pair.split("-")
-                if len(parts) != 2:
+                # A hyphenated base symbol produced three parts and was skipped here,
+                # so the position simply contributed nothing to unrealized PnL.
+                try:
+                    base, quote = split_trading_pair(p.trading_pair)
+                except InvalidTradingPair:
                     continue
-                base, quote = parts
                 rate = market_data_service.get_rate(base, quote)
                 if rate is not None:
                     unrealized_pnl += float(p.get_unrealized_pnl(rate))
@@ -996,6 +1409,17 @@ class ExecutorService:
             # Get custom_info directly from executor to avoid Pydantic serialization issues
             # with TrackedOrder and other complex types
             custom_info = executor.get_custom_info()
+
+            # A stranded live on-chain position: an involuntary hold (close retries
+            # exhausted -> POSITION_HOLD with hold_reason set, gateway#678) or a legacy
+            # FAILED-with-position (force-stop straggler, older wheel). Flag it in the
+            # persisted final_state so /executors/positions/orphaned, dashboards, and
+            # agents can find and recover it. Voluntary holds never match: a successful
+            # close clears position_address before the executor terminates.
+            if custom_info.get("position_address") and (
+                custom_info.get("hold_reason") or close_type == "FAILED"
+            ):
+                custom_info["orphaned_position"] = True
             # Serialize custom_info, fallback to None if serialization fails
             final_state_json = None
             metadata = self._executor_metadata.get(executor_id, {})
