@@ -2,8 +2,13 @@
 #   docker compose -f docker-compose.yml -f docker-compose.tailscale.yml up -d
 #
 # network_mode: host lets the Tailscale daemon create a real tailscale0 interface
-# on the host, making hummingbot-api's port 8000 reachable at the Tailscale IP
-# without exposing it on any public interface.
+# on the host. hummingbot-api's port 8000 is bound to 127.0.0.1 only whenever
+# this overlay is used (setup.sh writes API_BIND_HOST=127.0.0.1 to .env), so
+# TS_SERVE_CONFIG below is what actually makes port 8000 reachable on the
+# tailnet — it forwards the tailnet IP's :8000 to 127.0.0.1:8000, which this
+# sidecar can reach directly because it shares the host's network namespace.
+# Without this, the API would be reachable on the tailnet AND still sitting
+# on every other host interface at the same time.
 #
 # The base docker-compose.yml emqx-bridge network is unaffected — emqx and
 # postgres still communicate with hummingbot-api normally via that bridge.
@@ -18,9 +23,11 @@ services:
       - TS_STATE_DIR=/var/lib/tailscale
       - TS_USERSPACE=false
       - TS_HOSTNAME=${TAILSCALE_HOSTNAME:-hummingbot-api}
+      - TS_SERVE_CONFIG=/config/tailscale-serve.json
     volumes:
       - tailscale_state:/var/lib/tailscale
       - /dev/net/tun:/dev/net/tun
+      - ./tailscale-serve.json:/config/tailscale-serve.json:ro
     cap_add:
       - NET_ADMIN
       - NET_RAW

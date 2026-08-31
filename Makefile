@@ -1,4 +1,4 @@
-.PHONY: setup run deploy stop install uninstall build install-pre-commit tailscale-status reset
+.PHONY: setup run deploy stop install uninstall build install-pre-commit tailscale-status doctor reset
 
 SETUP_SENTINEL := .setup-complete
 
@@ -43,6 +43,11 @@ deploy: $(SETUP_SENTINEL)
 		docker compose up -d; \
 	fi
 
+# Verify dependencies, .env, containers, port exposure and API access.
+# Read-only; exits non-zero when a check actually fails.
+doctor:
+	@chmod +x doctor.sh && ./doctor.sh
+
 TAILSCALE_CONTAINER := hummingbot-tailscale
 
 # Show Tailscale connection status (Docker sidecar or local install)
@@ -50,9 +55,15 @@ tailscale-status:
 	@if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx '$(TAILSCALE_CONTAINER)'; then \
 		echo "[INFO] Tailscale sidecar (Docker)"; \
 		docker exec $(TAILSCALE_CONTAINER) tailscale status; \
+		echo ""; \
+		echo "[INFO] Serve status (confirms port 8000 is proxied, not just tailnet-joined):"; \
+		docker exec $(TAILSCALE_CONTAINER) tailscale serve status; \
 	elif command -v tailscale >/dev/null 2>&1; then \
 		echo "[INFO] Tailscale (local)"; \
 		tailscale status; \
+		echo ""; \
+		echo "[INFO] Serve status:"; \
+		tailscale serve status; \
 	else \
 		echo "Tailscale is not available."; \
 		echo "  Docker deploy: ensure TAILSCALE_ENABLED=true and run 'make deploy'"; \

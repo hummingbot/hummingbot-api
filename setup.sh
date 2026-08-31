@@ -60,6 +60,54 @@ prompt_required_tty() {
   done
 }
 
+# Same as prompt_tty, but with echo off. These values end up in .env and guard
+# an API that can place orders and read balances -- typing them in cleartext
+# leaves them in the terminal, in scrollback, and in any recorded install log.
+prompt_secret_tty() {
+  local message="$1"
+  local value=""
+  local fd
+  if [[ -t 0 ]]; then
+    read -rs -p "$message" value
+    echo "" >&2
+  elif { exec {fd}<>/dev/tty; } 2>/dev/null; then
+    printf '%s' "$message" >&${fd}
+    read -rs value <&${fd}
+    printf '\n' >&${fd}
+    exec {fd}>&-
+  elif IFS= read -r value; then
+    :
+  else
+    value=""
+  fi
+  echo "$value"
+}
+
+# Masked, non-empty, typed twice -- a mistyped password that is never echoed
+# is otherwise only discovered when the API refuses to authenticate.
+prompt_required_secret_tty() {
+  local message="$1"
+  local value="" confirm=""
+  while true; do
+    value="$(prompt_secret_tty "$message")"
+    if [[ -z "$value" ]]; then
+      echo "[WARN] This value cannot be empty" >&2
+      continue
+    fi
+    if [[ "$value" =~ [[:space:]] ]]; then
+      echo "[WARN] Spaces are not supported here -- .env is read by three different parsers that disagree on quoting" >&2
+      continue
+    fi
+    confirm="$(prompt_secret_tty "Confirm: ")"
+    if [[ "$value" != "$confirm" ]]; then
+      echo "[WARN] Values did not match, try again" >&2
+      continue
+    fi
+    echo "$value"
+    return 0
+  done
+}
+
 resolve_script_dir() {
   local src="${BASH_SOURCE[0]}"
   while [ -h "$src" ]; do
@@ -376,12 +424,16 @@ echo ""
 if [ -f ".env" ]; then
   echo ".env file already exists. Skipping setup."
   echo ""
-  
+  echo "  To change credentials or Tailscale settings: edit .env, then 'make deploy'."
+  echo "  To start over from scratch:                  make reset && make setup"
+  echo "  To check the install:                        make doctor"
+  echo ""
+
   # Ensure sentinel file exists
   if [ ! -f ".setup-complete" ]; then
     touch .setup-complete
   fi
-  
+
   exit 0
 fi
 
@@ -400,8 +452,8 @@ echo "Set API credentials (use a strong username, password, and config password)
 echo ""
 
 USERNAME="$(prompt_required_tty "API username: ")"
-PASSWORD="$(prompt_required_tty "API password: ")"
-CONFIG_PASSWORD="$(prompt_required_tty "Config password: ")"
+PASSWORD="$(prompt_required_secret_tty "API password: ")"
+CONFIG_PASSWORD="$(prompt_required_secret_tty "Config password: ")"
 
 # --------------------------
 # Tailscale Configuration
@@ -436,6 +488,15 @@ if prompt_yes_no "Use Tailscale for secure private networking? [y/N]: " "n"; the
   TAILSCALE_ENABLED=true
 fi
 
+# Docker Compose reads this same .env for interpolation (it auto-loads a
+# file literally named .env from the project directory) — so setting this
+# here is what makes docker-compose.yml bind hummingbot-api's port 8000 to
+# loopback instead of every interface once Tailscale is handling access.
+API_BIND_HOST="0.0.0.0"
+if [ "$TAILSCALE_ENABLED" = true ]; then
+  API_BIND_HOST="127.0.0.1"
+fi
+
 cat > .env << EOF
 # Hummingbot API Configuration
 USERNAME=$USERNAME
@@ -452,9 +513,11 @@ BROKER_PASSWORD=password
 # Database (auto-configured by docker-compose)
 DATABASE_URL=postgresql+asyncpg://hbot:hummingbot-api@localhost:5432/hummingbot_api
 
-# Gateway (optional)
+# Gateway (optional). Reuses CONFIG_PASSWORD rather than a hardcoded default:
+# this passphrase unlocks Gateway's DEX wallet keys, and "admin" is the first
+# thing anyone who reaches the port will try.
 GATEWAY_URL=http://localhost:15888
-GATEWAY_PASSPHRASE=admin
+GATEWAY_PASSPHRASE=$CONFIG_PASSWORD
 
 # Paths
 BOTS_PATH=$(pwd)
@@ -463,7 +526,17 @@ BOTS_PATH=$(pwd)
 TAILSCALE_ENABLED=$TAILSCALE_ENABLED
 TAILSCALE_AUTH_KEY=$TAILSCALE_AUTH_KEY
 TAILSCALE_HOSTNAME=$TAILSCALE_HOSTNAME
+
+# Docker port binding for hummingbot-api:8000 — 127.0.0.1 when Tailscale is
+# enabled (tailscale serve then proxies the tailnet to it), 0.0.0.0 otherwise.
+# See docker-compose.yml / docker-compose.tailscale.yml.
+API_BIND_HOST=$API_BIND_HOST
 EOF
+
+# Holds the API password, the config/Gateway passphrase and (when set) a
+# Tailscale auth key. The usual 644 umask makes all of that readable by every
+# other account on the box.
+chmod 600 .env 2>/dev/null || true
 
 touch .setup-complete
 
@@ -478,6 +551,9 @@ echo ""
 echo "Option 2: Run API locally (dev mode)"
 echo "  make install   # Creates the conda environment - Note: Please install the latest Anaconda version manually"
 echo "  make run       # Run API (installs and connects Tailscale automatically if TAILSCALE_ENABLED=true)"
+echo ""
+echo "Then check it:"
+echo "  make doctor    # Verifies dependencies, .env, containers, port exposure and API access"
 if [ "$TAILSCALE_ENABLED" = true ]; then
   echo ""
   echo "Tailscale:"
