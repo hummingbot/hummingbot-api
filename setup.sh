@@ -488,14 +488,29 @@ if prompt_yes_no "Use Tailscale for secure private networking? [y/N]: " "n"; the
   TAILSCALE_ENABLED=true
 fi
 
-# Docker Compose reads this same .env for interpolation (it auto-loads a
-# file literally named .env from the project directory) — so setting this
-# here is what makes docker-compose.yml bind hummingbot-api's port 8000 to
-# loopback instead of every interface once Tailscale is handling access.
-API_BIND_HOST="0.0.0.0"
-if [ "$TAILSCALE_ENABLED" = true ]; then
-  API_BIND_HOST="127.0.0.1"
-fi
+# Broker credentials are never typed by the user — the API and the bots are the only clients —
+# so generate strong ones instead of shipping well-known defaults. Rotating BROKER_PASSWORD
+# later requires `make emqx-auth-reset`, since EMQX only imports the bootstrap file for users
+# it does not have.
+#
+# Two separate passwords, deliberately: BROKER_PASSWORD is the MQTT client credential handed
+# to every bot instance's conf_client.yml, while BROKER_DASHBOARD_PASSWORD only unlocks the
+# EMQX web dashboard (full broker admin — rules, connectors, the lot). Sharing one password
+# between them would mean a single leaked bot config grants dashboard admin, not just the
+# scoped MQTT access emqx/acl.conf intends.
+#
+# EMQX rejects single-character-class passwords for the dashboard, so compose the value from
+# letters and digits explicitly rather than trusting a random alphanumeric draw to contain both
+# — applied to both passwords here for one code path instead of two.
+# `head -c N` exits as soon as it has its N bytes, so `tr` gets SIGPIPE on its next write —
+# under `set -euo pipefail` that would otherwise abort setup before .env is written.
+gen_password() {
+    printf '%s%s' \
+        "$(LC_ALL=C tr -dc 'A-Za-z' < /dev/urandom | head -c 24 || true)" \
+        "$(LC_ALL=C tr -dc '0-9' < /dev/urandom | head -c 8 || true)"
+}
+BROKER_PASSWORD="$(gen_password)"
+BROKER_DASHBOARD_PASSWORD="$(gen_password)"
 
 cat > .env << EOF
 # Hummingbot API Configuration
@@ -508,10 +523,17 @@ DEBUG_MODE=false
 BROKER_HOST=localhost
 BROKER_PORT=1883
 BROKER_USERNAME=admin
-BROKER_PASSWORD=password
+BROKER_PASSWORD=$BROKER_PASSWORD
+BROKER_DASHBOARD_PASSWORD=$BROKER_DASHBOARD_PASSWORD
 
 # Database (auto-configured by docker-compose)
 DATABASE_URL=postgresql+asyncpg://hbot:hummingbot-api@localhost:5432/hummingbot_api
+
+# Published-port bind addresses. Both default to 127.0.0.1 in docker-compose.yml.
+# Widen API_BIND only if something off-box must reach the API, and prefer a specific
+# interface over 0.0.0.0 — e.g. API_BIND=<your-tailscale-ip> with the Tailscale overlay.
+# API_BIND=127.0.0.1
+# DB_BIND=127.0.0.1
 
 # Gateway (optional). Reuses CONFIG_PASSWORD rather than a hardcoded default:
 # this passphrase unlocks Gateway's DEX wallet keys, and "admin" is the first
@@ -526,11 +548,6 @@ BOTS_PATH=$(pwd)
 TAILSCALE_ENABLED=$TAILSCALE_ENABLED
 TAILSCALE_AUTH_KEY=$TAILSCALE_AUTH_KEY
 TAILSCALE_HOSTNAME=$TAILSCALE_HOSTNAME
-
-# Docker port binding for hummingbot-api:8000 — 127.0.0.1 when Tailscale is
-# enabled (tailscale serve then proxies the tailnet to it), 0.0.0.0 otherwise.
-# See docker-compose.yml / docker-compose.tailscale.yml.
-API_BIND_HOST=$API_BIND_HOST
 EOF
 
 # Holds the API password, the config/Gateway passphrase and (when set) a

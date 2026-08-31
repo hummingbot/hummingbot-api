@@ -111,12 +111,24 @@ listening_binds() {
     fi
 }
 
+# Strips the trailing ":<port>" off a "host:port" bind address.
+bind_host() { printf '%s' "${1%:*}"; }
+
 is_public_bind() {
-    local host="${1%:*}"
+    local host
+    host="$(bind_host "$1")"
     case "$host" in
         0.0.0.0|"*"|"::"|"[::]"|"") return 0 ;;
         *) return 1 ;;
     esac
+}
+
+# Tailscale's CGNAT range is 100.64.0.0/10 -- 100.64.x.x through 100.127.x.x.
+is_tailscale_ip() {
+    local ip="$1" o1 o2 rest
+    [[ "$ip" =~ ^([0-9]+)\.([0-9]+)\.[0-9]+\.[0-9]+$ ]] || return 1
+    o1="${BASH_REMATCH[1]}"; o2="${BASH_REMATCH[2]}"
+    [ "$o1" -eq 100 ] && [ "$o2" -ge 64 ] && [ "$o2" -le 127 ]
 }
 
 # ── Header ───────────────────────────────────────────
@@ -177,7 +189,7 @@ else
     HB_CONFIG_PASSWORD="$(env_get CONFIG_PASSWORD)"
     TS_ENABLED="$(env_get TAILSCALE_ENABLED)"
     TS_HOSTNAME="$(env_get TAILSCALE_HOSTNAME)"
-    BIND_HOST="$(env_get API_BIND_HOST)"
+    BIND_HOST="$(env_get API_BIND)"
     GATEWAY_PASSPHRASE="$(env_get GATEWAY_PASSPHRASE)"
 
     # Credentials that used to be shipped as defaults. This API can place
@@ -213,14 +225,17 @@ else
         row ok "GATEWAY_PASSPHRASE" "set"
     fi
 
-    if [ "$TS_ENABLED" = "true" ]; then
-        if [ "$BIND_HOST" = "127.0.0.1" ]; then
-            row ok "API_BIND_HOST" "127.0.0.1 (Tailscale serve exposes 8000 on the tailnet)"
-        else
-            row fail "API_BIND_HOST" "TAILSCALE_ENABLED=true but API_BIND_HOST=${BIND_HOST:-unset} — port 8000 stays published on every interface alongside the tailnet. Set API_BIND_HOST=127.0.0.1 and \`make deploy\`"
-        fi
+    # docker-compose.yml defaults API_BIND to 127.0.0.1 whether or not Tailscale
+    # is enabled, so unset is always the safe case here -- only an explicit,
+    # wider value is worth a second look.
+    if [ -z "$BIND_HOST" ] || [ "$BIND_HOST" = "127.0.0.1" ]; then
+        row ok "API_BIND" "127.0.0.1 (default) — port 8000 is loopback-only"
+    elif [ "$TS_ENABLED" = "true" ] && is_tailscale_ip "$BIND_HOST"; then
+        row ok "API_BIND" "$BIND_HOST looks like a tailscale IP — the documented way to expose 8000 on the tailnet without the sidecar"
+    elif [ "$TS_ENABLED" = "true" ]; then
+        row warn "API_BIND" "set to $BIND_HOST, which is not in Tailscale's 100.64.0.0/10 range — port 8000 may be reachable somewhere other than the tailnet"
     else
-        row ok "TAILSCALE_ENABLED" "false — port 8000 is published on ${BIND_HOST:-0.0.0.0}"
+        row warn "API_BIND" "set to $BIND_HOST — port 8000 is published beyond localhost. Fine on a trusted LAN, risky on a public host"
     fi
 fi
 
@@ -296,7 +311,14 @@ elif [ -n "$api_public" ] && [ "${TS_ENABLED:-}" = "true" ]; then
 elif [ -n "$api_public" ]; then
     row warn "API (8000)" "bound to $api_public — fine on a trusted LAN, exposed on a public VPS. Enable Tailscale, or firewall the port"
 else
-    row ok "API (8000)" "127.0.0.1 only"
+    # Not a wildcard bind, but not necessarily 127.0.0.1 either -- API_BIND=<tailscale-ip>
+    # (the documented way to expose 8000 on the tailnet without the sidecar) binds here too.
+    single_host="$(bind_host "$(printf '%s\n' "$api_binds" | head -1)")"
+    if [ "$single_host" = "127.0.0.1" ] || [ "$single_host" = "[::1]" ]; then
+        row ok "API (8000)" "127.0.0.1 only"
+    else
+        row ok "API (8000)" "bound to $single_host only — a specific, non-wildcard interface"
+    fi
 fi
 
 echo ""
@@ -326,12 +348,15 @@ else
             row fail "Tailnet" "not connected — check TAILSCALE_AUTH_KEY (keys expire) and re-run \`make deploy\`"
         fi
         # Joining the tailnet is not the same as being reachable on it: with
-        # API_BIND_HOST=127.0.0.1, `tailscale serve` is the only thing that
-        # forwards the tailnet's :8000 anywhere.
-        if ts_serve="$($TS_EXEC serve status 2>&1)" && printf '%s' "$ts_serve" | grep -q "8000"; then
+        # API_BIND left at its 127.0.0.1 default, TS_SERVE_CONFIG (tailscale
+        # serve) is what forwards the tailnet's :8000 to the loopback bind --
+        # skip this check if API_BIND is set directly to a tailscale IP instead.
+        if [ -n "$BIND_HOST" ] && is_tailscale_ip "$BIND_HOST"; then
+            row ok "Serve (port 8000)" "skipped — API_BIND=$BIND_HOST binds the API directly, without relying on tailscale serve"
+        elif ts_serve="$($TS_EXEC serve status 2>&1)" && printf '%s' "$ts_serve" | grep -q "8000"; then
             row ok "Serve (port 8000)" "proxied to the tailnet as http://${TS_HOSTNAME:-hummingbot-api}:8000"
         else
-            row fail "Serve (port 8000)" "the node is on the tailnet but port 8000 is not proxied — with API_BIND_HOST=127.0.0.1 nothing can reach the API at all. Check tailscale-serve.json is mounted, then \`make deploy\`"
+            row fail "Serve (port 8000)" "the node is on the tailnet but port 8000 is not proxied — with API_BIND=127.0.0.1 nothing can reach the API at all. Check tailscale-serve.json is mounted, then \`make deploy\`"
         fi
     fi
 fi
