@@ -2,6 +2,7 @@ import asyncio
 import logging
 import re
 import time
+import weakref
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
@@ -107,8 +108,12 @@ class AccountsService:
 
         # Cache for storing last successful prices by trading pair (per-instance)
         self._last_known_prices = {}
-        # Cross-rate prices resolved through a link asset: pair -> (fetched_at, rate)
-        self._bridged_rates: Dict[str, tuple] = {}
+        # Cross-rate prices resolved through a link asset, per connector instance:
+        # connector -> {pair: (fetched_at, rate)}. Keyed on the instance rather than the
+        # connector name because two accounts running the same exchange can define
+        # different custom markets, so the same pair name can mean different assets with
+        # different prices. Weak so a stopped connector's entries go with it.
+        self._bridged_rates: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 
         # Database setup for account states and orders (shared manager injected from main.py;
         # tables are created once at startup so no per-service bootstrap is needed)
@@ -580,8 +585,8 @@ class AccountsService:
         each bridge costs two live lookups; without it a wallet of N bridged tokens would
         issue 2N calls on every cycle.
         """
-        cache_key = f"{connector_name}:{market}"
-        cached = self._bridged_rates.get(cache_key)
+        cached_for_connector = self._bridged_rates.setdefault(connector, {})
+        cached = cached_for_connector.get(market)
         if cached is not None and time.time() - cached[0] < self.BRIDGED_RATE_TTL:
             return cached[1]
 
@@ -610,7 +615,7 @@ class AccountsService:
             return None
 
         rate = first * second
-        self._bridged_rates[cache_key] = (time.time(), rate)
+        cached_for_connector[market] = (time.time(), rate)
         logger.info(f"Priced {market} on {connector_name} via {base}-{link} x {link}-{quote}")
         return rate
 
