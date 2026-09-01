@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import re
+import time
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
@@ -49,6 +50,10 @@ class AccountsService:
     update the balances of each account.
     """
     MASKED_SECRET = "**********"
+
+    # A portfolio refresh prices every held token, and each bridged price costs two live
+    # lookups, so brief reuse keeps a wallet of bridged tokens from issuing 2N calls a cycle.
+    BRIDGED_RATE_TTL = 60.0
 
     default_quotes = {
         "hyperliquid": "USDC",
@@ -102,6 +107,8 @@ class AccountsService:
 
         # Cache for storing last successful prices by trading pair (per-instance)
         self._last_known_prices = {}
+        # Cross-rate prices resolved through a link asset: pair -> (fetched_at, rate)
+        self._bridged_rates: Dict[str, tuple] = {}
 
         # Database setup for account states and orders (shared manager injected from main.py;
         # tables are created once at startup so no per-service bootstrap is needed)
@@ -543,10 +550,84 @@ class AccountsService:
             for pair_idx, info_idx in enumerate(missing_indices):
                 market = missing_pairs[pair_idx]
                 price = Decimal(str(fallback_prices.get(market, 0)))
+                if price <= 0:
+                    # No direct TOKEN-<quote> market. Route through one the token does
+                    # have (e.g. TOKEN-XRP x XRP-RLUSD) rather than reporting it at zero.
+                    bridged = await self._bridged_price(connector, connector_name, market)
+                    if bridged is not None:
+                        price = bridged
                 tokens_info[info_idx]["price"] = float(price)
                 tokens_info[info_idx]["value"] = float(price * Decimal(str(tokens_info[info_idx]["units"])))
 
         return tokens_info
+
+    async def _bridged_price(self, connector, connector_name: str, market: str) -> Optional[Decimal]:
+        """Price ``BASE-QUOTE`` by routing through an asset the base actually trades against.
+
+        A token whose only market is against something other than the connector's quote
+        cannot be priced by asking for ``TOKEN-<quote>``: that market does not exist, the
+        lookup fails, and the holding is reported as $0.00 despite having a perfectly good
+        live price. On xrpl this is the normal case — the quote is RLUSD but most tokens
+        pair against XRP — and it is not cosmetic, since these values feed portfolio totals.
+
+        The cross-rate resolution that would normally handle this (``find_rate``) works off
+        the ticker pool, and xrpl is in ``UNSUPPORTED_TICKER_CONNECTORS``, so for this
+        connector that pool is always empty. This does the same arithmetic against live
+        prices instead: find a link asset with both ``TOKEN-LINK`` and ``LINK-QUOTE``
+        listed, then multiply the two.
+
+        Results are cached briefly because a portfolio refresh prices every held token and
+        each bridge costs two live lookups; without it a wallet of N bridged tokens would
+        issue 2N calls on every cycle.
+        """
+        cache_key = f"{connector_name}:{market}"
+        cached = self._bridged_rates.get(cache_key)
+        if cached is not None and time.time() - cached[0] < self.BRIDGED_RATE_TTL:
+            return cached[1]
+
+        base, quote = market.split("-", 1)
+        try:
+            available = set(await asyncio.wait_for(connector.all_trading_pairs(), timeout=10))
+        except Exception as e:
+            logger.debug(f"Cannot list {connector_name} pairs to bridge {market}: {e}")
+            return None
+
+        link = next(
+            (
+                candidate
+                for candidate in self._bridge_candidates(base, quote, available)
+                if f"{candidate}-{quote}" in available
+            ),
+            None,
+        )
+        if link is None:
+            return None
+
+        legs = await self._safe_get_last_traded_prices(connector, [f"{base}-{link}", f"{link}-{quote}"])
+        first = Decimal(str(legs.get(f"{base}-{link}", 0)))
+        second = Decimal(str(legs.get(f"{link}-{quote}", 0)))
+        if first <= 0 or second <= 0:
+            return None
+
+        rate = first * second
+        self._bridged_rates[cache_key] = (time.time(), rate)
+        logger.info(f"Priced {market} on {connector_name} via {base}-{link} x {link}-{quote}")
+        return rate
+
+    @staticmethod
+    def _bridge_candidates(base: str, quote: str, available: set) -> List[str]:
+        """Link assets the base trades against, most likely to be liquid first.
+
+        Only markets with the token as base are used: the reciprocal direction would need
+        an inversion, and every venue seen so far lists both ways round anyway.
+        """
+        links = [
+            pair.split("-", 1)[1]
+            for pair in available
+            if pair.startswith(f"{base}-") and pair.split("-", 1)[1] != quote
+        ]
+        preferred = ["XRP", "USDT", "USDC", "USD", "BTC", "ETH"]
+        return sorted(links, key=lambda link: (preferred.index(link) if link in preferred else len(preferred), link))
     
     async def _safe_get_last_traded_prices(self, connector, trading_pairs, timeout=10):
         """Safely get last traded prices with timeout and error handling.
