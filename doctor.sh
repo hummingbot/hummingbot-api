@@ -372,14 +372,19 @@ if ! has_cmd curl; then
 elif [ "$ENV_OK" != true ]; then
     row warn "Reachability" "skipped — no .env to read credentials from"
 else
+    # / is a deliberately public liveness endpoint (no auth_user dependency in main.py) --
+    # it returns 200 to everyone, correct credentials, wrong credentials, or none at all.
+    # Checking it here would validate nothing: use an actual protected route instead, so a
+    # non-200 here means what it says (bad credentials) rather than being unreachable in
+    # principle.
     code="$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 8 \
-        -u "${HB_USERNAME}:${HB_PASSWORD}" http://localhost:8000/ 2>/dev/null)"
+        -u "${HB_USERNAME}:${HB_PASSWORD}" http://localhost:8000/system/resources 2>/dev/null)"
     case "$code" in
         200)
-            row ok "Authenticated request" "200 from http://localhost:8000/"
+            row ok "Authenticated request" "200 from http://localhost:8000/system/resources"
             # A 200 without credentials would mean auth is not being enforced.
             anon="$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 8 \
-                http://localhost:8000/ 2>/dev/null)"
+                http://localhost:8000/system/resources 2>/dev/null)"
             if [ "$anon" = "200" ]; then
                 row fail "Auth enforcement" "an unauthenticated request also returned 200 — the API is answering anyone who can reach the port"
             else
@@ -403,10 +408,10 @@ else
             row fail "Authenticated request" "$code — the API is up but USERNAME/PASSWORD in .env do not match what it is running with. Restart it after changing them: \`make deploy\`"
             ;;
         000|"")
-            row fail "Authenticated request" "no response from http://localhost:8000/ — the API is not listening. \`make deploy\` (Docker) or \`make run\` (source)"
+            row fail "Authenticated request" "no response from http://localhost:8000/system/resources — the API is not listening. \`make deploy\` (Docker) or \`make run\` (source)"
             ;;
         *)
-            row warn "Authenticated request" "unexpected HTTP $code from http://localhost:8000/ — check \`docker compose logs hummingbot-api\`"
+            row warn "Authenticated request" "unexpected HTTP $code from http://localhost:8000/system/resources — check \`docker compose logs hummingbot-api\`"
             ;;
     esac
 fi
