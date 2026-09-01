@@ -49,7 +49,9 @@ class MQTTManager:
         # RPC response tracking
         self._pending_responses: Dict[str, asyncio.Future] = {}  # reply_to_topic: future
 
-        # Subscriptions to restore on reconnect
+        # Subscriptions to restore on reconnect.
+        # These topic prefixes are also hardcoded in emqx/acl.conf's broker ACL --
+        # renaming or adding a prefix here needs a matching edit there.
         self._subscriptions = [
             ("hbot/+/log", 1),  # Log messages
             ("hbot/+/notify", 1),  # Notifications

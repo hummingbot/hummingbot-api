@@ -1,4 +1,4 @@
-.PHONY: setup run deploy stop install uninstall build install-pre-commit tailscale-status doctor reset
+.PHONY: setup run deploy stop install uninstall build install-pre-commit tailscale-status doctor reset emqx-auth emqx-auth-reset emqx-audit
 
 SETUP_SENTINEL := .setup-complete
 
@@ -11,7 +11,7 @@ $(SETUP_SENTINEL):
 # Run locally (dev mode)
 # When TAILSCALE_ENABLED=true: installs Tailscale if needed, connects, configures tailscale serve,
 # then binds uvicorn to 127.0.0.1 only (tailscale serve exposes port 8000 on the tailnet)
-run:
+run: emqx-auth
 	docker compose up emqx postgres -d
 	@set -a; [ -f .env ] && . ./.env; set +a; \
 	if [ "$${TAILSCALE_ENABLED:-false}" = "true" ]; then \
@@ -34,7 +34,7 @@ run:
 
 # Deploy with Docker
 # When TAILSCALE_ENABLED=true: adds the Tailscale sidecar compose override
-deploy: $(SETUP_SENTINEL)
+deploy: $(SETUP_SENTINEL) emqx-auth
 	@set -a; [ -f .env ] && . ./.env; set +a; \
 	if [ "$${TAILSCALE_ENABLED:-false}" = "true" ]; then \
 		echo "[INFO] Deploying with Tailscale sidecar..."; \
@@ -47,6 +47,100 @@ deploy: $(SETUP_SENTINEL)
 # Read-only; exits non-zero when a check actually fails.
 doctor:
 	@chmod +x doctor.sh && ./doctor.sh
+
+EMQX_AUTH_FILE := .emqx/auth-bootstrap.csv
+
+# Generate the EMQX built-in-database bootstrap file from the broker credentials in .env.
+# EMQX ships with anonymous MQTT enabled; this seeds the one account the API and the bots
+# use so the broker can reject everything else. The file holds a plaintext password, so it
+# is gitignored.
+#
+# The secret is kept off other host users by the MODE OF THE DIRECTORY (0700), not of the
+# file (0644). The file is bind-mounted into the broker, which runs as its own `emqx` user
+# (uid 1000): on Linux a bind mount carries the host uid through unmapped, so a 0600 file
+# owned by the deploying user is unreadable inside the container. EMQX then logs a
+# `Permission denied` for the bootstrap file, skips the import, comes up healthy with NO
+# accounts, and rejects the API's correct credentials as `Not authorized` (issue #224).
+# Directory mode is enough because Docker resolves the bind-mount path as root once, at
+# mount time — the container never traverses .emqx/ to reach the file.
+#
+# is_superuser is deliberately false: EMQX superusers bypass authorization entirely, which
+# would make emqx/acl.conf dead config.
+#
+# NOTE: EMQX imports the bootstrap file only for users that do not already exist. Changing
+# BROKER_PASSWORD in .env therefore has no effect on a broker whose emqx-data volume already
+# has the account — run `make emqx-auth-reset` to drop the volume and re-seed.
+emqx-auth:
+	@set -a; [ -f .env ] && . ./.env; set +a; \
+	user="$${BROKER_USERNAME:-admin}"; pass="$${BROKER_PASSWORD:-password}"; \
+	bad=0; \
+	case "$$user$$pass" in *,*) bad=1 ;; esac; \
+	[ "$$(printf '%s' "$$user$$pass" | wc -l)" -eq 0 ] || bad=1; \
+	if [ "$$bad" -eq 1 ]; then \
+		echo "[ERROR] BROKER_USERNAME/BROKER_PASSWORD cannot contain a comma or newline" \
+			"— it would corrupt the CSV bootstrap file's field structure." >&2; \
+		exit 1; \
+	fi; \
+	mkdir -p $(dir $(EMQX_AUTH_FILE)); \
+	chmod 700 $(dir $(EMQX_AUTH_FILE)); \
+	printf 'user_id,password,is_superuser\n%s,%s,false\n' "$$user" "$$pass" > $(EMQX_AUTH_FILE); \
+	chmod 644 $(EMQX_AUTH_FILE); \
+	echo "[INFO] Wrote $(EMQX_AUTH_FILE) for broker user $$user"
+
+# Broker container to audit. Override to check another deployment:
+#   make emqx-audit EMQX_CONTAINER=<name>
+EMQX_CONTAINER ?= hummingbot-broker
+
+# Audit the broker's security posture and check for persistence.
+#
+# EMQX's rule engine can issue authenticated HTTP requests to internal services, so a rule
+# or connector nobody added is a backdoor, not a curiosity — and it survives restarts in
+# cluster.hocon. Installing one requires a dashboard session, which is why the well-known
+# admin/public default mattered. This prints everything needed to answer "is anything here
+# that we did not put here", in one command.
+emqx-audit:
+	@echo "── listeners ────────────────────────────────────────────────"
+	@docker exec $(EMQX_CONTAINER) /opt/emqx/bin/emqx ctl listeners 2>/dev/null \
+		| grep -E "^[a-z]|listen_on|current_conn" || echo "  broker not running"
+	@echo "── published ports (host side) ──────────────────────────────"
+	@docker port $(EMQX_CONTAINER) 2>/dev/null || true
+	@echo "── authentication (empty list == anonymous allowed) ─────────"
+	@docker exec $(EMQX_CONTAINER) /opt/emqx/bin/emqx ctl conf show authentication 2>/dev/null || true
+	@echo "── authorization (want no_match = deny) ─────────────────────"
+	@docker exec $(EMQX_CONTAINER) /opt/emqx/bin/emqx ctl conf show authorization 2>/dev/null || true
+	@echo "── ACL rules in force ───────────────────────────────────────"
+	@docker exec $(EMQX_CONTAINER) sh -c 'grep -E "^\{" /opt/emqx/etc/acl.conf' 2>/dev/null || true
+	@echo "── PERSISTENCE: rules / actions / connectors / bridges ──────"
+	@echo "   A rule here can make the broker issue authenticated HTTP requests"
+	@echo "   into internal services. Anything you did not add is a backdoor."
+	@docker exec $(EMQX_CONTAINER) sh -c \
+		"awk '/^(actions|connectors|bridges|rule_engine) \\{/{p=1} p{print} /^\\}/{if(p){p=0;print \"\"}}' \
+		 /opt/emqx/data/configs/cluster.hocon 2>/dev/null \
+		 | grep -vE 'created_at|last_modified|metadata'" \
+		2>/dev/null | sed 's/^/   /' || true
+	@docker exec $(EMQX_CONTAINER) sh -c \
+		"grep -qE '^(actions|connectors|bridges) \\{|rules \\{' /opt/emqx/data/configs/cluster.hocon 2>/dev/null" \
+		&& echo "   ^^ REVIEW THE ABOVE — stock deployments have none of these." \
+		|| echo "   none — no rules, actions, connectors or bridges configured."
+
+# Compose derives the project name from COMPOSE_PROJECT_NAME if set, else the lowercased
+# directory name -- $(notdir $(CURDIR)) alone gets this wrong for any directory with an
+# uppercase letter, silently making the volume filter below match nothing.
+COMPOSE_PROJECT := $(shell echo "$${COMPOSE_PROJECT_NAME:-$(notdir $(CURDIR))}" | tr '[:upper:]' '[:lower:]')
+
+# Rotate the broker credentials: wipe the EMQX state volume so the bootstrap file is
+# re-imported with the current .env values, and the dashboard's default password (a
+# separate credential, BROKER_DASHBOARD_PASSWORD) is re-applied too -- both live in the
+# same mnesia data dir. Retained messages and broker state are lost; bots and the API
+# reconnect on their own. The volume is matched by compose labels rather than by name,
+# since other compose projects on the same host also have emqx volumes.
+emqx-auth-reset: emqx-auth
+	docker compose rm -sf emqx
+	@docker volume ls -q \
+		--filter "label=com.docker.compose.project=$(COMPOSE_PROJECT)" \
+		--filter "label=com.docker.compose.volume=emqx-data" \
+		| xargs -r docker volume rm
+	docker compose up -d emqx
 
 TAILSCALE_CONTAINER := hummingbot-tailscale
 

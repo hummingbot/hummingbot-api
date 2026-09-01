@@ -72,8 +72,34 @@ After hummingbot-api is running, these services are available:
 | **API** | http://localhost:8000 | http://hummingbot-api:8000 | REST API |
 | **Swagger UI** | http://localhost:8000/docs | http://hummingbot-api:8000/docs | Interactive API documentation |
 | **PostgreSQL** | localhost:5432 | — | Database |
-| **EMQX** | localhost:1883 | — | MQTT broker |
-| **EMQX Dashboard** | http://localhost:18083 | — | Broker admin (admin/public) |
+| **EMQX** | 127.0.0.1:1883 | — | MQTT broker (auth required, loopback-only) |
+| **EMQX Dashboard** | http://127.0.0.1:18083 | — | Broker admin (`admin` / `BROKER_DASHBOARD_PASSWORD`) |
+
+> **Broker access.** The broker requires a username and password and is published on the loopback
+> interface only — bot containers run with `network_mode: host` and reach it at `127.0.0.1:1883`,
+> while the API reaches it in-network as `emqx:1883`. Credentials come from `BROKER_USERNAME` /
+> `BROKER_PASSWORD` in `.env`; `make deploy` seeds them into the broker via `make emqx-auth`.
+> To change them afterwards, edit `.env` and run `make emqx-auth-reset` — EMQX only imports the
+> bootstrap file for accounts it does not already have.
+>
+> The dashboard login is a **separate** credential, `BROKER_DASHBOARD_PASSWORD` — deliberately
+> not the same value as `BROKER_PASSWORD`, since that one is written into every bot instance's
+> `conf_client.yml` and the dashboard grants full broker admin (rules, connectors), not just the
+> scoped MQTT access `emqx/acl.conf` gives `BROKER_PASSWORD`. Like the MQTT bootstrap account,
+> EMQX only applies it on first init, so changing it in `.env` also needs `make emqx-auth-reset`
+> (it wipes the same `emqx-data` volume, rotating both passwords together).
+>
+> The broker also denies every topic outside `hbot/#` and `hummingbot-api/response/#`
+> (`emqx/acl.conf`), so a leaked broker credential cannot be used to read the whole bus or to
+> drive the rule engine. Run **`make emqx-audit`** to print the broker's listeners, auth,
+> authorization and any rules, actions, connectors or bridges — a rule nobody added can make
+> the broker issue authenticated HTTP requests into internal services, and it survives
+> restarts. Use `make emqx-audit EMQX_CONTAINER=<name>` to check another deployment.
+
+> **Ports.** The API (`8000`) and Postgres (`5432`) also bind to `127.0.0.1` by default. Set
+> `API_BIND` in `.env` if something off-box must reach the API — prefer a specific interface
+> over `0.0.0.0`; with the Tailscale overlay, `API_BIND=<tailscale-ip>` keeps MagicDNS working
+> without publishing the API to the internet.
 
 PostgreSQL and EMQX are bound to `127.0.0.1` only — they're never reachable
 from another machine, on the tailnet or otherwise. Bot containers still reach
@@ -158,10 +184,12 @@ TAILSCALE_ENABLED=true
 TAILSCALE_AUTH_KEY=tskey-auth-...
 TAILSCALE_HOSTNAME=hummingbot-api   # MagicDNS hostname on your tailnet
 
-# Docker port binding for hummingbot-api:8000 (set automatically by setup.sh:
-# 127.0.0.1 when Tailscale is enabled, 0.0.0.0 otherwise) — see
-# docker-compose.yml / docker-compose.tailscale.yml
-API_BIND_HOST=127.0.0.1
+# Published-port bind addresses (both default to 127.0.0.1 in docker-compose.yml).
+# Widen API_BIND only if something off-box must reach the API directly — with the
+# Tailscale overlay, API_BIND=<tailscale-ip> keeps MagicDNS working without ever
+# publishing the API to the internet. See docker-compose.yml / docker-compose.tailscale.yml
+# API_BIND=127.0.0.1
+# DB_BIND=127.0.0.1
 ```
 
 These are the settings most deployments touch, not the full list: `config.py` is the authoritative
@@ -211,7 +239,7 @@ When `TAILSCALE_ENABLED=true`, this automatically runs:
 docker compose -f docker-compose.yml -f docker-compose.tailscale.yml up -d
 ```
 
-A Tailscale sidecar container joins your tailnet using `network_mode: host`. `setup.sh` also writes `API_BIND_HOST=127.0.0.1` to `.env`, so `hummingbot-api`'s port 8000 is bound to loopback only — it does not sit on any public interface. The sidecar's `tailscale serve` config (`tailscale-serve.json`) is what makes it reachable again: it forwards the tailnet IP's `:8000` to `127.0.0.1:8000`, so the API ends up reachable at `http://hummingbot-api:8000` from any device on the same tailnet, and *only* from the tailnet.
+A Tailscale sidecar container joins your tailnet using `network_mode: host`. `hummingbot-api`'s port 8000 is bound to loopback only by default (`API_BIND` in `.env` — see [Configuration](#configuration)), so it does not sit on any public interface. The sidecar's `tailscale serve` config (`tailscale-serve.json`, applied automatically via `TS_SERVE_CONFIG` when the sidecar starts — no `tailscale serve` command needed) is what makes it reachable again: it forwards the tailnet IP's `:8000` to `127.0.0.1:8000`, so the API ends up reachable at `http://hummingbot-api:8000` from any device on the same tailnet, and *only* from the tailnet.
 
 ### Connecting MCP tools via Tailscale
 
@@ -271,8 +299,25 @@ make doctor
 Checks dependencies, `.env` (including credentials still left at well-known
 defaults), the `hummingbot-api` / `hummingbot-broker` / `hummingbot-postgres`
 containers, which ports are on a public interface, Tailscale's tailnet *and*
-serve status, and whether the API actually answers an authenticated request.
-Read-only, and it names the fix for whatever it finds.
+serve status, whether the API actually answers an authenticated request, and
+whether it is connected to the MQTT broker. Read-only, and it names the fix for
+whatever it finds.
+
+**Bots deploy but report nothing — no controllers, no logs, no performance?**
+
+The API is up and REST works, but it is not connected to the broker: bot status
+arrives over MQTT, so a bot with no broker is a bot with nothing to say. Confirm
+it, then re-seed:
+```bash
+make doctor                 # "Broker connection" says whether the API is connected
+docker compose logs emqx | grep -i "auth-bootstrap"
+make emqx-auth-reset        # rewrites the bootstrap file and re-seeds the broker
+```
+A `Permission denied` on `/opt/emqx/etc/auth-bootstrap.csv` means the broker
+could not read the file it seeds the account from, so no account was ever
+created and the API's correct credentials came back `Not authorized`. The broker
+still comes up healthy either way, which is why this shows up as missing bots
+rather than as a broker error.
 
 **API won't start?**
 ```bash

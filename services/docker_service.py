@@ -282,6 +282,16 @@ class DockerService:
         client_config = fs_util.read_yaml_file(conf_file_path)
         client_config['instance_id'] = instance_name
 
+        # SEC: the broker rejects anonymous connections (see the EMQX_AUTHENTICATION__* block in
+        # docker-compose.yml), so every instance has to present the shared broker credentials —
+        # the credential templates under bots/credentials/ ship with empty mqtt_username/password.
+        # mqtt_host is deliberately left untouched: this container runs with network_mode="host"
+        # and must reach the broker on the host loopback, not at the compose DNS name the API uses.
+        mqtt_bridge = client_config.get('mqtt_bridge') or {}
+        mqtt_bridge['mqtt_username'] = settings.broker.username
+        mqtt_bridge['mqtt_password'] = settings.broker.password
+        client_config['mqtt_bridge'] = mqtt_bridge
+
         # SEC-048: point the instance at the secured (mTLS) Gateway and give it the shared
         # cert set. Cert keys are decrypted inside the container with CONFIG_PASSWORD, so this
         # is only enabled when a config password is set. Generation is idempotent: the instance
