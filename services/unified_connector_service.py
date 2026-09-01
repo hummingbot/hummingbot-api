@@ -1361,9 +1361,40 @@ class UnifiedConnectorService:
             field_info = {"type": type_name, "required": field.is_required()}
             if allowed_values is not None:
                 field_info["allowed_values"] = allowed_values
+
+            prompt = UnifiedConnectorService._resolve_field_prompt(
+                field, connector_config.hb_config
+            )
+            if prompt is not None:
+                field_info["prompt"] = prompt
+
             fields_info[key] = field_info
 
         return fields_info
+
+    @staticmethod
+    def _resolve_field_prompt(field, config_map) -> Optional[str]:
+        """Resolve the Hummingbot prompt of a config field, if it defines one.
+
+        Prompts are stored in ``json_schema_extra`` either as a plain string or as
+        a callable taking the config map, so callables are evaluated here.
+        """
+        extra = field.json_schema_extra
+        if not isinstance(extra, dict):
+            return None
+
+        prompt = extra.get("prompt")
+        if prompt is None:
+            return None
+
+        if callable(prompt):
+            try:
+                prompt = prompt(config_map)
+            except Exception as e:
+                logger.debug(f"Could not resolve prompt for config field: {e}")
+                return None
+
+        return str(prompt) if prompt is not None else None
 
     # =========================================================================
     # Cleanup

@@ -36,19 +36,21 @@ async def get_connector_config_map(connector_name: str, accounts_service: Accoun
         Each field contains:
         - type: The expected data type (e.g., "str", "SecretStr", "int")
         - required: Whether the field is required
+        - allowed_values: List of accepted values (only for Literal fields)
+        - prompt: Human readable prompt from the Hummingbot config map (when defined)
     """
     return accounts_service.get_connector_config_map(connector_name)
 
 
 @router.get("/{connector_name}/trading-rules")
 async def get_trading_rules(
-    request: Request, 
+    request: Request,
     connector_name: str,
     trading_pairs: Optional[List[str]] = Query(default=None, description="Filter by specific trading pairs")
 ):
     """
     Get trading rules for a connector, optionally filtered by trading pairs.
-    
+
     This endpoint uses the MarketDataService to access non-trading connector instances,
     which means no authentication or account setup is required.
 
@@ -68,12 +70,12 @@ async def get_trading_rules(
 
         # Get trading rules (filtered by trading pairs if provided)
         rules = await market_data_service.get_trading_rules(connector_name, trading_pairs)
-        
+
         if "error" in rules:
             raise HTTPException(status_code=404, detail=f"Connector '{connector_name}' not found or error: {rules['error']}")
-        
+
         return rules
-        
+
     except HTTPException:
         raise
     except Exception as e:
