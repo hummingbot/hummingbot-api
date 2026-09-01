@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import HTTPException
 from hummingbot.client.config.config_crypt import ETHKeyFileSecretManger
 from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, TradeType
+from pydantic import SecretStr
 
 from config import settings
 from database import AccountRepository, AsyncDatabaseManager
@@ -18,6 +19,7 @@ from services.perpetual_trading_service import PerpetualTradingService
 from services.portfolio_analytics_service import PortfolioAnalyticsService
 from utils.file_system import fs_util
 from utils.gateway_certs import build_client_ssl_context
+from utils.security import BackendAPISecurity
 
 # Create module-specific logger
 logger = logging.getLogger(__name__)
@@ -46,6 +48,8 @@ class AccountsService:
     to initialize all the connectors that are connected to each account, keep track of the balances of each account and
     update the balances of each account.
     """
+    MASKED_SECRET = "**********"
+
     default_quotes = {
         "hyperliquid": "USDC",
         "hyperliquid_perpetual": "USD",
@@ -653,6 +657,50 @@ class AccountsService:
                     file.endswith('.yml')]
         except FileNotFoundError as e:
             raise HTTPException(status_code=404, detail=str(e))
+
+    def get_credentials(self, account_name: str, connector_name: str) -> Dict[str, Any]:
+        """
+        Return an account's connector configuration as the server has it loaded, with
+        every credential masked.
+
+        Only the names of an account's credentials were readable before, so there was no
+        way to confirm what the running server actually holds for a connector — whether a
+        saved custom_markets or node list really took effect — except by triggering a
+        side-effecting call and inferring the answer from how it behaved.
+
+        Secrets are masked twice over: pydantic renders SecretStr as "**********" in JSON
+        mode, and any field declared SecretStr or marked is_secure is overwritten again
+        here, so a connector that keeps something sensitive in a plain str field is
+        covered too.
+
+        :param account_name: The name of the account.
+        :param connector_name: The name of the connector.
+        :raises FileNotFoundError: if the account has no credentials for that connector.
+        """
+        validate_safe_name(account_name, "account name")
+        validate_safe_name(connector_name, "connector name")
+
+        if not fs_util.path_exists(f"credentials/{account_name}/connectors/{connector_name}.yml"):
+            raise FileNotFoundError(
+                f"Account '{account_name}' has no credentials for connector '{connector_name}'."
+            )
+
+        BackendAPISecurity.login_account(
+            account_name=account_name, secrets_manager=self.secrets_manager
+        )
+        config = BackendAPISecurity.decrypted_value(connector_name)
+        if config is None:
+            raise FileNotFoundError(
+                f"Account '{account_name}' has no credentials for connector '{connector_name}'."
+            )
+
+        hb_config = config.hb_config
+        values = hb_config.model_dump(mode="json")
+        for key, field in hb_config.__class__.model_fields.items():
+            extra = field.json_schema_extra or {}
+            if field.annotation is SecretStr or extra.get("is_secure"):
+                values[key] = self.MASKED_SECRET
+        return values
 
     async def delete_credentials(self, account_name: str, connector_name: str):
         """
