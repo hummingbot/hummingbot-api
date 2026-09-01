@@ -288,8 +288,25 @@ make doctor
 Checks dependencies, `.env` (including credentials still left at well-known
 defaults), the `hummingbot-api` / `hummingbot-broker` / `hummingbot-postgres`
 containers, which ports are on a public interface, Tailscale's tailnet *and*
-serve status, and whether the API actually answers an authenticated request.
-Read-only, and it names the fix for whatever it finds.
+serve status, whether the API actually answers an authenticated request, and
+whether it is connected to the MQTT broker. Read-only, and it names the fix for
+whatever it finds.
+
+**Bots deploy but report nothing — no controllers, no logs, no performance?**
+
+The API is up and REST works, but it is not connected to the broker: bot status
+arrives over MQTT, so a bot with no broker is a bot with nothing to say. Confirm
+it, then re-seed:
+```bash
+make doctor                 # "Broker connection" says whether the API is connected
+docker compose logs emqx | grep -i "auth-bootstrap"
+make emqx-auth-reset        # rewrites the bootstrap file and re-seeds the broker
+```
+A `Permission denied` on `/opt/emqx/etc/auth-bootstrap.csv` means the broker
+could not read the file it seeds the account from, so no account was ever
+created and the API's correct credentials came back `Not authorized`. The broker
+still comes up healthy either way, which is why this shows up as missing bots
+rather than as a broker error.
 
 **API won't start?**
 ```bash

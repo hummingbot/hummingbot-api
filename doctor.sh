@@ -385,6 +385,19 @@ else
             else
                 row ok "Auth enforcement" "unauthenticated request rejected ($anon)"
             fi
+            # REST answering is not the same as the stack working: bot status, controller
+            # reports and logs all arrive over MQTT. With the broker refusing the API, the
+            # API stays 200-healthy while every deployed bot reports nothing at all, which
+            # is a much harder symptom to trace back to the broker than a named check.
+            mqtt="$(curl -s --connect-timeout 3 --max-time 8 \
+                -u "${HB_USERNAME}:${HB_PASSWORD}" http://localhost:8000/bot-orchestration/mqtt 2>/dev/null)"
+            if printf '%s' "$mqtt" | grep -q '"mqtt_connected"[[:space:]]*:[[:space:]]*true'; then
+                row ok "Broker connection" "the API is connected to the MQTT broker"
+            elif printf '%s' "$mqtt" | grep -q '"mqtt_connected"'; then
+                row fail "Broker connection" "the API is NOT connected to the broker — deployed bots will report no controllers, no logs and no performance. Check \`docker compose logs emqx\` for a \`Permission denied\` on /opt/emqx/etc/auth-bootstrap.csv (the account was never seeded; \`make emqx-auth-reset\` rewrites the file and re-seeds), then that BROKER_USERNAME/BROKER_PASSWORD in .env match what the broker was seeded with"
+            else
+                row warn "Broker connection" "could not read /bot-orchestration/mqtt — check \`docker compose logs hummingbot-api\`"
+            fi
             ;;
         401|403)
             row fail "Authenticated request" "$code — the API is up but USERNAME/PASSWORD in .env do not match what it is running with. Restart it after changing them: \`make deploy\`"
