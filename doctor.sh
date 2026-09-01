@@ -372,28 +372,46 @@ if ! has_cmd curl; then
 elif [ "$ENV_OK" != true ]; then
     row warn "Reachability" "skipped — no .env to read credentials from"
 else
+    # / is a deliberately public liveness endpoint (no auth_user dependency in main.py) --
+    # it returns 200 to everyone, correct credentials, wrong credentials, or none at all.
+    # Checking it here would validate nothing: use an actual protected route instead, so a
+    # non-200 here means what it says (bad credentials) rather than being unreachable in
+    # principle.
     code="$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 8 \
-        -u "${HB_USERNAME}:${HB_PASSWORD}" http://localhost:8000/ 2>/dev/null)"
+        -u "${HB_USERNAME}:${HB_PASSWORD}" http://localhost:8000/system/resources 2>/dev/null)"
     case "$code" in
         200)
-            row ok "Authenticated request" "200 from http://localhost:8000/"
+            row ok "Authenticated request" "200 from http://localhost:8000/system/resources"
             # A 200 without credentials would mean auth is not being enforced.
             anon="$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 8 \
-                http://localhost:8000/ 2>/dev/null)"
+                http://localhost:8000/system/resources 2>/dev/null)"
             if [ "$anon" = "200" ]; then
                 row fail "Auth enforcement" "an unauthenticated request also returned 200 — the API is answering anyone who can reach the port"
             else
                 row ok "Auth enforcement" "unauthenticated request rejected ($anon)"
+            fi
+            # REST answering is not the same as the stack working: bot status, controller
+            # reports and logs all arrive over MQTT. With the broker refusing the API, the
+            # API stays 200-healthy while every deployed bot reports nothing at all, which
+            # is a much harder symptom to trace back to the broker than a named check.
+            mqtt="$(curl -s --connect-timeout 3 --max-time 8 \
+                -u "${HB_USERNAME}:${HB_PASSWORD}" http://localhost:8000/bot-orchestration/mqtt 2>/dev/null)"
+            if printf '%s' "$mqtt" | grep -q '"mqtt_connected"[[:space:]]*:[[:space:]]*true'; then
+                row ok "Broker connection" "the API is connected to the MQTT broker"
+            elif printf '%s' "$mqtt" | grep -q '"mqtt_connected"'; then
+                row fail "Broker connection" "the API is NOT connected to the broker — deployed bots will report no controllers, no logs and no performance. Check \`docker compose logs emqx\` for a \`Permission denied\` on /opt/emqx/etc/auth-bootstrap.csv (the account was never seeded; \`make emqx-auth-reset\` rewrites the file and re-seeds), then that BROKER_USERNAME/BROKER_PASSWORD in .env match what the broker was seeded with"
+            else
+                row warn "Broker connection" "could not read /bot-orchestration/mqtt — check \`docker compose logs hummingbot-api\`"
             fi
             ;;
         401|403)
             row fail "Authenticated request" "$code — the API is up but USERNAME/PASSWORD in .env do not match what it is running with. Restart it after changing them: \`make deploy\`"
             ;;
         000|"")
-            row fail "Authenticated request" "no response from http://localhost:8000/ — the API is not listening. \`make deploy\` (Docker) or \`make run\` (source)"
+            row fail "Authenticated request" "no response from http://localhost:8000/system/resources — the API is not listening. \`make deploy\` (Docker) or \`make run\` (source)"
             ;;
         *)
-            row warn "Authenticated request" "unexpected HTTP $code from http://localhost:8000/ — check \`docker compose logs hummingbot-api\`"
+            row warn "Authenticated request" "unexpected HTTP $code from http://localhost:8000/system/resources — check \`docker compose logs hummingbot-api\`"
             ;;
     esac
 fi

@@ -53,7 +53,16 @@ EMQX_AUTH_FILE := .emqx/auth-bootstrap.csv
 # Generate the EMQX built-in-database bootstrap file from the broker credentials in .env.
 # EMQX ships with anonymous MQTT enabled; this seeds the one account the API and the bots
 # use so the broker can reject everything else. The file holds a plaintext password, so it
-# is written 0600 and gitignored.
+# is gitignored.
+#
+# The secret is kept off other host users by the MODE OF THE DIRECTORY (0700), not of the
+# file (0644). The file is bind-mounted into the broker, which runs as its own `emqx` user
+# (uid 1000): on Linux a bind mount carries the host uid through unmapped, so a 0600 file
+# owned by the deploying user is unreadable inside the container. EMQX then logs a
+# `Permission denied` for the bootstrap file, skips the import, comes up healthy with NO
+# accounts, and rejects the API's correct credentials as `Not authorized` (issue #224).
+# Directory mode is enough because Docker resolves the bind-mount path as root once, at
+# mount time — the container never traverses .emqx/ to reach the file.
 #
 # is_superuser is deliberately false: EMQX superusers bypass authorization entirely, which
 # would make emqx/acl.conf dead config.
@@ -73,8 +82,9 @@ emqx-auth:
 		exit 1; \
 	fi; \
 	mkdir -p $(dir $(EMQX_AUTH_FILE)); \
+	chmod 700 $(dir $(EMQX_AUTH_FILE)); \
 	printf 'user_id,password,is_superuser\n%s,%s,false\n' "$$user" "$$pass" > $(EMQX_AUTH_FILE); \
-	chmod 600 $(EMQX_AUTH_FILE); \
+	chmod 644 $(EMQX_AUTH_FILE); \
 	echo "[INFO] Wrote $(EMQX_AUTH_FILE) for broker user $$user"
 
 # Broker container to audit. Override to check another deployment:
