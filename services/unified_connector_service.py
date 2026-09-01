@@ -27,6 +27,7 @@ from hummingbot.connector.perpetual_derivative_py_base import PerpetualDerivativ
 from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, TradeType
 from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderState
 from hummingbot.core.utils.async_utils import safe_ensure_future
+from pydantic import SecretStr
 
 from utils.file_system import fs_util
 from utils.hummingbot_api_config_adapter import HummingbotAPIConfigAdapter
@@ -776,11 +777,7 @@ class UnifiedConnectorService:
                 ClientConfigAdapter(connector_config)
             )
         elif connector_config is not None:
-            api_keys = {
-                key: ""
-                for key in connector_config.__class__.model_fields.keys()
-                if key != "connector"
-            }
+            api_keys = self._public_config_values(connector_config)
         else:
             api_keys = {}
 
@@ -795,6 +792,34 @@ class UnifiedConnectorService:
 
         logger.info(f"Created data connector: {connector_name}")
         return connector
+
+    @staticmethod
+    def _public_config_values(connector_config) -> Dict[str, Any]:
+        """Config values for a keyless data connector: credentials blanked, the rest kept.
+
+        Only credentials have to be withheld here. Everything else in a connector's config
+        map is plain configuration that the connector needs in order to describe the market
+        correctly, and it already carries a sane default from the config class.
+
+        Blanking those too (the previous behaviour) silently degraded connectors that read
+        structured config: xrpl's ``custom_markets`` (``Dict[str, XRPLMarket]``) became
+        ``""``, which its constructor turns into ``{}`` via ``custom_markets or {}``, so
+        every market defined there disappeared and public price lookups for them failed
+        with "Market <PAIR> not found in markets list". Kraken's ``kraken_api_tier`` lost
+        its "Starter" default the same way.
+
+        Required fields stay blanked: they have no default to fall back on, and in practice
+        a required connector field is a credential.
+        """
+        values: Dict[str, Any] = {}
+        for key, field in connector_config.__class__.model_fields.items():
+            if key == "connector":
+                continue
+            if field.annotation is SecretStr or field.is_required():
+                values[key] = ""
+            else:
+                values[key] = getattr(connector_config, key, "")
+        return values
 
     # =========================================================================
     # Network and State Management
