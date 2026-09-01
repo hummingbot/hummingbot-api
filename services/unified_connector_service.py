@@ -1387,6 +1387,11 @@ class UnifiedConnectorService:
             if allowed_values is not None:
                 field_info["allowed_values"] = allowed_values
 
+            value_shape = UnifiedConnectorService._dict_value_shape(field_type)
+            if value_shape is not None:
+                field_info["type"] = "Dict"
+                field_info["value_shape"] = value_shape
+
             prompt = UnifiedConnectorService._resolve_field_prompt(
                 field, connector_config.hb_config
             )
@@ -1396,6 +1401,48 @@ class UnifiedConnectorService:
             fields_info[key] = field_info
 
         return fields_info
+
+    @staticmethod
+    def _type_label(annotation) -> str:
+        """A readable name for an annotation, unwrapping Optional[...]."""
+        from typing import get_args, get_origin
+
+        args = get_args(annotation)
+        if get_origin(annotation) is not None and type(None) in args:
+            inner = [arg for arg in args if arg is not type(None)]
+            if len(inner) == 1:
+                return f"Optional[{UnifiedConnectorService._type_label(inner[0])}]"
+        return getattr(annotation, "__name__", str(annotation))
+
+    @staticmethod
+    def _dict_value_shape(field_type) -> Optional[Dict[str, str]]:
+        """Field names and types of the model a ``Dict[str, SomeModel]`` field maps to.
+
+        Without this, such a field is reported to clients as the bare repr of its
+        annotation — ``"typing.Dict[str, hummingbot.connector.exchange.xrpl.xrpl_utils.
+        XRPLMarket]"`` for xrpl's ``custom_markets`` — which says nothing about the object
+        a caller is expected to send, so a client cannot build a form for it without
+        hardcoding per-connector knowledge.
+
+        Returns None for anything that is not a dict of models, leaving those fields
+        described exactly as before.
+        """
+        from typing import get_args, get_origin
+
+        from pydantic import BaseModel
+
+        if get_origin(field_type) is not dict:
+            return None
+        args = get_args(field_type)
+        if len(args) != 2:
+            return None
+        value_type = args[1]
+        if not (isinstance(value_type, type) and issubclass(value_type, BaseModel)):
+            return None
+        return {
+            name: UnifiedConnectorService._type_label(sub_field.annotation)
+            for name, sub_field in value_type.model_fields.items()
+        }
 
     @staticmethod
     def _resolve_field_prompt(field, config_map) -> Optional[str]:
