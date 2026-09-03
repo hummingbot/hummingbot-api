@@ -523,13 +523,20 @@ if [ "$HBAPI_NONINTERACTIVE" = "1" ]; then
   if [ "$TAILSCALE_ENABLED" = true ]; then
     TAILSCALE_AUTH_KEY="$_env_ts_key"
     TAILSCALE_HOSTNAME="${_env_ts_host:-hummingbot-api}"
-    if [ -z "$TAILSCALE_AUTH_KEY" ]; then
-      echo "[ERROR] Tailscale requested but TAILSCALE_AUTH_KEY is empty" >&2
-      exit 1
-    fi
-    if [[ ! "$TAILSCALE_AUTH_KEY" =~ ^tskey-auth- ]]; then
-      echo "[ERROR] TAILSCALE_AUTH_KEY must start with 'tskey-auth-'" >&2
-      exit 1
+    # An auth key registers a NEW node, so only the sidecar needs one. In host
+    # mode we serve on a node this machine already has, and demanding a
+    # credential for that would fail installs that are entirely correct --
+    # which is exactly the co-located Condor case.
+    if [ "${TAILSCALE_MODE:-}" != "host" ]; then
+      if [ -z "$TAILSCALE_AUTH_KEY" ]; then
+        echo "[ERROR] Tailscale requested but TAILSCALE_AUTH_KEY is empty" >&2
+        echo "        (not needed when TAILSCALE_MODE=host — this host would reuse its own node)" >&2
+        exit 1
+      fi
+      if [[ ! "$TAILSCALE_AUTH_KEY" =~ ^tskey-auth- ]]; then
+        echo "[ERROR] TAILSCALE_AUTH_KEY must start with 'tskey-auth-'" >&2
+        exit 1
+      fi
     fi
   fi
   echo "[INFO] Credentials taken from the environment; broker passwords generated locally."
@@ -549,32 +556,82 @@ CONFIG_PASSWORD="$(prompt_required_secret_tty "Config password: ")"
 # --------------------------
 
 if prompt_yes_no "Use Tailscale for secure private networking? [y/N]: " "n"; then
-  echo ""
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo "  How to get a Tailscale auth key:"
-  echo "    1. Create a free account at https://tailscale.com"
-  echo "    2. Go to: https://tailscale.com/admin/settings/keys"
-  echo "    3. Click 'Generate auth key'"
-  echo "    4. Check 'Reusable' for multiple server deployments"
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo ""
-  while true; do
-    TAILSCALE_AUTH_KEY="$(prompt_tty "Tailscale auth key (tskey-auth-...): " "")"
-    if [[ -z "$TAILSCALE_AUTH_KEY" ]]; then
-      echo "[WARN] Auth key cannot be empty"
-      continue
-    fi
-    if [[ ! "$TAILSCALE_AUTH_KEY" =~ ^tskey-auth- ]]; then
-      echo "[WARN] Auth key must start with 'tskey-auth-'"
-      continue
-    fi
-    break
-  done
-  # Hostname defaults to "hummingbot-api" — override via TAILSCALE_HOSTNAME in .env if needed
   TAILSCALE_ENABLED=true
+  # Ask what the answer depends on before asking for an auth key. A machine
+  # that already runs tailscaled needs no key -- it is on the tailnet, and
+  # joining a second time from the same host would only contend for the same
+  # device. Prompting anyway would demand a credential to do something we are
+  # about to decide not to do.
+  # shellcheck source=tailnet-state.sh
+  . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tailnet-state.sh"
+  if [ "$(tailnet_state)" != none ]; then
+    TAILSCALE_MODE=host
+    echo ""
+    echo "[OK] This machine is already on a tailnet — no auth key needed."
+    echo "     Port 8000 will be served on the node it already has."
+    echo "     Want the API to have its own tailnet identity instead?"
+    echo "     Set TAILSCALE_MODE=sidecar and TAILSCALE_AUTH_KEY in .env, then 'make deploy'."
+  else
+    TAILSCALE_MODE=sidecar
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "  How to get a Tailscale auth key:"
+    echo "    1. Create a free account at https://tailscale.com"
+    echo "    2. Go to: https://tailscale.com/admin/settings/keys"
+    echo "    3. Click 'Generate auth key'"
+    echo "    4. Check 'Reusable' for multiple server deployments"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    while true; do
+      TAILSCALE_AUTH_KEY="$(prompt_tty "Tailscale auth key (tskey-auth-...): " "")"
+      if [[ -z "$TAILSCALE_AUTH_KEY" ]]; then
+        echo "[WARN] Auth key cannot be empty"
+        continue
+      fi
+      if [[ ! "$TAILSCALE_AUTH_KEY" =~ ^tskey-auth- ]]; then
+        echo "[WARN] Auth key must start with 'tskey-auth-'"
+        continue
+      fi
+      break
+    done
+    # Hostname defaults to "hummingbot-api" — override via TAILSCALE_HOSTNAME in .env if needed
+  fi
 fi
 
 fi  # end interactive / non-interactive split
+
+# --------------------------
+# Tailnet ownership
+# --------------------------
+# Recorded in .env as a preference; `make deploy` re-resolves it against the
+# live host on every run, so this is a starting point, not a guarantee.
+_setup_here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tailnet-state.sh
+. "$_setup_here/tailnet-state.sh"
+
+if [ "$TAILSCALE_ENABLED" != true ]; then
+  TAILSCALE_MODE=none
+elif [ -n "${TAILSCALE_MODE:-}" ]; then
+  : # caller was explicit (validated earlier); respect it
+else
+  case "$(tailnet_state)" in
+    native)
+      TAILSCALE_MODE=host
+      echo ""
+      echo "[INFO] This machine is already on a tailnet."
+      echo "[INFO] Port 8000 will be served on the node it already has, rather than"
+      echo "[INFO] joining a second time — two daemons cannot share one tailnet device."
+      echo "[INFO] Want a separate identity anyway? Set TAILSCALE_MODE=sidecar in .env."
+      ;;
+    sidecar)
+      TAILSCALE_MODE=sidecar
+      echo "[INFO] Reusing the existing hummingbot-tailscale sidecar."
+      ;;
+    *)
+      TAILSCALE_MODE=sidecar
+      ;;
+  esac
+fi
 
 # Broker credentials are never typed by the user — the API and the bots are the only clients —
 # so generate strong ones instead of shipping well-known defaults. Rotating BROKER_PASSWORD
@@ -633,7 +690,18 @@ GATEWAY_PASSPHRASE=$CONFIG_PASSWORD
 BOTS_PATH=$(pwd)
 
 # Tailscale
+# TAILSCALE_ENABLED is the switch and keeps its historical meaning.
+# TAILSCALE_MODE says HOW: host = share this machine's existing tailnet node,
+# sidecar = give the API a node of its own. Deploy re-resolves this against
+# the live host every time, so an .env that was right in June cannot put a
+# second kernel-mode daemon on a box that grew one in July.
+#
+# NOTE: this heredoc is unquoted so plain variables expand. Command
+# substitution in these comments would EXECUTE while .env is written -- a
+# backtick here once ran a make target mid-setup and seeded the broker with
+# the wrong password. Keep substitution out of the comments.
 TAILSCALE_ENABLED=$TAILSCALE_ENABLED
+TAILSCALE_MODE=$TAILSCALE_MODE
 TAILSCALE_AUTH_KEY=$TAILSCALE_AUTH_KEY
 TAILSCALE_HOSTNAME=$TAILSCALE_HOSTNAME
 EOF

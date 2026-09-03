@@ -25,7 +25,7 @@ run: emqx-auth
 			sudo tailscale up --authkey="$${TAILSCALE_AUTH_KEY}" --hostname="$${TAILSCALE_HOSTNAME:-hummingbot-api}" --accept-dns=true; \
 		fi; \
 		tailscale serve status 2>/dev/null | grep -q ":8000" || \
-			sudo tailscale serve --bg http:8000 http://localhost:8000; \
+			sudo tailscale serve --bg --tcp=8000 tcp://127.0.0.1:8000; \
 		echo "[INFO] Binding uvicorn to 127.0.0.1 (tailscale serve exposes port 8000 on tailnet)"; \
 		conda run --no-capture-output -n hummingbot-api uvicorn main:app --reload --host 127.0.0.1 --port 8000; \
 	else \
@@ -33,15 +33,44 @@ run: emqx-auth
 	fi
 
 # Deploy with Docker
-# When TAILSCALE_ENABLED=true: adds the Tailscale sidecar compose override
+#
+# Tailnet ownership is resolved HERE, not only at setup time. A setup-time
+# decision is bypassed by every normal day-2 command: `make reset` deletes
+# .env while a sidecar may still be running, and this target is routinely run
+# on its own against an .env written weeks earlier. Whatever setup.sh recorded
+# is a preference; what the host actually looks like right now is the fact.
+#
+#   none     plain compose, no overlay
+#   host     this machine is already on the tailnet -- expose 8000 via
+#            `tailscale serve` on the existing node instead of joining twice
+#   sidecar  the API gets its own tailnet node, in userspace mode when a
+#            native daemon is already present
 deploy: $(SETUP_SENTINEL) emqx-auth
 	@set -a; [ -f .env ] && . ./.env; set +a; \
-	if [ "$${TAILSCALE_ENABLED:-false}" = "true" ]; then \
-		echo "[INFO] Deploying with Tailscale sidecar..."; \
-		docker compose -f docker-compose.yml -f docker-compose.tailscale.yml up -d; \
-	else \
-		docker compose up -d; \
-	fi
+	. ./tailnet-state.sh; \
+	mode="$$(tailnet_mode)" || exit 1; \
+	state="$$(tailnet_state)"; \
+	case "$$mode" in \
+	  none) \
+	    docker compose up -d ;; \
+	  host) \
+	    echo "[INFO] Tailscale: reusing this host's existing node (mode=host)."; \
+	    docker compose up -d; \
+	    if command -v tailscale >/dev/null 2>&1; then \
+	      tailscale serve status 2>/dev/null | grep -q ":8000" || \
+	        sudo tailscale serve --bg --tcp=8000 tcp://127.0.0.1:8000 || \
+	        echo "[WARN] Could not configure serve for :8000 — run it yourself: sudo tailscale serve --bg --tcp=8000 tcp://127.0.0.1:8000"; \
+	    else \
+	      echo "[WARN] mode=host but no tailscale CLI on PATH — port 8000 is loopback-only."; \
+	    fi ;; \
+	  sidecar) \
+	    if [ "$$state" = native ]; then \
+	      echo "[INFO] A tailscaled already owns this host's tailnet device."; \
+	      echo "[INFO] Starting the sidecar in userspace mode so both can coexist."; \
+	      export TS_USERSPACE=true; \
+	    fi; \
+	    docker compose -f docker-compose.yml -f docker-compose.tailscale.yml up -d ;; \
+	esac
 
 # Verify dependencies, .env, containers, port exposure and API access.
 # Read-only; exits non-zero when a check actually fails.
