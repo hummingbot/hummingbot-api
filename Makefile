@@ -202,9 +202,14 @@ build:
 #   - removes all .yml files under bots/credentials/master_account/
 reset:
 	@echo "[INFO] Checking for running hummingbot-api services..."
-	@if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'hummingbot-api'; then \
-		echo "[INFO] Docker containers running — stopping and wiping volumes..."; \
-		docker compose down -v; \
+	@# Both compose files, always. The Tailscale sidecar and its state volume are
+	@# declared ONLY in the overlay, so a base-file-only `down -v` leaves the
+	@# container running as an orphan -- still holding the host's tailscale0
+	@# device -- while .env is deleted, so the next `make setup` has no record
+	@# that it exists. --remove-orphans covers a sidecar left by an older layout.
+	@if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qxE 'hummingbot-api|$(TAILSCALE_CONTAINER)'; then \
+		echo "[INFO] Docker containers found — stopping and wiping volumes..."; \
+		docker compose -f docker-compose.yml -f docker-compose.tailscale.yml down -v --remove-orphans; \
 	else \
 		echo "[INFO] No Docker containers running."; \
 	fi

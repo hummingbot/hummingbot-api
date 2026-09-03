@@ -393,11 +393,28 @@ pull_hummingbot_image() {
 # --------------------------
 echo "[INFO] OS=${OS} ARCH=${ARCH}"
 
+# HBAPI_SKIP_DEPS=1 skips the apt/Docker installation pass only -- for a caller
+# that has already established both (Condor's installer checks `docker info`
+# before it ever gets here). Without it, delegation means every Condor install
+# re-runs an apt-get build-dep pass and a Docker install probe that cannot
+# change anything, adding minutes to a run that already satisfied them.
+#
+# Deliberately NOT skipped: the Hummingbot image pull below. Dependency checks
+# are the caller's to vouch for; a missing bot image is a functional gap no
+# caller currently covers.
+if [ "${HBAPI_SKIP_DEPS:-0}" = "1" ]; then
+  echo "[INFO] Skipping dependency install (HBAPI_SKIP_DEPS=1) — caller vouches for docker + build deps."
+  DOCKER_ALREADY_PRESENT=true
+  COMPOSE_ALREADY_PRESENT=true
+else
+
 if is_linux; then
   install_linux_build_deps
 fi
 
 ensure_docker_and_compose
+
+fi
 
 # Show summary of what was done
 echo ""
@@ -437,14 +454,86 @@ if [ -f ".env" ]; then
   exit 0
 fi
 
+# --------------------------
+# Non-interactive mode
+# --------------------------
+# Lets another installer (Condor's setup-environment.sh, CI, a provisioning
+# script) drive this setup without a human. It exists because the alternative
+# -- a caller hand-writing .env itself -- is how the schema drifted before:
+# a second author shipped BROKER_PASSWORD=password and omitted
+# BROKER_DASHBOARD_PASSWORD entirely, leaving the broker with credentials that
+# did not match its own bootstrap file.
+#
+# Only the values a human would TYPE are accepted here. Everything this script
+# GENERATES -- both broker passwords above all -- stays generated in both
+# modes, so a caller cannot supply a weak one. That is the whole point: .env
+# has exactly one author regardless of who started the run.
+#
+# The prompts below read from /dev/tty, so they cannot be fed by a pipe; this
+# is the supported way to answer them programmatically.
+HBAPI_NONINTERACTIVE="${HBAPI_NONINTERACTIVE:-0}"
+
+# Captured before the defaults below reset them -- these three are the only
+# Tailscale settings a caller may supply, and the reset would otherwise
+# silently discard them.
+_env_ts_enabled="${TAILSCALE_ENABLED:-}"
+_env_ts_key="${TAILSCALE_AUTH_KEY:-}"
+_env_ts_host="${TAILSCALE_HOSTNAME:-}"
+
 # Clear screen before prompting user (only if running interactively)
-if [[ -t 0 ]] && [[ -c /dev/tty ]]; then
-  if has_cmd clear; then
-    clear
-  else
-    printf "\033c"
-  fi
+if [ "$HBAPI_NONINTERACTIVE" != "1" ] && [[ -t 0 ]] && [[ -c /dev/tty ]]; then
+  # `clear` exits non-zero when TERM is unset (a tty without a termcap entry --
+  # CI runners, `script` wrappers, some IDE terminals). Under `set -e` that
+  # aborted the whole setup before a single prompt, so fall back to the escape
+  # sequence rather than trusting the exit status.
+  clear 2>/dev/null || printf "\033c"
 fi
+
+TAILSCALE_ENABLED=false
+TAILSCALE_AUTH_KEY=""
+TAILSCALE_HOSTNAME="hummingbot-api"
+
+if [ "$HBAPI_NONINTERACTIVE" = "1" ]; then
+  echo "Hummingbot API Setup (non-interactive)"
+  echo ""
+  # Fail loudly rather than writing a half-configured .env: these three guard
+  # an API that can place orders and read balances, and there is no safe
+  # default for any of them.
+  : "${HBAPI_USERNAME:?HBAPI_NONINTERACTIVE=1 requires HBAPI_USERNAME}"
+  : "${HBAPI_PASSWORD:?HBAPI_NONINTERACTIVE=1 requires HBAPI_PASSWORD}"
+  : "${HBAPI_CONFIG_PASSWORD:?HBAPI_NONINTERACTIVE=1 requires HBAPI_CONFIG_PASSWORD}"
+  USERNAME="$HBAPI_USERNAME"
+  PASSWORD="$HBAPI_PASSWORD"
+  CONFIG_PASSWORD="$HBAPI_CONFIG_PASSWORD"
+
+  # TAILSCALE_ENABLED is the caller-facing switch and keeps its historical
+  # name. TAILSCALE_MODE is accepted as a forward-looking alias so callers can
+  # already say what they mean (none|host|sidecar); only "none" differs from
+  # enabled=true today, the host/sidecar split lands with the ownership work.
+  case "${TAILSCALE_MODE:-}" in
+    none)           TAILSCALE_ENABLED=false ;;
+    host|sidecar)   TAILSCALE_ENABLED=true ;;
+    "")             case "$_env_ts_enabled" in
+                      [Tt]rue|[Yy]es|1) TAILSCALE_ENABLED=true ;;
+                      *)                TAILSCALE_ENABLED=false ;;
+                    esac ;;
+    *) echo "[ERROR] TAILSCALE_MODE must be none, host or sidecar (got: $TAILSCALE_MODE)" >&2; exit 1 ;;
+  esac
+
+  if [ "$TAILSCALE_ENABLED" = true ]; then
+    TAILSCALE_AUTH_KEY="$_env_ts_key"
+    TAILSCALE_HOSTNAME="${_env_ts_host:-hummingbot-api}"
+    if [ -z "$TAILSCALE_AUTH_KEY" ]; then
+      echo "[ERROR] Tailscale requested but TAILSCALE_AUTH_KEY is empty" >&2
+      exit 1
+    fi
+    if [[ ! "$TAILSCALE_AUTH_KEY" =~ ^tskey-auth- ]]; then
+      echo "[ERROR] TAILSCALE_AUTH_KEY must start with 'tskey-auth-'" >&2
+      exit 1
+    fi
+  fi
+  echo "[INFO] Credentials taken from the environment; broker passwords generated locally."
+else
 
 echo "Hummingbot API Setup"
 echo ""
@@ -458,9 +547,6 @@ CONFIG_PASSWORD="$(prompt_required_secret_tty "Config password: ")"
 # --------------------------
 # Tailscale Configuration
 # --------------------------
-TAILSCALE_ENABLED=false
-TAILSCALE_AUTH_KEY=""
-TAILSCALE_HOSTNAME="hummingbot-api"
 
 if prompt_yes_no "Use Tailscale for secure private networking? [y/N]: " "n"; then
   echo ""
@@ -487,6 +573,8 @@ if prompt_yes_no "Use Tailscale for secure private networking? [y/N]: " "n"; the
   # Hostname defaults to "hummingbot-api" — override via TAILSCALE_HOSTNAME in .env if needed
   TAILSCALE_ENABLED=true
 fi
+
+fi  # end interactive / non-interactive split
 
 # Broker credentials are never typed by the user — the API and the bots are the only clients —
 # so generate strong ones instead of shipping well-known defaults. Rotating BROKER_PASSWORD
