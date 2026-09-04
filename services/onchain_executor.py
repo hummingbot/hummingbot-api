@@ -370,18 +370,7 @@ class OnchainExecutor(ExecutorBase):
         outcome = self._outcome
         simulation = build.simulation if build is not None else None
         gas = simulation.gas if simulation is not None else None
-        actions: List[Dict[str, Any]] = [
-            {
-                "chain_id": action.get("chain_id", action.get("chainId")),
-                "to": action.get("to"),
-                "value": action.get("value"),
-                "label": action.get("label"),
-                "kind": action.get("kind"),
-                "protocol": action.get("protocol"),
-                "pending_tx_id": action.get("pending_tx_id", action.get("pendingTxId")),
-            }
-            for action in (build.actions if build is not None else [])
-        ]
+        actions: List[Dict[str, Any]] = build.action_summaries if build is not None else []
         return {
             "phase": self._phase.value,
             "chain": cfg.chain,
@@ -390,6 +379,7 @@ class OnchainExecutor(ExecutorBase):
             "app": cfg.app,
             "operation": cfg.operation,
             "wallet_address": build.from_address if build is not None else None,
+            "cluster": cfg.cluster if cfg.chain == "svm" else None,
             "digest": self._digest,
             "action_count": len(actions),
             "actions": actions,

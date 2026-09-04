@@ -69,7 +69,10 @@ class OnchainExecutorConfig(ExecutorConfigBase):
         description="Pair for record keeping (derived as '<native>-<native>' when empty, e.g. 'ETH-ETH')"
     )
     chain: Literal["evm", "svm"] = Field(default="evm", description="Chain family the bundle targets")
-    chain_id: int = Field(..., ge=1, description="EVM chain id (1 ethereum, 10 optimism, 8453 base, 42161 arbitrum, ...)")
+    chain_id: int = Field(
+        ..., ge=1, description="EVM chain id (1 ethereum, 10 optimism, 8453 base, 42161 arbitrum, ...); pass 1 for svm"
+    )
+    cluster: str = Field(default="mainnet-beta", description="svm only: Solana cluster the bundle targets")
     mode: Literal["operation", "calls"] = Field(
         ...,
         description="'operation' builds the bundle from an app/skill catalog operation; 'calls' stages raw EVM calls"
@@ -138,9 +141,9 @@ class OnchainExecutorConfig(ExecutorConfigBase):
             # The base validator only fills this when the field is passed; ExecutorInfo needs a float.
             self.timestamp = time.time()
         if not self.connector_name:
-            self.connector_name = chain_name(self.chain, self.chain_id)
+            self.connector_name = f"solana-{self.cluster}" if self.chain == "svm" else chain_name(self.chain, self.chain_id)
         if not self.trading_pair:
-            symbol = native_symbol(self.chain_id)
+            symbol = "SOL" if self.chain == "svm" else native_symbol(self.chain_id)
             self.trading_pair = f"{symbol}-{symbol}"
         return self
 

@@ -173,3 +173,11 @@ def test_harness_lifecycle_read_and_test_operations_are_refused(operation):
 def test_executable_operations_are_accepted(operation):
     cfg = OnchainExecutorConfig(chain_id=8453, mode="operation", operation=operation)
     assert cfg.operation == operation
+
+
+def test_svm_records_derive_solana_fields():
+    cfg = OnchainExecutorConfig(chain="svm", chain_id=1, mode="operation", operation="jupiter_prepare_swap")
+    assert cfg.connector_name == "solana-mainnet-beta"
+    assert cfg.trading_pair == "SOL-SOL"
+    devnet = OnchainExecutorConfig(chain="svm", chain_id=1, cluster="devnet", mode="operation", operation="jupiter_prepare_swap")
+    assert devnet.connector_name == "solana-devnet"
