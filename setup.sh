@@ -479,6 +479,10 @@ HBAPI_NONINTERACTIVE="${HBAPI_NONINTERACTIVE:-0}"
 _env_ts_enabled="${TAILSCALE_ENABLED:-}"
 _env_ts_key="${TAILSCALE_AUTH_KEY:-}"
 _env_ts_host="${TAILSCALE_HOSTNAME:-}"
+# Optional caller tuning. Emitted only when supplied, so a standalone install's
+# .env is unchanged and this repo's own defaults keep applying.
+_env_bt_concurrent="${HBAPI_BACKTESTING_MAX_CONCURRENT:-}"
+_env_bt_timeout="${HBAPI_BACKTESTING_TIMEOUT_SECONDS:-}"
 
 # Clear screen before prompting user (only if running interactively)
 if [ "$HBAPI_NONINTERACTIVE" != "1" ] && [[ -t 0 ]] && [[ -c /dev/tty ]]; then
@@ -705,6 +709,18 @@ TAILSCALE_MODE=$TAILSCALE_MODE
 TAILSCALE_AUTH_KEY=$TAILSCALE_AUTH_KEY
 TAILSCALE_HOSTNAME=$TAILSCALE_HOSTNAME
 EOF
+
+# Appended rather than templated: these are the caller's tuning, not this
+# repo's defaults, and an install that did not ask for them should not carry
+# them at all.
+if [ -n "$_env_bt_concurrent" ] || [ -n "$_env_bt_timeout" ]; then
+  {
+    echo ""
+    echo "# Backtesting (set by the installer that drove this setup)"
+    [ -n "$_env_bt_concurrent" ] && echo "BACKTESTING_MAX_CONCURRENT=$_env_bt_concurrent"
+    [ -n "$_env_bt_timeout" ] && echo "BACKTESTING_TIMEOUT_SECONDS=$_env_bt_timeout"
+  } >> .env
+fi
 
 # Holds the API password, the config/Gateway passphrase and (when set) a
 # Tailscale auth key. The usual 644 umask makes all of that readable by every
