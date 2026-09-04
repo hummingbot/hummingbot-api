@@ -33,23 +33,53 @@ tailnet_sidecar_running() {
 # This is the question that actually decides userspace mode, and it cannot be
 # answered by "is a sidecar running": both can be true at once, which is the
 # normal state on a co-located Condor install after the first deploy.
+#
+# A bare `pgrep -x tailscaled` cannot tell a host daemon from the sidecar's
+# own: on a native-Linux host the PID namespace is the parent of every
+# container's, so container processes DO appear in host process lists (under
+# Docker Desktop / WSL2 they do not). The cgroup is the portable
+# discriminator, and reading it needs no docker permissions -- which matters
+# when the installing user cannot run `docker ps` at all.
+_tailnet_tailscaled_pids() { pgrep -x tailscaled 2>/dev/null; }
+
+_tailnet_in_container() {
+    [ -r "/proc/$1/cgroup" ] &&
+    grep -qE '(docker|containerd|libpod|kubepods)' "/proc/$1/cgroup" 2>/dev/null
+}
+
+# A tailscaled that is NOT inside a container. No /proc (macOS) means we
+# cannot say it is containerised, and there a container's processes are not
+# visible here anyway -- so treating it as a host daemon is right.
+_tailnet_host_tailscaled() {
+    local pid
+    for pid in $(_tailnet_tailscaled_pids); do
+        _tailnet_in_container "$pid" && continue
+        return 0
+    done
+    return 1
+}
+
+_tailnet_container_tailscaled() {
+    local pid
+    for pid in $(_tailnet_tailscaled_pids); do
+        _tailnet_in_container "$pid" && return 0
+    done
+    return 1
+}
+
 tailnet_has_native() {
-    # The host's own daemon answers on the host's socket. A sidecar keeps its
-    # socket inside its container, so this signal cannot mistake one for the
-    # other -- which is why it is checked first and unconditionally.
+    # 1. The host's own tailscaled socket. Definitive: a sidecar keeps its
+    #    socket inside its container and cannot answer here.
     if command -v tailscale >/dev/null 2>&1 && tailscale status >/dev/null 2>&1; then
         return 0
     fi
-    # The other two signals CAN be confused by a sidecar: it runs with
-    # network_mode: host, so a kernel-mode one creates tailscale0 in the host's
-    # own namespace, and its process is visible from the host on most setups.
-    # Trust them only when no sidecar is running to be mistaken for.
-    if ! tailnet_sidecar_running; then
-        # A userspace daemon has no interface at all, so the process check is
-        # not redundant with the link check -- each catches what the other
-        # misses. macOS names the device utunN rather than tailscale0, and is
-        # covered by the CLI check above.
-        pgrep -x tailscaled >/dev/null 2>&1 && return 0
+    # 2. A tailscaled process outside any container. Also definitive, and it
+    #    still works when the host has no tailscale CLI installed.
+    _tailnet_host_tailscaled && return 0
+    # 3. tailscale0 on its own is weaker evidence: a kernel-mode sidecar runs
+    #    with network_mode: host and creates that device in the host's own
+    #    namespace. Trust it only when nothing containerised could have.
+    if ! tailnet_sidecar_running && ! _tailnet_container_tailscaled; then
         ip link show tailscale0 >/dev/null 2>&1 && return 0
     fi
     return 1
