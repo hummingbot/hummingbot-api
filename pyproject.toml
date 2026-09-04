@@ -6,6 +6,11 @@ build-backend = "setuptools.build_meta"
 line-length = 130
 target-version = ["py38"]
 
+[tool.pytest.ini_options]
+markers = [
+    "integration: live tests against a running API (and Gateway/Aomi); skipped unless their environment is set",
+]
+
 [tool.isort]
 line_length = 130
 profile = "black"

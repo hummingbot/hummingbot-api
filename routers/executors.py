@@ -52,12 +52,16 @@ async def create_executor(
     - **xemm_executor**: Cross-exchange market making
     - **order_executor**: Simple order execution
     - **lp_executor**: Liquidity provider position on CLMM DEXs (Meteora, Raydium, etc.)
+    - **onchain_executor**: One on-chain transaction bundle through the Aomi Pipeline (stage, simulate, commit)
 
     The `executor_config` must include:
     - `type`: One of the executor types above
     - `connector_name`: Exchange connector (e.g., "binance", "binance_perpetual")
     - `trading_pair`: Trading pair (e.g., "BTC-USDT")
     - Additional type-specific configuration (see /executors/types/{type}/config for details)
+
+    `onchain_executor` takes no connector: it needs `chain_id` and `mode` ("operation" with `operation`/`arguments`,
+    or "calls" with a list of EVM calls); `connector_name`/`trading_pair` are derived from the chain when omitted.
 
     Returns the created executor ID and initial status.
     """
@@ -293,6 +297,11 @@ async def get_available_executor_types():
                 "type": "lp_executor",
                 "description": "LP position management for CLMM pools (Meteora, Raydium) ",
                 "use_case": "Automated liquidity provision with position tracking"
+            },
+            {
+                "type": "onchain_executor",
+                "description": "One on-chain transaction bundle through the Aomi Pipeline: stage, fork-simulate, commit",
+                "use_case": "Kernel-signed EVM transactions (transfers, contract calls, catalog operations) without a connector"
             }
         ]
     }

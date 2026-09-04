@@ -1,0 +1,402 @@
+"""OnchainExecutor: one Aomi Pipeline lifecycle as a hummingbot executor.
+
+The executor walks stage (or build) -> simulate -> risk check -> commit -> confirm, one phase per
+control tick, against ``/v1/pipeline`` through the ``aomi`` client. It holds no connector: the
+fork simulation is what proves balances and the kernel signs on commit, so ``ExecutorBase`` is
+constructed with ``connectors=[]`` and the balance check is a no-op.
+
+Two things it is careful about:
+
+* A commit is sent at most once. ``_commit_sent`` flips before the request leaves, and a retry
+  after a transport error replays the same idempotency key (the Build digest), so a lost response
+  cannot turn into a second on-chain transaction. ``early_stop`` after that point is a no-op.
+* ``custom_info`` never carries ``transaction_hash`` or ``position_address``: the ExecutorService
+  reads the first as a Gateway swap to record and the second as an orphaned LP position.
+"""
+import dataclasses
+import inspect
+import logging
+from decimal import Decimal, InvalidOperation
+from enum import Enum
+from typing import Any, Callable, Dict, List, Optional
+
+from aomi.pipeline.client import PipelineClient
+from aomi.pipeline.errors import PipelineError
+from aomi.pipeline.models import Build, CommitOutcome
+from hummingbot.core.utils.async_utils import safe_ensure_future
+from hummingbot.strategy_v2.executors.executor_base import ExecutorBase
+from hummingbot.strategy_v2.models.executors import CloseType
+from hummingbot.strategy_v2.models.executors_info import ExecutorInfo
+
+from config import settings
+from models.onchain_executor import OnchainExecutorConfig, native_symbol
+from utils.trading_pair import split_trading_pair
+
+LOGGER_NAME = "hummingbot.strategy_v2.executors.onchain_executor"
+
+
+class OnchainExecutorInfo(ExecutorInfo):
+    """ExecutorInfo whose config is an OnchainExecutorConfig.
+
+    Core's ``ExecutorInfo.config`` is a discriminated union of the eight core configs, so a config
+    typed ``onchain_executor`` cannot pass through it.
+    """
+
+    config: OnchainExecutorConfig
+
+
+class Phase(str, Enum):
+    STAGING = "staging"
+    SIMULATING = "simulating"
+    RISK_CHECK = "risk_check"
+    COMMITTING = "committing"
+    CONFIRMING = "confirming"
+    DONE = "done"
+
+
+class OnchainExecutor(ExecutorBase):
+    """Stage, simulate and commit one on-chain bundle through the Aomi Pipeline."""
+
+    # The ExecutorService skips connector/market preparation for executors that say so.
+    USES_CONNECTORS = False
+    _logger = None
+
+    @classmethod
+    def logger(cls):
+        # RunnableBase logs under hummingbot.strategy_v2.runnable_base, which the API's per-executor
+        # log capture (attached to hummingbot.strategy_v2.executors) never sees.
+        if cls._logger is None:
+            cls._logger = logging.getLogger(LOGGER_NAME)
+        return cls._logger
+
+    def __init__(
+        self,
+        strategy,
+        config: OnchainExecutorConfig,
+        update_interval: float = 1.0,
+        max_retries: int = 10,
+        client_factory: Optional[Callable[[], PipelineClient]] = None,
+    ):
+        super().__init__(
+            strategy=strategy, connectors=[], config=config, update_interval=update_interval, max_retries=max_retries
+        )
+        self.config: OnchainExecutorConfig = config
+        self._client_factory = client_factory
+        self._client: Optional[PipelineClient] = None
+        self._phase = Phase.STAGING
+        self._build: Optional[Build] = None
+        self._outcome: Optional[CommitOutcome] = None
+        self._error: Optional[Dict[str, Any]] = None
+        self._started_at: Optional[float] = None
+        self._commit_sent = False
+        self._stop_requested = False
+
+    # ------------------------------------------------------------------ lifecycle
+
+    @staticmethod
+    def _default_client() -> PipelineClient:
+        aomi = settings.aomi
+        return PipelineClient(aomi.url, aomi.token_provider(), timeout=aomi.timeout)
+
+    async def validate_sufficient_balance(self):
+        # The fork simulation proves the wallet can pay; a failing one ends the executor at RISK_CHECK.
+        return
+
+    async def on_start(self):
+        try:
+            if self._client is None:
+                if self._client_factory is None and not settings.aomi.configured:
+                    raise RuntimeError("Aomi is not configured: set AOMI_TOKEN or AOMI_TOKEN_FILE")
+                self._client = (self._client_factory or self._default_client)()
+            self._started_at = self._strategy.current_timestamp
+            await self.validate_sufficient_balance()
+            self.logger().info(
+                f"onchain_executor {self.config.id} starting: chain_id={self.config.chain_id} mode={self.config.mode} "
+                f"app={self.config.app} operation={self.config.operation}"
+            )
+        except Exception as exc:
+            self._fail("startup", exc)
+
+    def on_stop(self):
+        client, self._client = self._client, None
+        if client is not None:
+            safe_ensure_future(client.close())
+
+    def early_stop(self, keep_position: bool = False):
+        if self._commit_sent:
+            self.logger().warning(
+                f"onchain_executor {self.config.id}: commit already sent (digest {self._digest}); an on-chain commit "
+                "cannot be cancelled, letting it finish"
+            )
+            return
+        self._stop_requested = True
+        self.close_type = CloseType.EARLY_STOP
+        self.logger().info(f"onchain_executor {self.config.id} stopped early during {self._phase.value}")
+        self.stop()
+
+    async def control_task(self):
+        if self.is_closed or self._phase == Phase.DONE:
+            return
+        if not self._commit_sent and self._timed_out():
+            self._fail("timeout", message=f"no commit within {self.config.timeout_sec}s (phase {self._phase.value})")
+            return
+        phase = self._phase
+        try:
+            if phase == Phase.STAGING:
+                await self._stage()
+            elif phase == Phase.SIMULATING:
+                await self._simulate()
+            elif phase == Phase.RISK_CHECK:
+                self._risk_check()
+            elif phase == Phase.COMMITTING:
+                await self._commit()
+            elif phase == Phase.CONFIRMING:
+                self._confirm()
+        except PipelineError as err:
+            if err.retryable:
+                self._current_retries += 1
+                self.logger().warning(
+                    f"onchain_executor {self.config.id}: {phase.value} failed with a retryable error "
+                    f"({err.status} {err.code}: {err.message}); retry {self._current_retries}/{self._max_retries}"
+                )
+            else:
+                self._fail(f"{phase.value}_rejected", err)
+        except Exception as exc:
+            self._fail("unexpected", exc)
+
+    # ------------------------------------------------------------------ phases
+
+    async def _stage(self):
+        cfg = self.config
+        if cfg.mode == "calls":
+            self._build = await self._client.stage_evm(cfg.calls, app=cfg.app, skills=cfg.skills)
+        else:
+            self._build = await self._client.build(
+                cfg.chain, app=cfg.app, skills=cfg.skills, operation=cfg.operation_path, arguments=cfg.arguments or {}
+            )
+        self.logger().info(
+            f"onchain_executor {cfg.id}: staged {len(self._build.actions)} action(s), digest {self._build.digest}, "
+            f"status {self._build.status}"
+        )
+        self._phase = Phase.RISK_CHECK if self._build.is_simulated else Phase.SIMULATING
+
+    async def _simulate(self):
+        self._build = await self._client.simulate(self._build)
+        self._phase = Phase.RISK_CHECK
+
+    def _risk_check(self):
+        build = self._build
+        simulation = build.simulation if build is not None else None
+        if simulation is None or not simulation.passed:
+            status = simulation.status if simulation is not None else "missing"
+            warnings = simulation.warnings if simulation is not None else []
+            self._fail(
+                "simulation_failed",
+                message=f"simulation {status}" + (f": {'; '.join(warnings)}" if warnings else ""),
+                evidence=simulation.raw if simulation is not None else None,
+            )
+            return
+        for warning in simulation.warnings:
+            self.logger().warning(f"onchain_executor {self.config.id}: simulation warning: {warning}")
+        if self.config.max_gas_quote is not None:
+            fees = self.get_cum_fees_quote()
+            if self._fees_are_priced() and fees > self.config.max_gas_quote:
+                self._fail(
+                    "gas_over_budget",
+                    message=f"simulated gas {fees} quote exceeds max_gas_quote {self.config.max_gas_quote}",
+                )
+                return
+            if not self._fees_are_priced():
+                self.logger().warning(
+                    f"onchain_executor {self.config.id}: max_gas_quote set but no quote rate for "
+                    f"{native_symbol(self.config.chain_id)}; gas budget not enforced"
+                )
+        if not self.config.commit:
+            self.logger().info(f"onchain_executor {self.config.id}: dry run, simulation passed, not committing")
+            self._finish(CloseType.COMPLETED)
+            return
+        self._phase = Phase.COMMITTING
+
+    async def _commit(self):
+        # Flip before the request leaves so a lost response cannot lead to a second commit; the
+        # idempotency key is the Build digest, so a retry replays the ledger entry instead.
+        self._commit_sent = True
+        self._outcome = await self._client.commit(self._build)
+        self._phase = Phase.CONFIRMING
+
+    def _confirm(self):
+        outcome = self._outcome
+        if outcome is not None and outcome.confirmed:
+            self.logger().info(f"onchain_executor {self.config.id}: confirmed {', '.join(outcome.tx_hashes)}")
+            self._finish(CloseType.COMPLETED)
+            return
+        kind = outcome.kind if outcome is not None else "unknown"
+        self._error = {
+            "reason": "awaiting_wallet",
+            "phase": Phase.CONFIRMING.value,
+            "outcome_kind": kind,
+            "message": f"commit returned {kind}; the bundle needs a wallet signature this executor cannot give",
+        }
+        self.logger().error(f"onchain_executor {self.config.id}: {self._error['message']}")
+        self._finish(CloseType.FAILED)
+
+    def _finish(self, close_type: CloseType):
+        self.close_type = close_type
+        self._phase = Phase.DONE
+        self.stop()
+
+    def _fail(
+        self,
+        reason: str,
+        exc: Optional[BaseException] = None,
+        *,
+        message: Optional[str] = None,
+        evidence: Any = None,
+    ):
+        error: Dict[str, Any] = {"reason": reason, "phase": self._phase.value}
+        if isinstance(exc, PipelineError):
+            error.update({
+                "status": exc.status,
+                "code": exc.code,
+                "backend_code": exc.backend_code,
+                "message": exc.message,
+                "request_id": exc.request_id,
+            })
+        elif exc is not None:
+            error["message"] = f"{type(exc).__name__}: {exc}"
+        if message:
+            error["message"] = message
+        if evidence is not None:
+            error["evidence"] = evidence
+        self._error = error
+        self.logger().error(
+            f"onchain_executor {self.config.id} failed at {self._phase.value}: {reason}: {error.get('message', '')}",
+            exc_info=exc if exc is not None and not isinstance(exc, PipelineError) else None,
+        )
+        self._finish(CloseType.FAILED)
+
+    def _timed_out(self) -> bool:
+        if self._started_at is None:
+            return False
+        return (self._strategy.current_timestamp - self._started_at) > self.config.timeout_sec
+
+    # ------------------------------------------------------------------ metrics
+
+    def get_net_pnl_quote(self) -> Decimal:
+        return Decimal("0")
+
+    def get_net_pnl_pct(self) -> Decimal:
+        return Decimal("0")
+
+    @property
+    def filled_amount_quote(self) -> Decimal:
+        return Decimal("0")
+
+    def get_cum_fees_quote(self) -> Decimal:
+        cost = self._gas_native_cost()
+        rate = self._quote_rate()
+        if cost is None or rate is None:
+            return Decimal("0")
+        return cost * rate
+
+    def _fees_are_priced(self) -> bool:
+        return self._gas_native_cost() is not None and self._quote_rate() is not None
+
+    def _gas_native_cost(self) -> Optional[Decimal]:
+        simulation = self._build.simulation if self._build is not None else None
+        gas = simulation.gas if simulation is not None else None
+        if gas is None or gas.native_cost is None:
+            return None
+        try:
+            return Decimal(str(gas.native_cost))
+        except (InvalidOperation, ValueError):
+            return None
+
+    def _quote_rate(self) -> Optional[Decimal]:
+        """Price of the native gas token in the pair's quote asset, when the API can supply one."""
+        market_data = getattr(self._strategy, "_market_data_service", None)
+        get_rate = getattr(market_data, "get_rate", None)
+        if not callable(get_rate):
+            return None
+        try:
+            _base, quote_asset = split_trading_pair(self.config.trading_pair)
+            rate = get_rate(native_symbol(self.config.chain_id), quote_asset)
+        except Exception:  # a malformed pair (InvalidTradingPair) or a rate source that throws: unpriced
+            return None
+        if inspect.isawaitable(rate):
+            rate.close()
+            return None
+        if rate is None:
+            return None
+        try:
+            rate = Decimal(str(rate))
+        except (InvalidOperation, ValueError):
+            return None
+        return rate if rate > 0 else None
+
+    # ------------------------------------------------------------------ reporting
+
+    @property
+    def _digest(self) -> Optional[str]:
+        return self._build.digest if self._build is not None else None
+
+    @property
+    def executor_info(self) -> OnchainExecutorInfo:
+        def _safe_decimal(value) -> Decimal:
+            d = Decimal(str(value))
+            return d if d.is_finite() else Decimal("0")
+
+        return OnchainExecutorInfo(
+            id=self.config.id,
+            timestamp=self.config.timestamp,
+            type=self.config.type,
+            status=self.status,
+            close_type=self.close_type,
+            close_timestamp=self.close_timestamp,
+            config=self.config,
+            net_pnl_pct=_safe_decimal(self.net_pnl_pct),
+            net_pnl_quote=_safe_decimal(self.net_pnl_quote),
+            cum_fees_quote=_safe_decimal(self.cum_fees_quote),
+            filled_amount_quote=_safe_decimal(self.filled_amount_quote),
+            is_active=self.is_active,
+            is_trading=self.is_trading,
+            custom_info=self.get_custom_info(),
+            controller_id=self.config.controller_id,
+        )
+
+    def get_custom_info(self) -> Dict[str, Any]:
+        cfg = self.config
+        build = self._build
+        outcome = self._outcome
+        simulation = build.simulation if build is not None else None
+        gas = simulation.gas if simulation is not None else None
+        actions: List[Dict[str, Any]] = build.action_summaries if build is not None else []
+        return {
+            "phase": self._phase.value,
+            "chain": cfg.chain,
+            "chain_id": cfg.chain_id,
+            "mode": cfg.mode,
+            "app": cfg.app,
+            "operation": cfg.operation,
+            "wallet_address": build.from_address if build is not None else None,
+            "cluster": cfg.cluster if cfg.chain == "svm" else None,
+            "digest": self._digest,
+            "action_count": len(actions),
+            "actions": actions,
+            "simulation_passed": simulation.passed if simulation is not None else None,
+            "simulation_warnings": list(simulation.warnings) if simulation is not None else [],
+            "balance_changes": [dataclasses.asdict(change) for change in simulation.balance_changes]
+            if simulation is not None else [],
+            "gas_units": gas.units if gas is not None else None,
+            "gas_price_wei": gas.price_wei if gas is not None else None,
+            "gas_native_cost": gas.native_cost if gas is not None else None,
+            "fees_quote_source": "priced" if self._fees_are_priced() else "unpriced",
+            "committed": bool(outcome is not None and outcome.confirmed),
+            "outcome_kind": outcome.kind if outcome is not None else None,
+            "tx_hashes": list(outcome.tx_hashes) if outcome is not None else [],
+            "tx_ids": list(outcome.tx_ids) if outcome is not None else [],
+            "commit_requests": list(outcome.requests) if outcome is not None else [],
+            "keep_position": cfg.keep_position,
+            "error": self._error,
+            "reason": self._error.get("reason") if self._error else None,
+        }
