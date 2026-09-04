@@ -244,11 +244,28 @@ reset:
 	@# .env/broker desync `make emqx-auth-reset` exists to repair.
 	@# `down` on a project with nothing running is a no-op, so there is no
 	@# case worth guarding against.
-	@if docker info >/dev/null 2>&1; then \
+	@# Reset is all-or-nothing. If the volumes cannot be dropped, deleting .env
+	@# and the credential state anyway is worse than not resetting at all: the
+	@# next setup generates a new BROKER_PASSWORD while the retained EMQX volume
+	@# still holds the account seeded from the old one, so the broker comes up
+	@# healthy and rejects the API's correct credentials. Recovering needs
+	@# `make emqx-auth-reset` -- which also needs the Docker that was missing.
+	@if ! docker info >/dev/null 2>&1; then \
+		if [ "$(ALLOW_PARTIAL_RESET)" = "1" ]; then \
+			echo "[WARN] Docker unavailable; removing local files only (ALLOW_PARTIAL_RESET=1)."; \
+			echo "[WARN] Container volumes are UNTOUCHED. Run 'make emqx-auth-reset' once Docker is back,"; \
+			echo "[WARN] or the broker will keep rejecting the credentials the next setup generates."; \
+		else \
+			echo "[ERROR] Docker is not available, so container volumes cannot be wiped." >&2; \
+			echo "[ERROR] Refusing to reset: removing .env while the broker keeps its old" >&2; \
+			echo "[ERROR] accounts leaves an install that authenticates against nothing." >&2; \
+			echo "[ERROR] Start Docker (or fix its permissions) and re-run 'make reset'." >&2; \
+			echo "[ERROR] To remove local files anyway: make reset ALLOW_PARTIAL_RESET=1" >&2; \
+			exit 1; \
+		fi; \
+	else \
 		echo "[INFO] Stopping containers and wiping volumes..."; \
 		docker compose -f docker-compose.yml -f docker-compose.tailscale.yml down -v --remove-orphans; \
-	else \
-		echo "[INFO] Docker is not available — skipping container teardown."; \
 	fi
 	@if pgrep -f "uvicorn main[:]app" >/dev/null 2>&1; then \
 		echo "[INFO] Source uvicorn process found — stopping..."; \
