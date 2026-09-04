@@ -94,8 +94,9 @@ prompt_required_secret_tty() {
       echo "[WARN] This value cannot be empty" >&2
       continue
     fi
-    if [[ "$value" =~ [[:space:]] ]]; then
-      echo "[WARN] Spaces are not supported here -- .env is read by three different parsers that disagree on quoting" >&2
+    if env_value_unsafe "$value"; then
+      echo "[WARN] Not supported here: spaces and  \` \$ \" ' \\ ; & | < > ( ) ~" >&2
+      echo "[WARN] .env is read by three different parsers, and the Makefile sources it -- these would execute rather than parse." >&2
       continue
     fi
     confirm="$(prompt_secret_tty "Confirm: ")"
@@ -106,6 +107,27 @@ prompt_required_secret_tty() {
     echo "$value"
     return 0
   done
+}
+
+# Characters that are unsafe in a .env value.
+#
+# The Makefile's run/deploy/emqx-auth targets read .env with `. ./.env`, so a
+# value is not merely parsed there -- it is EXECUTED. A password containing
+# $(...) or a `;` runs as the deploying user. Spaces were already rejected
+# below because ".env is read by three different parsers that disagree on
+# quoting"; this is the same argument, for the characters where the
+# disagreement is arbitrary code rather than a truncated value.
+#
+# Rejected: whitespace and  ` $ " ' \ ; & | < > ( ) ~
+# Still allowed:  A-Z a-z 0-9 ! @ # % ^ * - _ = + [ ] { } : , . ? /
+#
+# Validated HERE because setup.sh is the only writer of .env -- one author
+# means one place to enforce this, for typed and caller-supplied values alike.
+env_value_unsafe() {
+  case "$1" in
+    *[[:space:]]*|*'`'*|*'$'*|*'"'*|*"'"*|*'\'*|*';'*|*'&'*|*'|'*|*'<'*|*'>'*|*'('*|*')'*|*'~'*) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 resolve_script_dir() {
@@ -509,6 +531,14 @@ if [ "$HBAPI_NONINTERACTIVE" = "1" ]; then
   USERNAME="$HBAPI_USERNAME"
   PASSWORD="$HBAPI_PASSWORD"
   CONFIG_PASSWORD="$HBAPI_CONFIG_PASSWORD"
+  for _v in USERNAME PASSWORD CONFIG_PASSWORD; do
+    eval "_val=\$$_v"
+    if env_value_unsafe "$_val"; then
+      echo "[ERROR] $_v contains a character that is unsafe in .env: spaces or  \` \$ \" ' \\ ; & | < > ( ) ~" >&2
+      echo "[ERROR] The Makefile sources .env, so these would execute rather than parse." >&2
+      exit 1
+    fi
+  done
 
   # TAILSCALE_ENABLED is the caller-facing switch and keeps its historical
   # name. TAILSCALE_MODE is accepted as a forward-looking alias so callers can

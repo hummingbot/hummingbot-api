@@ -373,12 +373,19 @@ else
     # .env (a password containing shell metacharacters is enough to break
     # that), so hand it the values env_get already parsed. Without this it
     # sees nothing set and reports every install as the default mode.
-    TS_MODE="$(
+    # A rejected TAILSCALE_MODE must be reported as the error it is. Falling
+    # back to a default here would show a mode the deploy is going to refuse
+    # to run, sending someone to debug the wrong thing.
+    if ! TS_MODE="$(
         export TAILSCALE_MODE="$(env_get TAILSCALE_MODE)" TAILSCALE_ENABLED="$TS_ENABLED"
-        tailnet_mode
-    )" || TS_MODE=sidecar
+        tailnet_mode 2>/dev/null
+    )"; then
+        TS_MODE=""
+    fi
 
-    if [ "$TS_MODE" = none ]; then
+    if [ -z "$TS_MODE" ]; then
+        row fail "Mode" "TAILSCALE_MODE=$(env_get TAILSCALE_MODE) is not one of none, host or sidecar — \`make deploy\` will refuse to run until this is corrected in .env"
+    elif [ "$TS_MODE" = none ]; then
         row warn "Mode" "TAILSCALE_ENABLED=true but TAILSCALE_MODE=none — nothing will put the API on the tailnet. Set TAILSCALE_MODE to host or sidecar, or TAILSCALE_ENABLED=false"
     elif [ "$TS_MODE" = host ]; then
         row ok "Mode" "host — served on this machine's existing tailnet node"

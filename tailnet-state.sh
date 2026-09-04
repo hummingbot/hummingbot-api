@@ -40,7 +40,39 @@ tailnet_sidecar_running() {
 # Docker Desktop / WSL2 they do not). The cgroup is the portable
 # discriminator, and reading it needs no docker permissions -- which matters
 # when the installing user cannot run `docker ps` at all.
-_tailnet_tailscaled_pids() { pgrep -x tailscaled 2>/dev/null; }
+# procps is not guaranteed on a minimal host, and its absence must not read
+# as "no daemon running" -- that is the permissive answer, and it would skip
+# the userspace downgrade. /proc is always there on Linux and needs no tools.
+_tailnet_tailscaled_pids() {
+    if command -v pgrep >/dev/null 2>&1; then
+        pgrep -x tailscaled 2>/dev/null
+        return
+    fi
+    local d
+    for d in /proc/[0-9]*; do
+        [ -r "$d/comm" ] || continue
+        if [ "$(cat "$d/comm" 2>/dev/null)" = tailscaled ]; then
+            printf '%s\n' "${d#/proc/}"
+        fi
+    done
+}
+
+# Does the tailnet device exist on this host?
+#
+# /sys/class/net is present on every Linux kernel and reading it needs no
+# iproute2, so a host without `ip` still gets a real answer rather than the
+# permissive one -- previously a missing `ip` read as "device free" and sent
+# a caller straight into the collision this is meant to detect.
+#
+# No /sys and no tools means this is not Linux, and a network_mode: host
+# container cannot hold the host's device there in the first place, so
+# "absent" is the correct answer rather than a guess.
+tailnet_device_present() {
+    [ -e /sys/class/net/tailscale0 ] && return 0
+    command -v ip >/dev/null 2>&1 && ip link show tailscale0 >/dev/null 2>&1 && return 0
+    command -v ifconfig >/dev/null 2>&1 && ifconfig tailscale0 >/dev/null 2>&1 && return 0
+    return 1
+}
 
 _tailnet_in_container() {
     [ -r "/proc/$1/cgroup" ] &&
@@ -97,7 +129,7 @@ tailnet_has_native() {
     #    userspace serves port 8000 perfectly well. Answering "not native"
     #    when something else owns the device costs a wedged sidecar and an
     #    unreachable API. So anything unproven resolves toward native.
-    if ip link show tailscale0 >/dev/null 2>&1; then
+    if tailnet_device_present; then
         if tailnet_sidecar_running && ! _tailnet_foreign_container_tailscaled; then
             return 1
         fi
