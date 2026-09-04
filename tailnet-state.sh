@@ -21,29 +21,46 @@
 # while its container stays "running", so restart:unless-stopped never fires
 # and `docker ps` shows it healthy.
 
-# Order matters: a kernel-mode sidecar ALSO creates tailscale0, so checking
-# for our own container first is what distinguishes "we did this" from
-# "something else did".
-tailnet_state() {
-    if command -v docker >/dev/null 2>&1 &&
-       docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'hummingbot-tailscale'; then
-        echo sidecar; return
-    fi
+# Is our own sidecar container running?
+tailnet_sidecar_running() {
+    command -v docker >/dev/null 2>&1 &&
+    docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'hummingbot-tailscale'
+}
 
-    # A userspace daemon has no interface at all, so the process check is not
-    # redundant with the link check -- each catches a case the other misses.
-    if pgrep -x tailscaled >/dev/null 2>&1; then
-        echo native; return
-    fi
-    if ip link show tailscale0 >/dev/null 2>&1; then
-        echo native; return
-    fi
-    # macOS names the device utunN, not tailscale0; fall back to asking the
-    # CLI, which is the only portable signal there.
+# Is a tailscaled running on the HOST ITSELF -- something other than our
+# sidecar, and therefore something the sidecar would contend with?
+#
+# This is the question that actually decides userspace mode, and it cannot be
+# answered by "is a sidecar running": both can be true at once, which is the
+# normal state on a co-located Condor install after the first deploy.
+tailnet_has_native() {
+    # The host's own daemon answers on the host's socket. A sidecar keeps its
+    # socket inside its container, so this signal cannot mistake one for the
+    # other -- which is why it is checked first and unconditionally.
     if command -v tailscale >/dev/null 2>&1 && tailscale status >/dev/null 2>&1; then
-        echo native; return
+        return 0
     fi
+    # The other two signals CAN be confused by a sidecar: it runs with
+    # network_mode: host, so a kernel-mode one creates tailscale0 in the host's
+    # own namespace, and its process is visible from the host on most setups.
+    # Trust them only when no sidecar is running to be mistaken for.
+    if ! tailnet_sidecar_running; then
+        # A userspace daemon has no interface at all, so the process check is
+        # not redundant with the link check -- each catches what the other
+        # misses. macOS names the device utunN rather than tailscale0, and is
+        # covered by the CLI check above.
+        pgrep -x tailscaled >/dev/null 2>&1 && return 0
+        ip link show tailscale0 >/dev/null 2>&1 && return 0
+    fi
+    return 1
+}
 
+# Native is reported FIRST when both are present. Ownership of the device is
+# the fact that matters, and the sidecar is the thing that has to yield to it;
+# reporting "sidecar" there would hide the contention it is meant to reveal.
+tailnet_state() {
+    tailnet_has_native && { echo native; return; }
+    tailnet_sidecar_running && { echo sidecar; return; }
     echo none
 }
 
@@ -89,5 +106,8 @@ tailnet_mode() {
 # The cost is real but small: a userspace node cannot route for the host, only
 # accept inbound. Serving port 8000 is exactly that, so nothing is lost here.
 tailnet_needs_userspace() {
-    [ "$(tailnet_state)" = native ]
+    # Deliberately NOT `tailnet_state = native`: when a native daemon and our
+    # sidecar are both up, that is precisely when the downgrade is required,
+    # and a composite state that reported "sidecar" there would skip it.
+    tailnet_has_native
 }

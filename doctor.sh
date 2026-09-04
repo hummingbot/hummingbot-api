@@ -377,7 +377,6 @@ else
         export TAILSCALE_MODE="$(env_get TAILSCALE_MODE)" TAILSCALE_ENABLED="$TS_ENABLED"
         tailnet_mode
     )" || TS_MODE=sidecar
-    TS_STATE="$(tailnet_state)"
 
     if [ "$TS_MODE" = none ]; then
         row warn "Mode" "TAILSCALE_ENABLED=true but TAILSCALE_MODE=none — nothing will put the API on the tailnet. Set TAILSCALE_MODE to host or sidecar, or TAILSCALE_ENABLED=false"
@@ -415,8 +414,7 @@ else
         if [ -n "$TS_EXEC" ]; then
             if ts_status="$($TS_EXEC status 2>&1)"; then
                 row ok "Tailnet" "$(printf '%s' "$ts_status" | grep -v '^[[:space:]]*$' | head -1)"
-            elif container_running hummingbot-tailscale && [ "$TS_STATE" = sidecar ] &&
-                 { ip link show tailscale0 >/dev/null 2>&1 || pgrep -x tailscaled >/dev/null 2>&1; }; then
+            elif container_running hummingbot-tailscale && tailnet_has_native; then
                 # A container that is "running" while its daemon is dead is the
                 # signature of two kernel-mode tailscaled contending for one
                 # tailscale0: the loser exits with "device or resource busy",

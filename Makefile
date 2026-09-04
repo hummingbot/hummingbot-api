@@ -49,7 +49,6 @@ deploy: $(SETUP_SENTINEL) emqx-auth
 	@set -a; [ -f .env ] && . ./.env; set +a; \
 	. ./tailnet-state.sh; \
 	mode="$$(tailnet_mode)" || exit 1; \
-	state="$$(tailnet_state)"; \
 	case "$$mode" in \
 	  none) \
 	    docker compose up -d ;; \
@@ -64,7 +63,7 @@ deploy: $(SETUP_SENTINEL) emqx-auth
 	      echo "[WARN] mode=host but no tailscale CLI on PATH — port 8000 is loopback-only."; \
 	    fi ;; \
 	  sidecar) \
-	    if [ "$$state" = native ]; then \
+	    if tailnet_needs_userspace; then \
 	      echo "[INFO] A tailscaled already owns this host's tailnet device."; \
 	      echo "[INFO] Starting the sidecar in userspace mode so both can coexist."; \
 	      export TS_USERSPACE=true; \
@@ -236,11 +235,20 @@ reset:
 	@# container running as an orphan -- still holding the host's tailscale0
 	@# device -- while .env is deleted, so the next `make setup` has no record
 	@# that it exists. --remove-orphans covers a sidecar left by an older layout.
-	@if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qxE 'hummingbot-api|$(TAILSCALE_CONTAINER)'; then \
-		echo "[INFO] Docker containers found — stopping and wiping volumes..."; \
+	@# Unconditional when Docker is available, rather than gated on finding a
+	@# named container. `make run` (source) starts only emqx and postgres, so a
+	@# name check for hummingbot-api/the sidecar skipped the teardown entirely
+	@# while reset still deleted .env and the credential state -- leaving the
+	@# broker's volume, and the accounts seeded from the OLD BROKER_PASSWORD,
+	@# to be reused by a setup that generates a new one. That is the same
+	@# .env/broker desync `make emqx-auth-reset` exists to repair.
+	@# `down` on a project with nothing running is a no-op, so there is no
+	@# case worth guarding against.
+	@if docker info >/dev/null 2>&1; then \
+		echo "[INFO] Stopping containers and wiping volumes..."; \
 		docker compose -f docker-compose.yml -f docker-compose.tailscale.yml down -v --remove-orphans; \
 	else \
-		echo "[INFO] No Docker containers running."; \
+		echo "[INFO] Docker is not available — skipping container teardown."; \
 	fi
 	@if pgrep -f "uvicorn main[:]app" >/dev/null 2>&1; then \
 		echo "[INFO] Source uvicorn process found — stopping..."; \
