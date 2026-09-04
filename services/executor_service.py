@@ -35,7 +35,9 @@ from hummingbot.strategy_v2.models.executors import CloseType, TrackedOrder
 
 from database import AsyncDatabaseManager, ExecutorRepository, GatewayCLMMRepository, GatewaySwapRepository
 from models.executors import PositionHold
+from models.onchain_executor import OnchainExecutorConfig
 from services.gateway_client import get_native_gas_token
+from services.onchain_executor import OnchainExecutor
 from services.trading_service import AccountTradingInterface, TradingService
 from utils.executor_log_capture import ExecutorLogCapture, current_executor_id
 from utils.trading_pair import InvalidTradingPair, split_trading_pair
@@ -126,6 +128,7 @@ class ExecutorService:
         "xemm_executor": (XEMMExecutor, XEMMExecutorConfig),
         "order_executor": (OrderExecutor, OrderExecutorConfig),
         "lp_executor": (LPExecutor, LPExecutorConfig),
+        "onchain_executor": (OnchainExecutor, OnchainExecutorConfig),
     }
 
     def __init__(
@@ -674,10 +677,13 @@ class ExecutorService:
         )
         executor_type = executor_config["type"]
 
-        # Ensure connector and market are ready
-        connector_name = executor_config.get("connector_name")
-        trading_pair = executor_config.get("trading_pair")
-        await self._prepare_market(account, connector_name, trading_pair)
+        # Ensure connector and market are ready. A connectorless executor (USES_CONNECTORS = False)
+        # derives its connector_name/trading_pair for the record only; preparing a market for it
+        # would try to build a Gateway connector out of a chain name.
+        connector_name = executor_config.get("connector_name") or getattr(typed_config, "connector_name", None)
+        trading_pair = executor_config.get("trading_pair") or getattr(typed_config, "trading_pair", None)
+        if getattr(executor_class, "USES_CONNECTORS", True):
+            await self._prepare_market(account, connector_name, trading_pair)
 
         # Instantiate the executor, register it in memory and start it
         controller_id = controller_id or getattr(typed_config, "controller_id", "main") or "main"
