@@ -267,6 +267,29 @@ reset:
 		echo "[INFO] Stopping containers and wiping volumes..."; \
 		docker compose -f docker-compose.yml -f docker-compose.tailscale.yml down -v --remove-orphans; \
 	fi
+	@# Verify the teardown actually took, rather than trusting that it ran.
+	@# Compose derives the project name from COMPOSE_PROJECT_NAME, else the
+	@# directory name -- so a stack deployed under a different name, or before
+	@# this directory was renamed, is untouched by the `down` above, which then
+	@# succeeds as a no-op. Deleting .env after that leaves the broker holding
+	@# accounts seeded from a password the next setup will never generate, and
+	@# it surfaces as bots that cannot authenticate against a healthy broker.
+	@#
+	@# Any surviving emqx-data volume is treated as ours to be safe about:
+	@# aborting costs one environment variable, proceeding costs a silent
+	@# authentication failure that needs `make emqx-auth-reset` to unpick.
+	@leftover="$$(docker volume ls -q --filter 'label=com.docker.compose.volume=emqx-data' 2>/dev/null)"; \
+	if [ -n "$$leftover" ] && [ "$(ALLOW_PARTIAL_RESET)" != "1" ]; then \
+		echo "[ERROR] A broker data volume survived the teardown:" >&2; \
+		for v in $$leftover; do echo "           $$v" >&2; done; \
+		echo "[ERROR] It belongs to a compose project under a different name — this stack was" >&2; \
+		echo "[ERROR] deployed with another COMPOSE_PROJECT_NAME, or this directory has been" >&2; \
+		echo "[ERROR] renamed since. Removing .env now would leave that broker holding accounts" >&2; \
+		echo "[ERROR] the next setup cannot reproduce." >&2; \
+		echo "[ERROR] Remove it first:  docker volume rm <name above>" >&2; \
+		echo "[ERROR] Or reset local files anyway:  make reset ALLOW_PARTIAL_RESET=1" >&2; \
+		exit 1; \
+	fi
 	@if pgrep -f "uvicorn main[:]app" >/dev/null 2>&1; then \
 		echo "[INFO] Source uvicorn process found — stopping..."; \
 		pkill -f "uvicorn main[:]app" || true; \
