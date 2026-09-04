@@ -11,6 +11,7 @@ from docker.types import LogConfig
 
 from config import settings
 from models import V2ControllerDeployment
+from models.bot_orchestration import validate_safe_config_name
 from utils.file_system import fs_util
 from utils.gateway_certs import ensure_gateway_certs, gateway_certs_dir
 
@@ -174,6 +175,20 @@ class DockerService:
             raise ValueError(f"Invalid {label}: '{path}' resolves outside of '{base_dir}'.")
         return resolved_path
 
+    @classmethod
+    def resolve_instance_dir(cls, instance_name: str) -> str:
+        """
+        Resolve the `bots/instances` directory that belongs to `instance_name`.
+
+        Bot containers are named after their instance verbatim, so this directory is also what
+        identifies a container as one this API created. Raises ValueError if the name escapes
+        `bots/instances`.
+        """
+        instances_base = os.path.join("bots", "instances")
+        instance_dir = os.path.join(instances_base, instance_name)
+        cls._ensure_contained(instance_dir, instances_base, "instance_name")
+        return instance_dir
+
     def create_hummingbot_instance(self, config: V2ControllerDeployment):
         bots_path = os.environ.get('BOTS_PATH', self.SOURCE_PATH)  # Default to 'SOURCE_PATH' if BOTS_PATH is not set
         instance_name = config.instance_name
@@ -226,10 +241,29 @@ class DockerService:
                         os.makedirs(destination_controllers_config_dir, exist_ok=True)
 
                         for controller_file in controllers_list:
-                            source_controller_file = os.path.join(controllers_config_dir, controller_file)
-                            destination_controller_file = os.path.join(
-                                destination_controllers_config_dir, controller_file
-                            )
+                            # SEC-058: the controllers list is read back from an attacker-controllable
+                            # YAML file, so it never went through the request-body validators. Validate
+                            # each entry as a single safe path component and, as defense in depth,
+                            # verify both resolved paths stay inside their base directories.
+                            try:
+                                if not isinstance(controller_file, str):
+                                    raise ValueError(
+                                        f"Invalid controllers_config entry: {controller_file!r} is not a string."
+                                    )
+                                validate_safe_config_name(controller_file, "controllers_config")
+                                source_controller_file = self._ensure_contained(
+                                    os.path.join(controllers_config_dir, controller_file),
+                                    controllers_config_dir,
+                                    "controllers_config",
+                                )
+                                destination_controller_file = self._ensure_contained(
+                                    os.path.join(destination_controllers_config_dir, controller_file),
+                                    destination_controllers_config_dir,
+                                    "controllers_config",
+                                )
+                            except ValueError as e:
+                                logger.warning(f"Skipping unsafe controller config entry {controller_file!r}: {e}")
+                                continue
 
                             if os.path.exists(source_controller_file):
                                 shutil.copy2(source_controller_file, destination_controller_file)
