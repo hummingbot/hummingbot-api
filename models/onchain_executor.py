@@ -35,6 +35,19 @@ NATIVE_SYMBOLS: Dict[int, str] = {
 PIPELINE_PREFIX = "/v1/pipeline"
 
 
+def _reject_reason(operation: str) -> Optional[str]:
+    """Why the Aomi policy refuses this operation as a build target, or None.
+
+    Harness plumbing (authorization, scheduling, threads), the raw stage/simulate/commit
+    primitives, reads, and test fixtures are never valid executor operations.
+    """
+    try:
+        from aomi.pipeline import policy
+    except ImportError:  # the client ships it; without the client nothing runs anyway
+        return None
+    return policy.reject_reason(operation)
+
+
 def chain_name(chain: str, chain_id: int) -> str:
     return CHAIN_NAMES.get(chain_id, f"{chain}-{chain_id}")
 
@@ -107,6 +120,9 @@ class OnchainExecutorConfig(ExecutorConfigBase):
                 raise ValueError("mode 'operation' requires 'operation'")
             if self.calls is not None:
                 raise ValueError("mode 'operation' does not take 'calls'")
+            reason = _reject_reason(self.operation.rsplit("/", 1)[-1])
+            if reason:
+                raise ValueError(f"operation cannot be built by this executor: {reason}")
         else:
             if not self.calls:
                 raise ValueError("mode 'calls' requires a non-empty 'calls' list")
@@ -130,9 +146,16 @@ class OnchainExecutorConfig(ExecutorConfigBase):
 
     @property
     def operation_path(self) -> Optional[str]:
-        """The pipeline path for ``operation``: a bare name resolves into the app catalog."""
+        """The pipeline path for ``operation``.
+
+        A bare name resolves into the named app's catalog. When the app is left at ``default``
+        and exactly one skill is named, it resolves into that skill instead, which is where
+        protocol operations such as Aave or Morpho live.
+        """
         if not self.operation:
             return None
         if self.operation.startswith("/"):
             return self.operation
+        if self.app == "default" and len(self.skills) == 1:
+            return f"{PIPELINE_PREFIX}/skills/{self.skills[0]}/operations/{self.operation}"
         return f"{PIPELINE_PREFIX}/apps/{self.app}/operations/{self.operation}"

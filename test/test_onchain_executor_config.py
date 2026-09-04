@@ -139,3 +139,37 @@ def test_the_schema_endpoint_reads_the_config():
     assert fields["calls"]["required"] is False
     for name in ("chain_id", "mode", "calls", "operation", "arguments", "max_gas_quote", "commit"):
         assert fields[name].get("description"), f"{name} has no description for the schema endpoint"
+
+
+def test_a_bare_operation_resolves_into_a_single_named_skill():
+    cfg = OnchainExecutorConfig(chain_id=8453, mode="operation", skills=["aave"], operation="aave_supply")
+    assert cfg.operation_path == "/v1/pipeline/skills/aave/operations/aave_supply"
+
+
+def test_two_skills_leave_a_bare_operation_in_the_app_catalog():
+    cfg = OnchainExecutorConfig(
+        chain_id=8453, mode="operation", app="default", skills=["aave", "lido"], operation="call_v4_swap"
+    )
+    assert cfg.operation_path == "/v1/pipeline/apps/default/operations/call_v4_swap"
+
+
+def test_a_named_app_wins_over_a_single_skill():
+    cfg = OnchainExecutorConfig(chain_id=8453, mode="operation", app="erc20", skills=["gas"], operation="transfer")
+    assert cfg.operation_path == "/v1/pipeline/apps/erc20/operations/transfer"
+
+
+@pytest.mark.parametrize(
+    "operation",
+    ["ask_authorization", "schedule_cron", "evm_commit_txs", "svm_stage_ix", "dummy_echo", "get_account_info",
+     "/v1/pipeline/apps/default/operations/brave_search"],
+)
+def test_harness_lifecycle_read_and_test_operations_are_refused(operation):
+    with pytest.raises(ValidationError) as exc:
+        OnchainExecutorConfig(chain_id=8453, mode="operation", operation=operation)
+    assert "cannot be built by this executor" in str(exc.value)
+
+
+@pytest.mark.parametrize("operation", ["call_v4_swap", "lifi_prepare_swap_tx", "prepare_lido_claim", "aave_supply"])
+def test_executable_operations_are_accepted(operation):
+    cfg = OnchainExecutorConfig(chain_id=8453, mode="operation", operation=operation)
+    assert cfg.operation == operation
