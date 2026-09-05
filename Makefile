@@ -278,7 +278,14 @@ reset:
 	@# Any surviving emqx-data volume is treated as ours to be safe about:
 	@# aborting costs one environment variable, proceeding costs a silent
 	@# authentication failure that needs `make emqx-auth-reset` to unpick.
-	@leftover="$$(docker volume ls -q --filter 'label=com.docker.compose.volume=emqx-data' 2>/dev/null)"; \
+	@# The query's own failure must not read as "no leftovers": that is the
+	@# permissive answer, and it would delete .env on a teardown nobody could
+	@# verify. An unanswerable check is treated exactly like a positive one.
+	@if leftover="$$(docker volume ls -q --filter 'label=com.docker.compose.volume=emqx-data' 2>/dev/null)"; then \
+		:; \
+	else \
+		leftover='<could not query docker volumes>'; \
+	fi; \
 	if [ -n "$$leftover" ] && [ "$(ALLOW_PARTIAL_RESET)" != "1" ]; then \
 		echo "[ERROR] A broker data volume survived the teardown:" >&2; \
 		for v in $$leftover; do echo "           $$v" >&2; done; \
