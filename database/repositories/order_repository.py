@@ -3,7 +3,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Dict, List, Optional, Tuple
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import Order
@@ -150,13 +150,11 @@ class OrderRepository:
             select(Order), account_names, connector_names, trading_pairs, status, start_time, end_time
         )
         if before is not None:
-            created_at, client_order_id = before
-            query = query.where(
-                or_(
-                    Order.created_at < created_at,
-                    and_(Order.created_at == created_at, Order.client_order_id < client_order_id),
-                )
-            )
+            # A row-value comparison, not the equivalent OR: PostgreSQL derives
+            # `created_at <= cursor` from it as a range bound on ix_orders_created_at, so a
+            # deep page starts at the cursor. The OR runs as a filter that walks every
+            # newer order first, making each page cost linear in how deep it is.
+            query = query.where(tuple_(Order.created_at, Order.client_order_id) < tuple_(*before))
 
         query = query.order_by(Order.created_at.desc(), Order.client_order_id.desc()).limit(limit)
 

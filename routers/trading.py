@@ -251,7 +251,9 @@ async def get_orders(
 
     Orders come newest first. `pagination.next_cursor` is the cursor of the page's last
     order; pass it back as `cursor` to get the orders older than it. It is `null` on the
-    last page. A cursor this route did not hand out is refused with a 400.
+    last page. A cursor is a position, not a token: any `<created_at ISO>|<order id>` pages
+    from that point back, whether or not the order exists. A cursor not in that format is
+    refused with a 400.
 
     Args:
         filter_request: JSON payload with filtering criteria
@@ -310,8 +312,10 @@ def _order_cursor(order: Dict) -> str:
 def _parse_order_cursor(cursor: str) -> Tuple[datetime, str]:
     """Split a cursor from `_order_cursor` back into (created_at, client_order_id).
 
-    Anything else is refused rather than read as "start over": an unrecognised cursor
-    used to serve page one again, which a client walking the history cannot tell from
+    Only the format is checked. A well-formed cursor is a keyset position, and the order it
+    names need not exist, the same way `before` works in the repository. Anything
+    unreadable is refused rather than read as "start over": an unrecognised cursor used
+    to serve page one again, which a client walking the history cannot tell from
     genuinely older orders.
     """
     created_at, _, client_order_id = cursor.partition(_ORDER_CURSOR_SEPARATOR)

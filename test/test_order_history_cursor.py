@@ -188,3 +188,13 @@ def test_an_unreadable_cursor_is_refused_not_answered_with_page_one(client, curs
 
     assert response.status_code == 400, response.text
     assert "cursor" in response.json()["detail"]
+
+
+def test_a_well_formed_cursor_is_a_position_even_for_an_order_that_does_not_exist(client):
+    """Only the format is checked: the cursor pages back from its point, like a keyset bound."""
+    cursor = f"{(BASE + timedelta(seconds=1)).isoformat()}|a-03x"
+
+    response = client.post("/trading/orders/search", json={"limit": 100, "cursor": cursor})
+
+    assert response.status_code == 200, response.text
+    assert [order["order_id"] for order in response.json()["data"]] == ["a-03", "a-02", "a-01"]
