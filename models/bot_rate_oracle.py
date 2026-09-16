@@ -8,7 +8,7 @@ credentials profile. These models describe that persisted configuration.
 
 from typing import List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class GlobalTokenConfig(BaseModel):
@@ -21,6 +21,16 @@ class GlobalTokenConfig(BaseModel):
         default=None,
         description="Symbol to display for the global token"
     )
+
+    @field_validator("global_token_name")
+    @classmethod
+    def _reject_blank_token_name(cls, v: Optional[str]) -> Optional[str]:
+        # A blank quote token would make every cross-rate lookup resolve to nothing.
+        if v is not None:
+            v = v.strip()
+            if not v:
+                raise ValueError("global_token_name must not be blank")
+        return v
 
 
 class RateOracleSourceConfig(BaseModel):

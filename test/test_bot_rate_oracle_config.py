@@ -87,3 +87,21 @@ def test_invalid_source_rejected(env):
 def test_unknown_or_unsafe_account(env):
     assert env.client.get("/bot-orchestration/rate-oracle/config", params={"account_name": "missing"}).status_code == 404
     assert env.client.get("/bot-orchestration/rate-oracle/config", params={"account_name": "../x"}).status_code == 400
+
+
+def test_blank_global_token_name_rejected(env):
+    resp = env.client.put("/bot-orchestration/rate-oracle/config", json={"global_token": {"global_token_name": "  "}})
+    assert resp.status_code == 422
+    assert _conf(env, "master_account")["global_token"]["global_token_name"] == "USDT"
+    assert env.service.quote_token == "USDT"
+
+
+def test_failed_write_leaves_live_quote_token_untouched(env, monkeypatch):
+    def fail(*args, **kwargs):
+        raise PermissionError("read-only")
+
+    monkeypatch.setattr(FileSystemUtil(), "dump_dict_to_yaml", fail)
+    client = TestClient(env.client.app, raise_server_exceptions=False)
+    resp = client.put("/bot-orchestration/rate-oracle/config", json={"global_token": {"global_token_name": "USDC"}})
+    assert resp.status_code == 500
+    assert env.service.quote_token == "USDT"

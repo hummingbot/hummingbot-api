@@ -51,7 +51,7 @@ def _to_config(account_name: str, config_data: dict) -> RateOracleConfig:
             name=(config_data.get("rate_oracle_source") or {}).get("name", "gate_io")
         ),
         global_token=GlobalTokenConfig(
-            global_token_name=global_token.get("global_token_name", "USDT"),
+            global_token_name=global_token.get("global_token_name") or "USDT",
             global_token_symbol=global_token.get("global_token_symbol", "$"),
         ),
     )
@@ -111,8 +111,6 @@ async def update_bot_rate_oracle_config(
         if token_name is not None:
             global_token["global_token_name"] = token_name
             changes_made.append(f"global_token_name updated to {token_name}")
-            if account_name == DEFAULT_ACCOUNT:
-                market_data_service.quote_token = token_name
         token_symbol = update_request.global_token.global_token_symbol
         if token_symbol is not None:
             global_token["global_token_symbol"] = token_symbol
@@ -120,6 +118,12 @@ async def update_bot_rate_oracle_config(
 
     if changes_made:
         FileSystemUtil().dump_dict_to_yaml(_conf_client_path(account_name), config_data)
+
+    # Only switch the API's live quote token once the file is written, so a failed write
+    # can't leave the API and future bots disagreeing on the token.
+    token_name = update_request.global_token and update_request.global_token.global_token_name
+    if token_name is not None and account_name == DEFAULT_ACCOUNT:
+        market_data_service.quote_token = token_name
 
     return RateOracleConfigUpdateResponse(
         success=True,
