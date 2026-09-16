@@ -45,6 +45,7 @@ from routers import (  # noqa: E402
     archived_bots,
     backtesting,
     bot_orchestration,
+    bot_rate_oracle,
     connectors,
     controllers,
     docker,
@@ -476,6 +477,7 @@ app.include_router(bot_orchestration.router, dependencies=[Depends(auth_user)])
 app.include_router(controllers.router, dependencies=[Depends(auth_user)])
 app.include_router(scripts.router, dependencies=[Depends(auth_user)])
 app.include_router(market_data.router, dependencies=[Depends(auth_user)])
+app.include_router(bot_rate_oracle.router, dependencies=[Depends(auth_user)])
 app.include_router(performance.router, dependencies=[Depends(auth_user)])
 app.include_router(backtesting.router, dependencies=[Depends(auth_user)])
 app.include_router(archived_bots.router, dependencies=[Depends(auth_user)])
