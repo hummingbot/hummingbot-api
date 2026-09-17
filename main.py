@@ -13,7 +13,7 @@ from hummingbot.client.config import config_helpers
 # Load environment variables early
 load_dotenv()
 
-VERSION = "1.0.1"
+from version import VERSION  # noqa: E402  (kept in its own module so routers can read it)
 
 # Monkey patch save_to_yml to prevent writes to library directory
 
