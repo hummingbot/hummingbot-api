@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 
 from version import VERSION
 
-CONTAINER_ID = "3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a"
+CONTAINER_ID = "3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a"  # noqa: mock  (a Docker container id, not a key)
 WORKING_DIR = "/home/hbot/hummingbot-api"
 
 
@@ -176,3 +176,36 @@ def test_docker_service_without_a_client_never_raises():
     assert body["docker_available"] is False
     assert body["container"] is None
     assert body["api_version"] == VERSION
+
+
+def test_reports_the_market_data_tunables(make_client):
+    # The dashboard shows these read-only: they come from the server's .env, which is not
+    # mounted into the container, so the API can report them but never rewrite them.
+    from config import settings
+
+    body = make_client(_Client(_container())).get("/system/info").json()
+
+    assert body["market_data"] == settings.market_data.model_dump()
+    assert body["market_data"]["ticker_update_interval"] == settings.market_data.ticker_update_interval
+
+
+def test_market_data_tunables_carry_no_secret(make_client):
+    # MarketDataSettings is intervals and timeouts by construction. Pinned so a later
+    # field that does not belong in an unauthenticated-looking payload fails here first.
+    body = make_client(_Client(_container())).get("/system/info").json()
+
+    assert body["market_data"]
+    assert all(isinstance(v, (int, float)) for v in body["market_data"].values())
+    assert not any(
+        word in key.lower()
+        for key in body["market_data"]
+        for word in ("password", "secret", "token", "key", "user")
+    )
+
+
+def test_market_data_is_reported_without_docker(make_client):
+    # The versions and the tunables are the part that works from source too.
+    body = make_client(_Client(_container(), reachable=False)).get("/system/info").json()
+
+    assert body["docker_available"] is False
+    assert body["market_data"]
