@@ -1,11 +1,18 @@
 """
-Bot rate oracle config router.
+Bot client defaults router.
 
-Configures the rate oracle of deployed bots, not the API. The API prices through its own
-ticker pool (see MarketDataService), but every deployed bot still runs hummingbot's
-RateOracle, configured from the conf_client.yml copied out of its
-credentials profile at deploy time. These endpoints read and persist that configuration so
-bots are not stuck with whatever source the shipped template defaults to.
+Configures deployed bots, not the API. The API prices through its own ticker pool (see
+MarketDataService), but every deployed bot still runs hummingbot's RateOracle, configured
+from the conf_client.yml copied out of its credentials profile at deploy time. These
+endpoints read and persist that configuration so bots are not stuck with whatever source
+the shipped template defaults to.
+
+This router is the only writer of a credentials profile's conf_client.yml, which is why
+rate_limits_share_pct lives here rather than behind an endpoint of its own: a second
+writer of the same file would have to repeat this validation and would silently skip the
+live-quote-token switch below. The set it writes is closed and small -- rate_oracle_source,
+global_token, rate_limits_share_pct -- so no caller can reach the mqtt_bridge or gateway
+credentials that share the file.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -43,6 +50,21 @@ def _read_conf_client(account_name: str) -> dict:
         raise HTTPException(status_code=404, detail=f"Configuration file not found: {path}")
 
 
+def _share_pct(config_data: dict) -> float:
+    """rate_limits_share_pct as a number, falling back to hummingbot's own default.
+
+    The key is absent from older templates, and a hand-edited file can hold anything, so
+    an unreadable value reads as the default rather than failing the whole GET -- the
+    caller is asking what bots will run with, and hummingbot itself would fall back the
+    same way.
+    """
+    try:
+        value = float(config_data.get("rate_limits_share_pct"))
+    except (TypeError, ValueError):
+        return 100.0
+    return value if 0 < value <= 100 else 100.0
+
+
 def _to_config(account_name: str, config_data: dict) -> RateOracleConfig:
     global_token = config_data.get("global_token") or {}
     return RateOracleConfig(
@@ -54,6 +76,7 @@ def _to_config(account_name: str, config_data: dict) -> RateOracleConfig:
             global_token_name=global_token.get("global_token_name") or "USDT",
             global_token_symbol=global_token.get("global_token_symbol", "$"),
         ),
+        rate_limits_share_pct=_share_pct(config_data),
     )
 
 
@@ -66,7 +89,7 @@ async def get_bot_rate_oracle_sources():
 @router.get("/config", response_model=RateOracleConfigResponse)
 async def get_bot_rate_oracle_config(account_name: str = Query(DEFAULT_ACCOUNT)):
     """
-    Get the rate oracle configuration that bots deployed with this credentials profile will use.
+    Get the client defaults that bots deployed with this credentials profile will use.
 
     Args:
         account_name: Credentials profile whose conf_client.yml to read (default master_account)
@@ -82,7 +105,8 @@ async def update_bot_rate_oracle_config(
     market_data_service: MarketDataService = Depends(get_market_data_service),
 ):
     """
-    Update the bot rate oracle source and/or global token in an account's conf_client.yml.
+    Update the bot rate oracle source, global token and/or rate-limit share in an account's
+    conf_client.yml.
 
     Bots pick the change up on their next deploy (running bots keep their copied config).
     Changing master_account's global token also switches the API's own valuation quote token.
@@ -115,6 +139,14 @@ async def update_bot_rate_oracle_config(
         if token_symbol is not None:
             global_token["global_token_symbol"] = token_symbol
             changes_made.append(f"global_token_symbol updated to {token_symbol}")
+
+    if update_request.rate_limits_share_pct is not None:
+        # Written as a float so the file keeps the shape hummingbot's own writer produces;
+        # the 0 < pct <= 100 bound is enforced by the request model, which mirrors
+        # ClientConfigMap's, so a value the bot would reject never reaches the file.
+        share_pct = float(update_request.rate_limits_share_pct)
+        config_data["rate_limits_share_pct"] = share_pct
+        changes_made.append(f"rate_limits_share_pct updated to {share_pct}")
 
     if changes_made:
         FileSystemUtil().dump_dict_to_yaml(_conf_client_path(account_name), config_data)
