@@ -101,6 +101,12 @@ def test_blank_global_token_name_rejected(env):
     assert env.service.quote_token == "USDT"
 
 
+def test_blank_global_token_symbol_rejected(env):
+    resp = env.client.put("/bot-orchestration/rate-oracle/config", json={"global_token": {"global_token_symbol": "   "}})
+    assert resp.status_code == 422
+    assert _conf(env, "master_account")["global_token"]["global_token_symbol"] == "$"
+
+
 def test_failed_write_leaves_live_quote_token_untouched(env, monkeypatch):
     def fail(*args, **kwargs):
         raise PermissionError("read-only")

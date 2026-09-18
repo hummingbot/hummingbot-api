@@ -24,14 +24,16 @@ class GlobalTokenConfig(BaseModel):
         description="Symbol to display for the global token"
     )
 
-    @field_validator("global_token_name")
+    @field_validator("global_token_name", "global_token_symbol")
     @classmethod
-    def _reject_blank_token_name(cls, v: Optional[str]) -> Optional[str]:
-        # A blank quote token would make every cross-rate lookup resolve to nothing.
+    def _reject_blank(cls, v: Optional[str], info) -> Optional[str]:
+        # A blank quote token would make every cross-rate lookup resolve to nothing, and a
+        # blank symbol renders every value in the bot's status without a unit. Omit the
+        # field to leave it unchanged.
         if v is not None:
             v = v.strip()
             if not v:
-                raise ValueError("global_token_name must not be blank")
+                raise ValueError(f"{info.field_name} must not be blank")
         return v
 
 
