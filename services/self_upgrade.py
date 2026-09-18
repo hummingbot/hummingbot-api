@@ -204,6 +204,11 @@ class SelfUpgradeService:
             )
             return info
 
+        # A helper that exited while this process is still alive is a recreate that did
+        # not replace us. Record it and clear it here, before any other check can return,
+        # so neither the run status nor the helper check below is stuck on it.
+        self._collect_finished_helpers(client, on_boot=False)
+
         container = own_container(client)
         if container is None:
             info["blocked_reason"] = (
@@ -290,8 +295,8 @@ class SelfUpgradeService:
             return info
         if helper is not None:
             info["blocked_reason"] = (
-                f"An upgrade helper container is already present ({helper.name}). "
-                "Wait for it to finish; it is cleared when this API next starts."
+                f"An upgrade helper container is still running ({helper.name}). "
+                "Wait for it to finish."
             )
             return info
 
@@ -448,7 +453,18 @@ class SelfUpgradeService:
     # ── Report ───────────────────────────────────────────────────────────────────
 
     def status(self) -> Dict[str, Any]:
-        """The current or last run, or an idle record when there has been none."""
+        """The current or last run, or an idle record when there has been none.
+
+        A run this process left at ``recreating`` is checked against its helper: if the
+        helper has exited and we are still here, the recreate did not replace us, and
+        without collecting it here the run would read ``recreating`` forever.
+        """
+        with self._lock:
+            phase = (self._run or {}).get("phase")
+        if phase == "recreating":
+            client = self._daemon()
+            if client is not None:
+                self._collect_finished_helpers(client, on_boot=False)
         with self._lock:
             if self._run is None:
                 return {"run_id": None, "phase": "idle", "detail": None, "log_tail": []}
@@ -457,21 +473,30 @@ class SelfUpgradeService:
     def collect_on_boot(self) -> None:
         """Adopt the outcome of a helper that outlived the API that started it.
 
-        This is where an upgrade actually finishes: the process that started it is gone,
-        and the record of what happened is the exited helper container. Its exit code and
-        log tail become this API's last run, then it is removed so the next preflight is
-        not blocked by its own predecessor.
-
-        A helper still running is left alone -- it may be mid-recreate, and preflight
-        blocks on it. Never raises: a failure to tidy up must not stop the API booting.
+        This is where a successful upgrade finishes: the process that started it is gone,
+        and the record of what happened is the exited helper container. Never raises: a
+        failure to tidy up must not stop the API booting.
         """
         client = self._daemon()
         if client is None:
             return
+        self._collect_finished_helpers(client, on_boot=True)
+
+    def _collect_finished_helpers(self, client, on_boot: bool) -> None:
+        """Turn every exited helper into this API's last run, then remove it.
+
+        On boot the helper is our predecessor's, and exit 0 means we are the new
+        container. Anywhere else this process is the one the helper was meant to replace
+        and it is still running, so the recreate did not happen whatever the exit code
+        says -- recorded as failed, so the operator sees it and can retry.
+
+        A helper still running is left alone -- it may be mid-recreate, and preflight
+        blocks on it. Never raises.
+        """
         try:
             helpers = client.containers.list(all=True, filters={"label": HELPER_LABEL})
         except Exception as e:
-            logger.warning(f"Could not look for self-upgrade helper containers on boot: {e}")
+            logger.warning(f"Could not look for self-upgrade helper containers: {e}")
             return
 
         for helper in helpers:
@@ -495,18 +520,25 @@ class SelfUpgradeService:
                     logger.warning(f"Could not read logs of self-upgrade helper {helper.name}: {e}")
                     log_tail = []
 
-                succeeded = exit_code == 0
+                succeeded = on_boot and exit_code == 0
+                if succeeded:
+                    detail = "Upgrade finished; this API is the new container."
+                elif on_boot:
+                    detail = (
+                        f"The recreate failed (exit code {exit_code}). "
+                        "The previous container may still be running; check "
+                        "`docker compose logs hummingbot-api` on the host."
+                    )
+                else:
+                    detail = (
+                        f"The recreate did not replace this API (exit code {exit_code}); it is still "
+                        "running the previous image. See log_tail for compose's output, then retry."
+                    )
                 with self._lock:
                     self._run = {
                         "run_id": run_id,
                         "phase": "done" if succeeded else "failed",
-                        "detail": (
-                            "Upgrade finished; this API is the new container."
-                            if succeeded
-                            else f"The recreate failed (exit code {exit_code}). "
-                            "The previous container may still be running; check "
-                            "`docker compose logs hummingbot-api` on the host."
-                        ),
+                        "detail": detail,
                         "image_ref": None,
                         "previous_digest": previous_digest,
                         "new_digest": self._current_digest(client),

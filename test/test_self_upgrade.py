@@ -97,7 +97,7 @@ class _Containers:
     def list(self, all=False, filters=None):
         label = (filters or {}).get("label", "")
         if label.startswith(HELPER_LABEL):
-            return list(self.helpers)
+            return [h for h in self.helpers if not getattr(h, "removed", None)]
         # The compose-service fallback own_container() uses.
         return [self.container] if self.container is not None else []
 
@@ -290,7 +290,7 @@ async def test_refuses_while_a_helper_container_is_present():
     info = await _service(_Client(_container(), helpers=[_helper(status="running")])).preflight()
 
     assert info["can_upgrade"] is False
-    assert "already present" in info["blocked_reason"]
+    assert "still running" in info["blocked_reason"]
 
 
 @pytest.mark.asyncio
@@ -522,6 +522,66 @@ async def test_a_helper_that_cannot_be_started_is_reported_not_raised(run_thread
     status = service.status()
     assert status["phase"] == "failed"
     assert "Nothing was changed" in status["detail"]
+
+
+# ── Collecting a helper that did not replace this API ────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_preflight_collects_a_failed_helper_instead_of_blocking_on_it():
+    # The helper exited non-zero and this API was never replaced, so no boot will ever
+    # collect it. Blocking on it would need SSH to clear -- what this endpoint replaces.
+    helper = _helper(exit_code=1, logs=b"service bogus-service depends on undefined service\n")
+    service = _service(_Client(_container(), helpers=[helper]))
+
+    info = await service.preflight()
+
+    assert info["can_upgrade"] is True
+    assert helper.removed == [True]
+    status = service.status()
+    assert status["phase"] == "failed"
+    assert status["exit_code"] == 1
+    assert status["log_tail"] == ["service bogus-service depends on undefined service"]
+
+
+@pytest.mark.asyncio
+async def test_status_does_not_stay_recreating_after_the_helper_fails(run_threads_inline):
+    client = _Client(_container())
+    service = _service(client)
+    run_id = (await service.start())["run_id"]
+    assert service.status()["phase"] == "recreating"
+
+    client.containers.helpers.append(_helper(exit_code=1, run_id=run_id))
+
+    status = service.status()
+    assert status["phase"] == "failed"
+    assert status["run_id"] == run_id
+    assert status["exit_code"] == 1
+    assert "did not replace this API" in status["detail"]
+
+
+@pytest.mark.asyncio
+async def test_a_helper_that_exits_zero_without_replacing_this_api_is_not_done():
+    # We are still here, so the recreate did not happen whatever compose's exit code.
+    helper = _helper(exit_code=0)
+    service = _service(_Client(_container(), helpers=[helper]))
+
+    await service.preflight()
+
+    assert service.status()["phase"] == "failed"
+    assert helper.removed == [True]
+
+
+@pytest.mark.asyncio
+async def test_status_leaves_a_helper_that_is_still_running(run_threads_inline):
+    client = _Client(_container())
+    service = _service(client)
+    run_id = (await service.start())["run_id"]
+    helper = _helper(status="running", run_id=run_id)
+    client.containers.helpers.append(helper)
+
+    assert service.status()["phase"] == "recreating"
+    assert helper.removed == []
 
 
 # ── Collecting the run on boot ───────────────────────────────────────────────────
