@@ -1,29 +1,22 @@
 import logging
 import os
-import socket
 from importlib import metadata
+from typing import Optional
 
 import psutil
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from config import settings
-from deps import get_docker_service
+from deps import get_docker_service, get_self_upgrade_service
+from models import SelfUpgradeRequest
 from services.docker_service import DockerService
+from services.self_upgrade import SelfUpgradeRefused, SelfUpgradeService
+from utils.compose import describe_container, own_container, pinning
 from version import VERSION
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["System"], prefix="/system")
-
-# Compose service this API is deployed as, used to find our own container when the
-# hostname lookup fails (see _own_container).
-COMPOSE_SERVICE = "hummingbot-api"
-
-# Compose stamps these on every container it creates; they say which project the API
-# belongs to and which files were used to bring it up.
-LABEL_PROJECT = "com.docker.compose.project"
-LABEL_WORKING_DIR = "com.docker.compose.project.working_dir"
-LABEL_CONFIG_FILES = "com.docker.compose.project.config_files"
 
 # When running inside Docker, mount the host's /proc and root filesystem into the
 # container and point these env vars at the mount locations so psutil reports the
@@ -95,82 +88,6 @@ def _hummingbot_version():
         return None
 
 
-def _own_container(client):
-    """Find the container this API process runs in.
-
-    Docker sets a container's hostname to its own short id, which is how a process
-    identifies itself from the inside. That fails when the deployment overrides
-    `hostname:` or when the API runs from source on the host, so fall back to the one
-    container carrying this project's compose service label.
-
-    Returns:
-        A docker-py Container, or None when this process cannot be placed.
-    """
-    try:
-        return client.containers.get(socket.gethostname())
-    except Exception:
-        pass
-    try:
-        matches = client.containers.list(filters={"label": f"com.docker.compose.service={COMPOSE_SERVICE}"})
-    except Exception:
-        return None
-    return matches[0] if matches else None
-
-
-def _describe_container(container):
-    """Identity, image and compose provenance of a container.
-
-    Returns:
-        Dictionary with the container's id and name, the image reference it was started
-        from, the image id, its registry digest (None for a locally built image) and the
-        three compose labels that say where the deployment lives.
-    """
-    labels = container.labels or {}
-    image = container.image
-    # A locally built image has no RepoDigests: nothing published it, so there is no
-    # content address to compare against the tag it carries.
-    digests = (image.attrs.get("RepoDigests") or []) if image is not None else []
-    return {
-        "id": container.id,
-        "name": container.name,
-        "image": container.attrs.get("Config", {}).get("Image"),
-        "image_id": image.id if image is not None else None,
-        "digest": digests[0] if digests else None,
-        "compose_project": labels.get(LABEL_PROJECT),
-        "compose_working_dir": labels.get(LABEL_WORKING_DIR),
-        "compose_config_files": labels.get(LABEL_CONFIG_FILES),
-    }
-
-
-def _pinning(container):
-    """Whether this deployment runs something other than the published image.
-
-    Two things make an image not the one `hummingbot/hummingbot-api:latest` currently
-    resolves to: it was built on the box (no registry digest), or compose was brought up
-    with an override file that can repoint `image:` at a pinned tag. Only files whose
-    name contains "override" count -- `docker-compose.tailscale.yml` is an overlay for
-    networking, not for the image.
-
-    Returns:
-        Dictionary with pinned, a short pinned_reason and the override file name (None
-        when that is not the reason).
-    """
-    files = [f.strip() for f in (container.get("compose_config_files") or "").split(",") if f.strip()]
-    override_file = next((os.path.basename(f) for f in files if "override" in os.path.basename(f).lower()), None)
-
-    reasons = []
-    if not container.get("digest"):
-        reasons.append("image was built locally (no registry digest)")
-    if override_file:
-        reasons.append(f"compose override file {override_file} can pin the image")
-
-    return {
-        "pinned": bool(reasons),
-        "pinned_reason": "; ".join(reasons) or None,
-        "override_file": override_file,
-    }
-
-
 @router.get("/info")
 async def get_system_info(docker_service: DockerService = Depends(get_docker_service)):
     """
@@ -216,16 +133,92 @@ async def get_system_info(docker_service: DockerService = Depends(get_docker_ser
         return info
     info["docker_available"] = True
 
-    container = _own_container(client)
+    container = own_container(client)
     if container is None:
         logger.warning("Could not identify the API's own container while reporting system info")
         return info
 
     try:
-        info["container"] = _describe_container(container)
+        info["container"] = describe_container(container)
     except Exception as e:
         logger.warning(f"Could not inspect the API's own container while reporting system info: {e}")
         return info
 
-    info.update(_pinning(info["container"]))
+    info.update(pinning(info["container"]))
     return info
+
+
+# ── Self-upgrade (FEAT-122) ──────────────────────────────────────────────────────
+#
+# Replacing this API's own container with the published image, so a remote server can
+# be upgraded from a dashboard instead of over SSH. See services/self_upgrade.py for
+# why a helper container does the recreate, and for the rule these three routes exist
+# to enforce: anything not established is a refusal.
+
+
+@router.get("/upgrade/preflight")
+async def get_upgrade_preflight(upgrade_service: SelfUpgradeService = Depends(get_self_upgrade_service)):
+    """
+    Report whether this API can replace its own container, and what it would cost.
+
+    Read-only and never raises: a daemon that cannot be reached, a container that cannot
+    be placed and a registry that cannot be read are all reported as can_upgrade false
+    with a blocked_reason, because the caller of a destructive action needs a reason far
+    more than it needs a 500.
+
+    Returns:
+        Dictionary with image_ref, current_digest, available_digest, up_to_date, the
+        pinning verdict (pinned / pinned_reason / override_file), the compose project,
+        working dir and config files, running_executors and running_bots, and
+        can_upgrade with its blocked_reason (None only when the upgrade may be started).
+    """
+    return await upgrade_service.preflight()
+
+
+@router.post("/upgrade", status_code=202)
+async def start_upgrade(
+    request: Optional[SelfUpgradeRequest] = None,
+    upgrade_service: SelfUpgradeService = Depends(get_self_upgrade_service),
+):
+    """
+    Pull the published image and hand the container recreate to a helper container.
+
+    The preflight is re-run here, so a server that became unupgradable since the caller
+    last looked -- an executor started, another upgrade began, the daemon went away --
+    is refused rather than upgraded on a stale reading.
+
+    Args:
+        request: acknowledge_executor_loss, the caller's consent to every running
+            executor being closed as SYSTEM_CLEANUP. Required when any is running.
+
+    Returns:
+        202 with the run id and the initial phase. The API is replaced part-way through,
+        so the result is read back from /system/upgrade/status after it restarts.
+
+    Raises:
+        HTTPException: 409 when the upgrade is refused. Nothing was pulled, and nothing
+            on the server was changed.
+    """
+    # An absent body is a caller who acknowledged nothing, which is the refusing default.
+    request = request or SelfUpgradeRequest()
+    try:
+        return await upgrade_service.start(acknowledge_executor_loss=request.acknowledge_executor_loss)
+    except SelfUpgradeRefused as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@router.get("/upgrade/status")
+async def get_upgrade_status(upgrade_service: SelfUpgradeService = Depends(get_self_upgrade_service)):
+    """
+    Report the current or last self-upgrade.
+
+    Phases: idle (there has been none), pulling, recreating (this API is about to be
+    replaced, so the next answer comes from the new one), done, failed. After a
+    successful recreate the record is the one this API collected from the helper
+    container on boot, including its exit code and the tail of its output.
+
+    Returns:
+        Dictionary with run_id, phase, detail, previous_digest, new_digest, exit_code
+        and log_tail.
+    """
+    return upgrade_service.status()

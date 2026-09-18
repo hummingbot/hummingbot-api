@@ -74,6 +74,7 @@ from services.gateway_clmm_service import GatewayCLMMService  # noqa: E402
 from services.gateway_service import GatewayService  # noqa: E402
 from services.gateway_swap_service import GatewaySwapService  # noqa: E402
 from services.market_data_service import MarketDataService  # noqa: E402
+from services.self_upgrade import SelfUpgradeService  # noqa: E402
 from services.trading_history_service import TradingHistoryService  # noqa: E402
 from services.trading_service import TradingService  # noqa: E402
 from services.unified_connector_service import UnifiedConnectorService  # noqa: E402
@@ -306,6 +307,18 @@ async def lifespan(app: FastAPI):
     else:
         logging.info("Gateway container not running; status monitor deferred until it is started")
 
+    # An upgrade started by the *previous* API process outlives it: the helper container
+    # that ran `docker compose up` is still on the box with its exit code and logs, and
+    # this process is the new container it created. Collect that record now, before
+    # anything can ask for it, and remove the helper so the next preflight is not blocked
+    # by its own predecessor. Never raises (FEAT-122).
+    self_upgrade_service = SelfUpgradeService(
+        docker_service=docker_service,
+        executor_service=executor_service,
+        bots_orchestrator=bots_orchestrator,
+    )
+    self_upgrade_service.collect_on_boot()
+
     bot_archiver = BotArchiver(
         settings.aws.api_key,
         settings.aws.secret_key,
@@ -355,6 +368,7 @@ async def lifespan(app: FastAPI):
     app.state.backtesting_service = backtesting_service
     app.state.bots_orchestrator = bots_orchestrator
     app.state.docker_service = docker_service
+    app.state.self_upgrade_service = self_upgrade_service
     app.state.gateway_service = gateway_service
     app.state.bot_archiver = bot_archiver
 
