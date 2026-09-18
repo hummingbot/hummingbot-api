@@ -14,9 +14,11 @@ from types import SimpleNamespace
 import pytest
 import yaml
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
 from fastapi.testclient import TestClient
 
 from utils.file_system import FileSystemUtil
+from utils.validation_errors import validation_exception_handler
 
 
 @pytest.fixture
@@ -36,6 +38,9 @@ def env(tmp_path, monkeypatch):
     service = SimpleNamespace(quote_token="USDT")
     app = FastAPI()
     app.include_router(bot_rate_oracle.router)
+    # The real app's handler, not FastAPI's default: a blank token name must come back as
+    # a 422 through the handler main.py installs, which is where it once became a 500.
+    app.add_exception_handler(RequestValidationError, validation_exception_handler)
     app.dependency_overrides[get_market_data_service] = lambda: service
     return SimpleNamespace(client=TestClient(app), service=service, root=tmp_path)
 

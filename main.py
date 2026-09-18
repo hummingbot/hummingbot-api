@@ -28,11 +28,10 @@ def patched_save_to_yml(yml_path, cm):
 
 config_helpers.save_to_yml = patched_save_to_yml
 
-from fastapi import Depends, FastAPI, HTTPException, Request, status  # noqa: E402
+from fastapi import Depends, FastAPI, HTTPException, status  # noqa: E402
 from fastapi.exceptions import RequestValidationError  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.middleware.gzip import GZipMiddleware  # noqa: E402
-from fastapi.responses import JSONResponse  # noqa: E402
 from fastapi.security import HTTPBasic, HTTPBasicCredentials  # noqa: E402
 from hummingbot.client.config.client_config_map import GatewayConfigMap  # noqa: E402
 from hummingbot.client.config.config_crypt import ETHKeyFileSecretManger  # noqa: E402
@@ -82,6 +81,7 @@ from services.websocket_manager import WebSocketManager  # noqa: E402
 from utils.bot_archiver import BotArchiver  # noqa: E402
 from utils.core_compatibility import require_core_surface  # noqa: E402
 from utils.security import BackendAPISecurity  # noqa: E402
+from utils.validation_errors import validation_exception_handler  # noqa: E402
 
 # Set up logging configuration
 logging.basicConfig(
@@ -425,28 +425,7 @@ app.add_middleware(
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 
-@app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    """
-    Custom handler for validation errors to log detailed error messages.
-    """
-    # Build a readable error message from validation errors
-    error_messages = []
-    for error in exc.errors():
-        loc = " -> ".join(str(part) for part in error.get("loc", []))
-        msg = error.get("msg", "Validation error")
-        error_messages.append(f"{loc}: {msg}")
-
-    # Log the validation error with details
-    logging.warning(
-        f"Validation error on {request.method} {request.url.path}: {'; '.join(error_messages)}"
-    )
-
-    # Return standard FastAPI validation error response
-    return JSONResponse(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        content={"detail": exc.errors()},
-    )
+app.add_exception_handler(RequestValidationError, validation_exception_handler)
 
 logfire.configure(send_to_logfire="if-token-present", environment=settings.app.logfire_environment,
                   service_name="hummingbot-api")
