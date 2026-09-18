@@ -13,7 +13,7 @@ from hummingbot.client.config import config_helpers
 # Load environment variables early
 load_dotenv()
 
-VERSION = "1.0.1"
+from version import VERSION  # noqa: E402  (kept in its own module so routers can read it)
 
 # Monkey patch save_to_yml to prevent writes to library directory
 
@@ -28,11 +28,10 @@ def patched_save_to_yml(yml_path, cm):
 
 config_helpers.save_to_yml = patched_save_to_yml
 
-from fastapi import Depends, FastAPI, HTTPException, Request, status  # noqa: E402
+from fastapi import Depends, FastAPI, HTTPException, status  # noqa: E402
 from fastapi.exceptions import RequestValidationError  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.middleware.gzip import GZipMiddleware  # noqa: E402
-from fastapi.responses import JSONResponse  # noqa: E402
 from fastapi.security import HTTPBasic, HTTPBasicCredentials  # noqa: E402
 from hummingbot.client.config.client_config_map import GatewayConfigMap  # noqa: E402
 from hummingbot.client.config.config_crypt import ETHKeyFileSecretManger  # noqa: E402
@@ -45,6 +44,7 @@ from routers import (  # noqa: E402
     archived_bots,
     backtesting,
     bot_orchestration,
+    bot_rate_oracle,
     connectors,
     controllers,
     docker,
@@ -73,6 +73,7 @@ from services.gateway_clmm_service import GatewayCLMMService  # noqa: E402
 from services.gateway_service import GatewayService  # noqa: E402
 from services.gateway_swap_service import GatewaySwapService  # noqa: E402
 from services.market_data_service import MarketDataService  # noqa: E402
+from services.self_upgrade import SelfUpgradeService  # noqa: E402
 from services.trading_history_service import TradingHistoryService  # noqa: E402
 from services.trading_service import TradingService  # noqa: E402
 from services.unified_connector_service import UnifiedConnectorService  # noqa: E402
@@ -80,6 +81,7 @@ from services.websocket_manager import WebSocketManager  # noqa: E402
 from utils.bot_archiver import BotArchiver  # noqa: E402
 from utils.core_compatibility import require_core_surface  # noqa: E402
 from utils.security import BackendAPISecurity  # noqa: E402
+from utils.validation_errors import validation_exception_handler  # noqa: E402
 
 # Set up logging configuration
 logging.basicConfig(
@@ -305,6 +307,18 @@ async def lifespan(app: FastAPI):
     else:
         logging.info("Gateway container not running; status monitor deferred until it is started")
 
+    # An upgrade started by the *previous* API process outlives it: the helper container
+    # that ran `docker compose up` is still on the box with its exit code and logs, and
+    # this process is the new container it created. Collect that record now, before
+    # anything can ask for it, and remove the helper so the next preflight is not blocked
+    # by its own predecessor. Never raises (FEAT-122).
+    self_upgrade_service = SelfUpgradeService(
+        docker_service=docker_service,
+        executor_service=executor_service,
+        bots_orchestrator=bots_orchestrator,
+    )
+    self_upgrade_service.collect_on_boot()
+
     bot_archiver = BotArchiver(
         settings.aws.api_key,
         settings.aws.secret_key,
@@ -354,6 +368,7 @@ async def lifespan(app: FastAPI):
     app.state.backtesting_service = backtesting_service
     app.state.bots_orchestrator = bots_orchestrator
     app.state.docker_service = docker_service
+    app.state.self_upgrade_service = self_upgrade_service
     app.state.gateway_service = gateway_service
     app.state.bot_archiver = bot_archiver
 
@@ -410,28 +425,7 @@ app.add_middleware(
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 
-@app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    """
-    Custom handler for validation errors to log detailed error messages.
-    """
-    # Build a readable error message from validation errors
-    error_messages = []
-    for error in exc.errors():
-        loc = " -> ".join(str(part) for part in error.get("loc", []))
-        msg = error.get("msg", "Validation error")
-        error_messages.append(f"{loc}: {msg}")
-
-    # Log the validation error with details
-    logging.warning(
-        f"Validation error on {request.method} {request.url.path}: {'; '.join(error_messages)}"
-    )
-
-    # Return standard FastAPI validation error response
-    return JSONResponse(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        content={"detail": exc.errors()},
-    )
+app.add_exception_handler(RequestValidationError, validation_exception_handler)
 
 logfire.configure(send_to_logfire="if-token-present", environment=settings.app.logfire_environment,
                   service_name="hummingbot-api")
@@ -476,6 +470,7 @@ app.include_router(bot_orchestration.router, dependencies=[Depends(auth_user)])
 app.include_router(controllers.router, dependencies=[Depends(auth_user)])
 app.include_router(scripts.router, dependencies=[Depends(auth_user)])
 app.include_router(market_data.router, dependencies=[Depends(auth_user)])
+app.include_router(bot_rate_oracle.router, dependencies=[Depends(auth_user)])
 app.include_router(performance.router, dependencies=[Depends(auth_user)])
 app.include_router(backtesting.router, dependencies=[Depends(auth_user)])
 app.include_router(archived_bots.router, dependencies=[Depends(auth_user)])
