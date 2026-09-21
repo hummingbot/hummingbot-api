@@ -8,9 +8,15 @@ $1.72-1.74. That price is then published into the shared pool and feeds the port
 price is worse than no price, so the guard has to live in the selection.
 
 The rule these tests pin: only pairs where the requested token is the BASE, the quote is a
-stable (``_QUOTE_SYMBOLS``), and the pool holds at least ``_MIN_QUOTE_LIQ_USD``, taking the
+major asset (``_QUOTE_SYMBOLS``), and the pool holds at least ``_MIN_QUOTE_LIQ_USD``, taking the
 deepest of those. Everything else is a fall-through for the Gateway quote, which is where the
 token already went before this source existed, so an omission costs nothing.
+
+The liquidity floor and the SOL-quoted case come from a second measurement, on the live
+portfolio: baton's only stable-quoted pool held $1272 and read $0.006060, while its deepest SOL
+pool read $0.002282 and GeckoTerminal said $0.0023188. The stable pool is the outlier on this
+token population, so a rule that trusted stable quotes over SOL would have published a 2.6x
+error the moment GeckoTerminal missed that chunk.
 
 Two more measured traps are pinned here: the endpoint caps its answer at 30 pairs in TOTAL (not
 per address), so a wide batch silently drops addresses -- hence the small chunk size and the
@@ -31,6 +37,7 @@ from services.dexscreener_price_source import (
 RAY = "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R"
 JUP = "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN"
 BONK = "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"
+BATON = "Hg5Ja55T5wESq4vyFoiVCMeHXtGyVA69X2UHq8hgpump"
 
 
 def _pair(base_address, quote_symbol, liquidity_usd, price_usd):
@@ -54,15 +61,33 @@ def test_a_rich_claimed_liquidity_on_a_thin_quote_does_not_win():
     assert _select_price(pairs, RAY) == Decimal("1.74")
 
 
-def test_a_token_quoted_only_in_a_non_stable_and_in_another_token_is_left_unpriced():
-    """JUP/MET said $1509 while JUP/SOL said $0.3068 -- neither quote is a stable, so neither is
-    trusted: the token falls through to the Gateway quote rather than being priced from a pool
-    whose own USD liquidity is what made it rank first."""
+def test_a_thin_stable_pool_does_not_outprice_the_deep_market():
+    """The measured baton case: its only stable-quoted pool held $1272 and read $0.006060 while
+    the deepest SOL pool read $0.002282 against a true $0.00232. The floor has to drop the thin
+    pool, not hand it the token because it is the only stable one."""
+    pairs = [
+        _pair(BATON, "USDC", 1_272, "0.006060"),
+        _pair(BATON, "SOL", 135_451, "0.002282"),
+        _pair(BATON, "SOL", 35_230, "0.002289"),
+    ]
+    assert _select_price(pairs, BATON) == Decimal("0.002282")
+
+
+def test_a_token_with_no_pool_over_the_floor_is_left_unpriced():
+    """Anything the rule declines falls through to the Gateway quote, which is where the token
+    already went before this source existed."""
+    pairs = [_pair(BATON, "USDC", 1_272, "0.006060")]
+    assert _select_price(pairs, BATON) is None
+
+
+def test_a_pool_quoted_in_another_thin_token_does_not_win():
+    """JUP/MET said $1509 while JUP/SOL said $0.3068 -- MET is just another token, so ranking by
+    its claimed liquidity picks a price that is not JUP's."""
     pairs = [
         _pair(JUP, "MET", 4_000_000, "1509"),
         _pair(JUP, "SOL", 900_000, "0.3068"),
     ]
-    assert _select_price(pairs, JUP) is None
+    assert _select_price(pairs, JUP) == Decimal("0.3068")
 
 
 def test_pairs_where_the_token_is_the_quote_are_ignored():
@@ -76,7 +101,7 @@ def test_address_matching_is_case_insensitive():
     assert _select_price(pairs, RAY.lower()) == Decimal("1.74")
 
 
-@pytest.mark.parametrize("liquidity", [999.99, 0, None, "not-a-number"])
+@pytest.mark.parametrize("liquidity", [9_999.99, 0, None, "not-a-number"])
 def test_a_pool_under_the_liquidity_floor_or_with_no_readable_liquidity_is_skipped(liquidity):
     assert _select_price([_pair(RAY, "USDC", liquidity, "1.74")], RAY) is None
 
@@ -89,7 +114,7 @@ def test_an_unpriceable_pair_is_skipped_rather_than_raised_on(price):
 
 def test_malformed_pairs_are_ignored_rather_than_raised_on():
     """A JSON shape the API is not contracted to keep must not take the batch down."""
-    pairs = ["not-a-dict", {}, {"baseToken": None, "quoteToken": None}, _pair(RAY, "USDC", 2_000, "1.74")]
+    pairs = ["not-a-dict", {}, {"baseToken": None, "quoteToken": None}, _pair(RAY, "USDC", 20_000, "1.74")]
     assert _select_price(pairs, RAY) == Decimal("1.74")
 
 

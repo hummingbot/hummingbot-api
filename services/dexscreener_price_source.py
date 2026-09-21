@@ -41,11 +41,19 @@ _CHUNK_ADDRESSES = 5
 # liquidity for pools quoted in a thin token, and ranking across those picks them. Measured
 # on RAY, the highest-liquidity pair was RAY/JUP at $8538 (claimed $139M liquidity) while
 # RAY/USDC, RAY/SOL and RAY/USDT all said $1.72-1.74; on JUP, JUP/MET said $1509 against
-# JUP/SOL's $0.3068. Restricting to a stable quote removes the whole class.
-_QUOTE_SYMBOLS = ("USDC", "USDT")
-# Below this the quoted price is as likely to be a dead pool as a market; skip the token and
-# let the Gateway quote have it.
-_MIN_QUOTE_LIQ_USD = 1000.0
+# JUP/SOL's $0.3068. Restricting the quote to a major asset removes the whole class.
+#
+# SOL is in the list, not just the stables, because on this token population the stable-quoted
+# pool is the outlier rather than the reference. Measured across the holdings: baton's only
+# stable pool read $0.006060 against $0.002282 on its deepest SOL pool, KNOTS' stable pool read
+# 0.02276 against 0.02431 on SOL, ZCAT's 0.1190 against 0.1140 — and GeckoTerminal sided with
+# SOL on all three. Taking the deepest pool then lands on SOL for a pump.fun token and on a
+# stable for a large one, which is what the measurement supports.
+_QUOTE_SYMBOLS = ("USDC", "USDT", "SOL", "WSOL")
+# Below this the quoted price is as likely to be a dead pool as a market; skip the token and let
+# the Gateway quote have it. Measured: baton's only stable-quoted pool held $1272 and read
+# $0.006060 against a true $0.00232 — a 2.6x error a floor of this order drops.
+_MIN_QUOTE_LIQ_USD = 10000.0
 # How long a chain/network token list (symbol -> address) is cached before refetching.
 _TOKEN_LIST_TTL = 3600.0
 # Per fetch cycle timeout so a slow DexScreener never stalls a balance refresh.
@@ -70,7 +78,7 @@ def _select_price(pairs: List[Dict], address: str) -> Optional[Decimal]:
     A DexScreener response carries many pairs per token and several tokens per response, so
     the price is a choice, not a lookup. The choice is: among the pairs where the requested
     token is the BASE (a token also appears as the quote of other pairs, at a price that is
-    not its own) and the quote is a stable (see ``_QUOTE_SYMBOLS``) and the pool holds at
+    not its own) and the quote is a major asset (see ``_QUOTE_SYMBOLS``) and the pool holds at
     least ``_MIN_QUOTE_LIQ_USD``, take the deepest pool. The price may be null on a pair that
     has never traded, which ``_to_decimal`` turns into None like the GeckoTerminal NaN.
     """
