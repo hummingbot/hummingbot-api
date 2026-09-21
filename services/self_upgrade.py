@@ -46,6 +46,11 @@ HELPER_IMAGE = "docker:27-cli"
 # the API that started it has been replaced.
 HELPER_LABEL = "hummingbot-api.self-upgrade"
 HELPER_PREVIOUS_DIGEST_LABEL = "hummingbot-api.self-upgrade.previous-digest"
+# The compose project the helper was started for. HELPER_LABEL alone is not scoped to a
+# deployment -- on a host running more than one hummingbot-api stack, every stack's helper
+# carries it -- so collection is only ever allowed to touch a helper carrying this API's
+# own project.
+HELPER_PROJECT_LABEL = "hummingbot-api.self-upgrade.project"
 
 # The compose service to recreate. Only this one: postgres, emqx, any tailscale sidecar
 # and every bot container are left exactly as they are.
@@ -128,19 +133,31 @@ class SelfUpgradeService:
             return None
 
     def _existing_helper(self, client):
-        """``(established, helper)`` for a helper container already on this box.
+        """``(established, helper)`` for a helper of this deployment still in flight.
 
         ``established`` is False when the daemon would not answer the question at all,
         which blocks: an upgrade started while another one is mid-recreate is two
         ``compose up`` runs racing for the same container, and "I could not check" is not
         a reason to start the second one.
+
+        An exited helper is not in flight -- it is either this deployment's, which
+        ``_collect_finished_helpers`` already turns into a run and removes before this is
+        reached, or another stack's on the same host, which is inert as far as this
+        deployment's own recreate is concerned and must not block it.
         """
         try:
             found = client.containers.list(all=True, filters={"label": HELPER_LABEL})
         except Exception as e:
             logger.warning(f"Could not list self-upgrade helper containers: {e}")
             return False, None
-        return True, (found[0] if found else None)
+        own_project = self._own_compose_project(client)
+        in_flight = [
+            h for h in found
+            if getattr(h, "status", None) not in ("exited", "dead")
+            and own_project is not None
+            and (h.labels or {}).get(HELPER_PROJECT_LABEL) == own_project
+        ]
+        return True, (in_flight[0] if in_flight else None)
 
     async def _running_executors(self) -> Optional[int]:
         """How many executors are live, or None when that could not be established."""
@@ -416,6 +433,7 @@ class SelfUpgradeService:
                 labels={
                     HELPER_LABEL: run_id,
                     HELPER_PREVIOUS_DIGEST_LABEL: previous_digest or "",
+                    HELPER_PROJECT_LABEL: compose["project"],
                 },
                 volumes={
                     "/var/run/docker.sock": {"bind": "/var/run/docker.sock", "mode": "rw"},
@@ -482,8 +500,24 @@ class SelfUpgradeService:
             return
         self._collect_finished_helpers(client, on_boot=True)
 
+    def _own_compose_project(self, client) -> Optional[str]:
+        """This container's own compose project, or None when it cannot be determined.
+
+        A helper is only ever this deployment's if it was labelled with this project at
+        creation time (see _pull_then_recreate). Without knowing our own project there is
+        nothing to compare it against, so collection is skipped rather than guessed.
+        """
+        try:
+            container = own_container(client)
+            if container is None:
+                return None
+            return describe_container(container).get("compose_project")
+        except Exception as e:
+            logger.warning(f"Could not read this API's own compose project: {e}")
+            return None
+
     def _collect_finished_helpers(self, client, on_boot: bool) -> None:
-        """Turn every exited helper into this API's last run, then remove it.
+        """Turn every exited helper of this deployment into its last run, then remove it.
 
         On boot the helper is our predecessor's, and exit 0 means we are the new
         container. Anywhere else this process is the one the helper was meant to replace
@@ -491,13 +525,22 @@ class SelfUpgradeService:
         says -- recorded as failed, so the operator sees it and can retry.
 
         A helper still running is left alone -- it may be mid-recreate, and preflight
-        blocks on it. Never raises.
+        blocks on it. A helper that does not carry this API's own compose project is
+        another stack's, whatever its label and exit code say, and touching it -- let
+        alone removing it -- would take away the only record that stack has of its own
+        run. When a run of ours is already tracked (self._run has a run_id), a helper for
+        some other run under our own project is left alone too, on the same reasoning.
+        Never raises.
         """
         try:
             helpers = client.containers.list(all=True, filters={"label": HELPER_LABEL})
         except Exception as e:
             logger.warning(f"Could not look for self-upgrade helper containers: {e}")
             return
+
+        own_project = self._own_compose_project(client)
+        with self._lock:
+            expected_run_id = (self._run or {}).get("run_id")
 
         for helper in helpers:
             # A helper that has not exited is very likely running `docker compose up`
@@ -507,9 +550,18 @@ class SelfUpgradeService:
             if getattr(helper, "status", None) not in ("exited", "dead"):
                 logger.info(f"Self-upgrade helper {helper.name} is still {helper.status}; leaving it.")
                 continue
+
+            labels = helper.labels or {}
+            run_id = labels.get(HELPER_LABEL)
+            helper_project = labels.get(HELPER_PROJECT_LABEL)
+            if own_project is None or helper_project != own_project:
+                logger.info(f"Self-upgrade helper {helper.name} belongs to another compose project; leaving it.")
+                continue
+            if expected_run_id is not None and run_id != expected_run_id:
+                logger.info(f"Self-upgrade helper {helper.name} is not the run this API is tracking; leaving it.")
+                continue
+
             try:
-                labels = helper.labels or {}
-                run_id = labels.get(HELPER_LABEL)
                 previous_digest = labels.get(HELPER_PREVIOUS_DIGEST_LABEL) or None
                 exit_code = (helper.attrs.get("State") or {}).get("ExitCode")
                 try:

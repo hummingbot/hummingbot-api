@@ -32,6 +32,7 @@ from services.self_upgrade import (
     HELPER_IMAGE,
     HELPER_LABEL,
     HELPER_PREVIOUS_DIGEST_LABEL,
+    HELPER_PROJECT_LABEL,
     SERVICE_NAME,
     SelfUpgradeRefused,
     SelfUpgradeService,
@@ -70,12 +71,20 @@ def _container(digests=(f"hummingbot/hummingbot-api@{CURRENT_SHA}",), config_fil
     )
 
 
-def _helper(status="exited", exit_code=0, run_id="run123", logs=b"Container hummingbot-api Started\n"):
+def _helper(status="exited", exit_code=0, run_id="run123", logs=b"Container hummingbot-api Started\n",
+            project="hummingbot-api"):
+    """A helper container as _pull_then_recreate creates one, for this test file's own
+    stack by default (see _container(), whose compose project is also "hummingbot-api").
+    Pass a different `project` (or None) to simulate another stack's helper.
+    """
     removed = []
+    labels = {HELPER_LABEL: run_id, HELPER_PREVIOUS_DIGEST_LABEL: f"hummingbot/hummingbot-api@{CURRENT_SHA}"}
+    if project is not None:
+        labels[HELPER_PROJECT_LABEL] = project
     return SimpleNamespace(
         name=f"helper-{run_id}",
         status=status,
-        labels={HELPER_LABEL: run_id, HELPER_PREVIOUS_DIGEST_LABEL: f"hummingbot/hummingbot-api@{CURRENT_SHA}"},
+        labels=labels,
         attrs={"State": {"ExitCode": exit_code}},
         logs=lambda tail=None: logs,
         remove=lambda force=False: removed.append(force),
@@ -450,6 +459,7 @@ async def test_start_pulls_both_images_then_runs_the_helper(run_threads_inline):
     assert run["working_dir"] == WORKING_DIR
     assert run["labels"][HELPER_LABEL] == started["run_id"]
     assert run["labels"][HELPER_PREVIOUS_DIGEST_LABEL].endswith(CURRENT_SHA)
+    assert run["labels"][HELPER_PROJECT_LABEL] == "hummingbot-api"
     # The record has to outlive the helper; auto_remove would delete it.
     assert run["auto_remove"] is False
 
@@ -584,6 +594,38 @@ async def test_status_leaves_a_helper_that_is_still_running(run_threads_inline):
     assert helper.removed == []
 
 
+@pytest.mark.asyncio
+async def test_an_idle_api_does_not_adopt_or_remove_another_stacks_helper():
+    """A host running more than one hummingbot-api stack: an idle API -- one that has
+    never started an upgrade -- must not adopt a foreign helper's record as its own, nor
+    remove it and rob the stack that actually ran it of its result.
+    """
+    foreign_helper = _helper(exit_code=7, run_id="FOREIGN_RUN_9999", project="some-other-stack")
+    service = _service(_Client(_container(), helpers=[foreign_helper]))
+
+    info = await service.preflight()
+
+    assert info["can_upgrade"] is True
+    assert foreign_helper.removed == []
+    assert service.status() == {"run_id": None, "phase": "idle", "detail": None, "log_tail": []}
+
+
+@pytest.mark.asyncio
+async def test_a_tracked_run_does_not_adopt_a_helper_from_a_different_run_in_the_same_project(run_threads_inline):
+    """A helper carrying this API's own compose project but a different run id is not the
+    run this process is tracking -- e.g. a leftover from a run this process never started.
+    """
+    client = _Client(_container())
+    service = _service(client)
+    await service.start()
+
+    other_helper = _helper(exit_code=0, run_id="some-other-run")
+    client.containers.helpers.append(other_helper)
+
+    assert service.status()["phase"] == "recreating"
+    assert other_helper.removed == []
+
+
 # ── Collecting the run on boot ───────────────────────────────────────────────────
 
 
@@ -620,6 +662,20 @@ def test_collect_on_boot_reports_a_failed_recreate_with_the_log_tail():
 
 def test_collect_on_boot_leaves_a_helper_that_is_still_running():
     helper = _helper(status="running")
+    service = _service(_Client(_container(), helpers=[helper]))
+
+    service.collect_on_boot()
+
+    assert helper.removed == []
+    assert service.status()["phase"] == "idle"
+
+
+def test_collect_on_boot_leaves_a_helper_from_another_compose_project():
+    """The exited helper belongs to a different hummingbot-api deployment on the same
+    host; adopting it here would report the wrong stack's upgrade as this one's, and
+    removing it would erase the only record the other stack has of its own run.
+    """
+    helper = _helper(exit_code=0, run_id="FOREIGN_RUN_9999", project="some-other-stack")
     service = _service(_Client(_container(), helpers=[helper]))
 
     service.collect_on_boot()
