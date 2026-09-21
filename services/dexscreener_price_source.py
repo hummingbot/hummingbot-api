@@ -11,8 +11,10 @@ under a second, so this source absorbs that fall-through for every token GeckoTe
 
 GeckoTerminal stays authoritative: the caller only asks this source for the tokens GeckoTerminal
 did not return. That also means a DexScreener price is never cross-checked against GeckoTerminal
-(there is nothing to check it against), so the guard against an absurd price has to live in the
-selection below — see ``_select_price``.
+(there is nothing to check it against), so the guards against an absurd price have to live in the
+selection below — see ``_select_price``, which accepts a pair only if it is on the chain that was
+asked about and is quoted in that chain's own address for a major asset, not in a token merely
+named like one.
 
 Like the GeckoTerminal source, ``fetch_prices`` never raises: any failure yields an empty dict
 and the caller simply falls back to Gateway pricing.
@@ -22,7 +24,7 @@ import logging
 import math
 import time
 from decimal import Decimal
-from typing import Dict, List, Optional
+from typing import Dict, FrozenSet, List, Optional
 
 import httpx
 
@@ -48,6 +50,11 @@ _CHUNK_ADDRESSES = 5
 # 0.02276 against 0.02431 on SOL, ZCAT's 0.1190 against 0.1140 — and GeckoTerminal sided with
 # SOL on all three. Taking the deepest pool then lands on SOL for a pump.fun token and on a
 # stable for a large one, which is what the measurement supports.
+#
+# These symbols are a lookup key into the Gateway token list, not a test against what DexScreener
+# calls the quote. The quote is matched by its ADDRESS, because a symbol is not a unique identity:
+# a pool quoted in a token that calls itself USDC would pass a symbol test, be ranked on its own
+# claimed liquidity, and publish its price. See ``_select_price``.
 _QUOTE_SYMBOLS = ("USDC", "USDT", "SOL", "WSOL")
 # Below this the quoted price is as likely to be a dead pool as a market; skip the token and let
 # the Gateway quote have it. Measured: baton's only stable-quoted pool held $1272 and read
@@ -57,6 +64,38 @@ _MIN_QUOTE_LIQ_USD = 10000.0
 _TOKEN_LIST_TTL = 3600.0
 # Per fetch cycle timeout so a slow DexScreener never stalls a balance refresh.
 _FETCH_TIMEOUT = 10.0
+
+# Gateway network segment -> DexScreener chainId, keyed by the network part of the Gateway
+# ``chain-network`` id exactly as ``GATEWAY_TO_GECKO_NETWORK`` is. The two maps are not
+# interchangeable: DexScreener calls Ethereum "ethereum" where GeckoTerminal calls it "eth",
+# and Polygon "polygon" against GeckoTerminal's "polygon_pos".
+#
+# Only ids verified against the live API are listed (mode is absent for that reason alone), and
+# a network absent from the map is not priced via DexScreener at all. That is the point rather
+# than an omission: an unnameable chain cannot be verified, and an unverified pool can be the
+# deepest one. See ``_select_price``.
+GATEWAY_TO_DEXSCREENER_CHAIN: Dict[str, str] = {
+    # Solana
+    "mainnet-beta": "solana",
+    # Ethereum L1 + EVM L2s / sidechains (Gateway network segment)
+    "mainnet": "ethereum",
+    "arbitrum": "arbitrum",
+    "optimism": "optimism",
+    "base": "base",
+    "polygon": "polygon",
+    "bsc": "bsc",
+    "avalanche": "avalanche",
+    "blast": "blast",
+    "scroll": "scroll",
+    "linea": "linea",
+    "zksync": "zksync",
+    "celo": "celo",
+}
+
+
+def gateway_network_to_dexscreener_chain(network: str) -> Optional[str]:
+    """Map a Gateway network segment (e.g. ``mainnet-beta``, ``base``) to a DexScreener chainId."""
+    return GATEWAY_TO_DEXSCREENER_CHAIN.get(network)
 
 
 def _to_float(value) -> Optional[float]:
@@ -86,16 +125,30 @@ def _to_decimal(value) -> Optional[Decimal]:
     return Decimal(str(number))
 
 
-def _select_price(pairs: List[Dict], address: str) -> Optional[Decimal]:
+def _select_price(
+    pairs: List[Dict],
+    address: str,
+    chain_id: str,
+    quote_addresses: FrozenSet[str],
+) -> Optional[Decimal]:
     """
     Best USD price for ``address`` among DexScreener ``pairs``, or None if there is none.
 
     A DexScreener response carries many pairs per token and several tokens per response, so
     the price is a choice, not a lookup. The choice is: among the pairs where the requested
     token is the BASE (a token also appears as the quote of other pairs, at a price that is
-    not its own) and the quote is a major asset (see ``_QUOTE_SYMBOLS``) and the pool holds at
-    least ``_MIN_QUOTE_LIQ_USD``, take the deepest pool. The price may be null on a pair that
-    has never traded, which ``_to_decimal`` turns into None like the GeckoTerminal NaN.
+    not its own) and the pair is on ``chain_id`` and the quote is one of ``quote_addresses``
+    (the chain's canonical addresses for the major assets, see ``_QUOTE_SYMBOLS``) and the pool
+    holds at least ``_MIN_QUOTE_LIQ_USD``, take the deepest pool. The price may be null on a
+    pair that has never traded, which ``_to_decimal`` turns into None like the GeckoTerminal NaN.
+
+    ``chain_id`` and ``quote_addresses`` are identity checks rather than filters of taste, and
+    both come from a measured trap. The endpoint answers for the address on every chain that
+    has one -- the same USDC address comes back as both "ethereum" and "pulsechain" -- so
+    without the chain a deeper foreign pool can win and its price be published for the network
+    that was asked about. And a quote is matched by address because a symbol is not an identity:
+    a pool quoted in a token that merely calls itself USDC would pass a symbol test and be
+    ranked on its own claimed liquidity.
     """
     target = address.lower()
     best_liquidity: Optional[float] = None
@@ -104,11 +157,13 @@ def _select_price(pairs: List[Dict], address: str) -> Optional[Decimal]:
     for pair in pairs:
         if not isinstance(pair, dict):
             continue
+        if str(pair.get("chainId") or "").lower() != chain_id:
+            continue
         base_address = (pair.get("baseToken") or {}).get("address") or ""
         if str(base_address).lower() != target:
             continue
-        quote_symbol = ((pair.get("quoteToken") or {}).get("symbol") or "").upper()
-        if quote_symbol not in _QUOTE_SYMBOLS:
+        quote_address = (pair.get("quoteToken") or {}).get("address") or ""
+        if str(quote_address).lower() not in quote_addresses:
             continue
         liquidity = _to_float((pair.get("liquidity") or {}).get("usd"))
         if liquidity is None or liquidity < _MIN_QUOTE_LIQ_USD:
@@ -221,7 +276,26 @@ class DexScreenerPriceSource:
     async def _fetch_prices(
         self, client: httpx.AsyncClient, chain: str, network: str, symbols: List[str]
     ) -> Dict[str, Decimal]:
+        chain_id = gateway_network_to_dexscreener_chain(network)
+        if not chain_id:
+            # Without a chain to check the pairs against, a foreign pool could be the one that
+            # wins. Skip the network rather than price it unverified; the token falls through to
+            # the Gateway quote, which is where it went before this source existed.
+            return {}
+
         symbol_to_address = await self._symbol_to_address(chain, network)
+
+        # The canonical address of each major quote asset on this chain, straight from the
+        # Gateway token list, which is what a pair's quote token must match. A symbol with no
+        # Gateway entry contributes nothing (WSOL on this install; SOL and WSOL are the same
+        # mint and the list carries SOL). Should none of the majors be in the list the set is
+        # empty and no pair qualifies -- that is the Gateway-quote fall-through, not a new
+        # failure mode.
+        quote_addresses = frozenset(
+            str(symbol_to_address[symbol]).lower()
+            for symbol in _QUOTE_SYMBOLS
+            if symbol in symbol_to_address
+        )
 
         # Resolve the requested symbols to addresses; remember the original symbol per address
         # so the pair list can be mapped back to symbols regardless of address casing.
@@ -256,7 +330,7 @@ class DexScreenerPriceSource:
                 logger.warning(f"DexScreener chunk failed for {chain}-{network}: {result}")
                 continue
             for address in chunk:
-                price = _select_price(result, address)
+                price = _select_price(result, address, chain_id, quote_addresses)
                 symbol = address_to_symbol.get(address.lower())
                 if price is not None and symbol is not None:
                     prices[symbol] = price
