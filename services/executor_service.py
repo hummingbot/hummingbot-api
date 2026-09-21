@@ -10,12 +10,12 @@ import time
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from enum import Enum
-from typing import Any, Dict, List, Optional, Type
+from typing import Any, Dict, List, Optional, Tuple, Type
 
 from fastapi import HTTPException
 from hummingbot.strategy_v2.executors.arbitrage_executor.arbitrage_executor import ArbitrageExecutor
 from hummingbot.strategy_v2.executors.arbitrage_executor.data_types import ArbitrageExecutorConfig
-from hummingbot.strategy_v2.executors.data_types import ExecutorConfigBase
+from hummingbot.strategy_v2.executors.data_types import ConnectorPair, ExecutorConfigBase
 from hummingbot.strategy_v2.executors.dca_executor.data_types import DCAExecutorConfig
 from hummingbot.strategy_v2.executors.dca_executor.dca_executor import DCAExecutor
 from hummingbot.strategy_v2.executors.executor_base import ExecutorBase
@@ -818,6 +818,27 @@ class ExecutorService:
             else:
                 await trading_interface.ensure_connector(connector_name)
 
+    @staticmethod
+    def _executor_markets(
+        executor_config: Dict[str, Any], typed_config: ExecutorConfigBase
+    ) -> List[Tuple[str, Optional[str]]]:
+        """Every (connector, pair) the executor trades on, in the order they should be prepared.
+
+        The top-level connector_name/trading_pair when the config has them, then each
+        ConnectorPair field. xemm and arbitrage carry buying_market and selling_market and no
+        top-level pair, so only the top-level read left both legs unsubscribed and every tick
+        raised "No order book exists" (#158). Strategy mode subscribes these through
+        StrategyV2ConfigBase.update_markets(); the REST path has to do it here.
+        """
+        markets: List[Tuple[str, Optional[str]]] = []
+        if executor_config.get("connector_name"):
+            markets.append((executor_config["connector_name"], executor_config.get("trading_pair")))
+        for field_name in type(typed_config).model_fields:
+            value = getattr(typed_config, field_name, None)
+            if isinstance(value, ConnectorPair) and (value.connector_name, value.trading_pair) not in markets:
+                markets.append((value.connector_name, value.trading_pair))
+        return markets
+
     def _instantiate_and_register(
         self,
         executor_class: Type[ExecutorBase],
@@ -889,10 +910,12 @@ class ExecutorService:
         )
         executor_type = executor_config["type"]
 
-        # Ensure connector and market are ready
+        # Ensure every connector and market the executor trades on is ready - both legs of a
+        # two-market executor, not only a top-level pair
         connector_name = executor_config.get("connector_name")
         trading_pair = executor_config.get("trading_pair")
-        await self._prepare_market(account, connector_name, trading_pair)
+        for market_connector, market_pair in self._executor_markets(executor_config, typed_config):
+            await self._prepare_market(account, market_connector, market_pair)
 
         # Instantiate the executor, register it in memory and start it
         controller_id = controller_id or getattr(typed_config, "controller_id", "main") or "main"
