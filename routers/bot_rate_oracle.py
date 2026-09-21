@@ -15,6 +15,7 @@ global_token, rate_limits_share_pct -- so no caller can reach the mqtt_bridge or
 credentials that share the file.
 """
 
+import yaml
 from fastapi import APIRouter, Depends, HTTPException, Query
 from hummingbot.core.rate_oracle.rate_oracle import RATE_ORACLE_SOURCES
 
@@ -45,9 +46,24 @@ def _conf_client_path(account_name: str) -> str:
 def _read_conf_client(account_name: str) -> dict:
     path = _conf_client_path(account_name)
     try:
-        return FileSystemUtil().read_yaml_file(path) or {}
+        data = FileSystemUtil().read_yaml_file(path)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"Configuration file not found: {path}")
+    except yaml.YAMLError:
+        raise HTTPException(status_code=500, detail=f"Configuration file is not valid YAML: {path}")
+    # A hand-edited file can hold anything at the top level, including a YAML list or a
+    # bare scalar; read as empty rather than handing callers something they can't `.get()`.
+    return data if isinstance(data, dict) else {}
+
+
+def _clean_str(value, default: str) -> str:
+    """``value`` as a stripped string, or ``default`` for anything else.
+
+    conf_client.yml is user-editable and this only reads it back, so a blank, wrong-typed
+    or missing value must read as the default rather than failing the whole GET -- same
+    principle as _share_pct below.
+    """
+    return value.strip() if isinstance(value, str) and value.strip() else default
 
 
 def _share_pct(config_data: dict) -> float:
@@ -66,15 +82,20 @@ def _share_pct(config_data: dict) -> float:
 
 
 def _to_config(account_name: str, config_data: dict) -> RateOracleConfig:
-    global_token = config_data.get("global_token") or {}
+    rate_oracle_source = config_data.get("rate_oracle_source")
+    if not isinstance(rate_oracle_source, dict):
+        rate_oracle_source = {}
+    global_token = config_data.get("global_token")
+    if not isinstance(global_token, dict):
+        global_token = {}
     return RateOracleConfig(
         account_name=account_name,
         rate_oracle_source=RateOracleSourceConfig(
-            name=(config_data.get("rate_oracle_source") or {}).get("name", "gate_io")
+            name=_clean_str(rate_oracle_source.get("name"), "gate_io")
         ),
         global_token=GlobalTokenConfig(
-            global_token_name=global_token.get("global_token_name") or "USDT",
-            global_token_symbol=global_token.get("global_token_symbol", "$"),
+            global_token_name=_clean_str(global_token.get("global_token_name"), "USDT"),
+            global_token_symbol=_clean_str(global_token.get("global_token_symbol"), "$"),
         ),
         rate_limits_share_pct=_share_pct(config_data),
     )
@@ -126,11 +147,15 @@ async def update_bot_rate_oracle_config(
                 detail=f"Invalid rate oracle source: {source_name}. "
                        f"Available sources: {list(RATE_ORACLE_SOURCES.keys())}"
             )
-        config_data.setdefault("rate_oracle_source", {})["name"] = source_name
+        if not isinstance(config_data.get("rate_oracle_source"), dict):
+            config_data["rate_oracle_source"] = {}
+        config_data["rate_oracle_source"]["name"] = source_name
         changes_made.append(f"rate_oracle_source updated to {source_name}")
 
     if update_request.global_token is not None:
-        global_token = config_data.setdefault("global_token", {})
+        if not isinstance(config_data.get("global_token"), dict):
+            config_data["global_token"] = {}
+        global_token = config_data["global_token"]
         token_name = update_request.global_token.global_token_name
         if token_name is not None:
             global_token["global_token_name"] = token_name

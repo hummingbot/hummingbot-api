@@ -179,3 +179,88 @@ def test_share_pct_is_scoped_to_the_account_it_was_sent_for(env):
 
     assert _conf(env, "other")["rate_limits_share_pct"] == 25.0
     assert "rate_limits_share_pct" not in _conf(env, "master_account")
+
+
+# ── A hand-edited or legacy file can hold anything ──────────────────────────────
+
+
+def _rewrite(env, account, conf):
+    path = env.root / "credentials" / account / "conf_client.yml"
+    path.write_text(yaml.safe_dump(conf))
+
+
+@pytest.mark.parametrize("bad_global_token", ["nonsense", ["a", "b"]])
+def test_a_global_token_of_the_wrong_shape_reads_as_the_default(env, bad_global_token):
+    conf = _conf(env, "master_account")
+    conf["global_token"] = bad_global_token
+    _rewrite(env, "master_account", conf)
+
+    body = env.client.get("/bot-orchestration/rate-oracle/config").json()
+
+    assert body["global_token"] == {"global_token_name": "USDT", "global_token_symbol": "$"}
+
+
+@pytest.mark.parametrize("bad_global_token", ["nonsense", ["a", "b"]])
+def test_updating_a_global_token_of_the_wrong_shape_replaces_it_instead_of_crashing(env, bad_global_token):
+    conf = _conf(env, "master_account")
+    conf["global_token"] = bad_global_token
+    _rewrite(env, "master_account", conf)
+
+    resp = env.client.put("/bot-orchestration/rate-oracle/config", json={"global_token": {"global_token_name": "USDC"}})
+
+    assert resp.status_code == 200
+    assert _conf(env, "master_account")["global_token"] == {"global_token_name": "USDC"}
+
+
+def test_a_rate_oracle_source_of_the_wrong_shape_reads_as_the_default(env):
+    conf = _conf(env, "master_account")
+    conf["rate_oracle_source"] = "nonsense"
+    _rewrite(env, "master_account", conf)
+
+    body = env.client.get("/bot-orchestration/rate-oracle/config").json()
+
+    assert body["rate_oracle_source"]["name"] == "gate_io"
+
+
+def test_a_null_rate_oracle_source_name_reads_as_the_default(env):
+    conf = _conf(env, "master_account")
+    conf["rate_oracle_source"]["name"] = None
+    _rewrite(env, "master_account", conf)
+
+    body = env.client.get("/bot-orchestration/rate-oracle/config").json()
+
+    assert body["rate_oracle_source"]["name"] == "gate_io"
+
+
+@pytest.mark.parametrize("field", ["global_token_name", "global_token_symbol"])
+def test_a_blank_or_numeric_global_token_field_reads_as_the_default(env, field):
+    conf = _conf(env, "master_account")
+    conf["global_token"][field] = 12345
+    _rewrite(env, "master_account", conf)
+
+    body = env.client.get("/bot-orchestration/rate-oracle/config").json()
+
+    assert body["global_token"][field] == ({"global_token_name": "USDT", "global_token_symbol": "$"})[field]
+
+
+def test_invalid_yaml_is_a_clean_500_not_a_crash(env):
+    path = env.root / "credentials" / "master_account" / "conf_client.yml"
+    path.write_text("global_token: [unterminated\n")
+
+    resp = env.client.get("/bot-orchestration/rate-oracle/config")
+
+    assert resp.status_code == 500
+    assert "not valid YAML" in resp.json()["detail"]
+
+
+def test_a_top_level_yaml_list_reads_as_empty_and_can_be_repaired(env):
+    path = env.root / "credentials" / "master_account" / "conf_client.yml"
+    path.write_text(yaml.safe_dump(["not", "a", "mapping"]))
+
+    get_resp = env.client.get("/bot-orchestration/rate-oracle/config")
+    assert get_resp.status_code == 200
+    assert get_resp.json()["rate_oracle_source"]["name"] == "gate_io"
+
+    put_resp = env.client.put("/bot-orchestration/rate-oracle/config", json={"rate_oracle_source": {"name": "binance"}})
+    assert put_resp.status_code == 200
+    assert _conf(env, "master_account")["rate_oracle_source"]["name"] == "binance"
