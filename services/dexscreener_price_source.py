@@ -27,7 +27,6 @@ from typing import Dict, List, Optional
 import httpx
 
 from services.gateway_client import GatewayError, check_gateway_error
-from services.gecko_price_source import _to_decimal
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +68,22 @@ def _to_float(value) -> Optional[float]:
     except (TypeError, ValueError):
         return None
     return number if math.isfinite(number) else None
+
+
+def _to_decimal(value) -> Optional[Decimal]:
+    """Parse a value to a positive Decimal, returning None on empty/invalid/non-finite input.
+
+    Deliberately local rather than shared with the GeckoTerminal source: that module's guard
+    arrives with a separate fix, and this source has to be correct without it. ``priceUsd`` is
+    null on a pair that has never traded, and a non-finite value must be declined rather than
+    raised on — ``Decimal('nan') > 0`` raises, and a raise here would escape ``_fetch_prices``
+    into ``fetch_prices``'s broad ``except`` and drop the whole batch, unpricing every token it
+    had already resolved.
+    """
+    number = _to_float(value)
+    if number is None or number <= 0:
+        return None
+    return Decimal(str(number))
 
 
 def _select_price(pairs: List[Dict], address: str) -> Optional[Decimal]:

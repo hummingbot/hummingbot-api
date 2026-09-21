@@ -31,6 +31,7 @@ import pytest
 from services.dexscreener_price_source import (
     DexScreenerPriceSource,
     _select_price,
+    _to_decimal,
     _to_float,
 )
 
@@ -126,6 +127,19 @@ def test_finite_floats_parse(value, expected):
 @pytest.mark.parametrize("value", [None, "", float("nan"), float("inf"), "abc"])
 def test_non_finite_floats_are_rejected(value):
     assert _to_float(value) is None
+
+
+@pytest.mark.parametrize("value", [float("nan"), "nan", float("inf"), float("-inf"), "Infinity", 0, -1, None, ""])
+def test_an_unpriceable_value_yields_none_instead_of_raising(value):
+    """This module owns its parsing rather than borrowing GeckoTerminal's, so the guard has to
+    hold here on its own: ``Decimal('nan') > 0`` raises, and a raise mid-batch would drop every
+    token the batch had already priced."""
+    assert _to_decimal(value) is None
+
+
+@pytest.mark.parametrize("value,expected", [("1.74", Decimal("1.74")), (0.00003123, Decimal("3.123e-05"))])
+def test_a_positive_price_parses(value, expected):
+    assert _to_decimal(value) == expected
 
 
 # --- fetch_prices: the contract with the caller -----------------------------------------
