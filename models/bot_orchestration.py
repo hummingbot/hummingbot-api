@@ -18,10 +18,20 @@ def _validate_safe_name(name: str, label: str) -> str:
     return name
 
 
+# A config name may carry a version tag with a dot - the dashboard saves every controller
+# config as "<base>_<major>.<minor>" - so a dot is allowed BETWEEN two plain segments. Never
+# at either end and never doubled: "..", ".hidden" and "name." stay out, as does a separator.
+SAFE_CONFIG_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$")
+
+
 def validate_safe_config_name(name: str, label: str) -> str:
     """Validate a config file name, ignoring an optional .yml extension before checking the base name."""
     base_name = name[:-4] if name.endswith(".yml") else name
-    _validate_safe_name(base_name, label)
+    if not base_name or not SAFE_CONFIG_NAME_PATTERN.fullmatch(base_name):
+        raise ValueError(
+            f"Invalid {label}: '{name}'. Only letters, numbers, underscores, hyphens and a dot "
+            f"between them (a version tag such as 'name_0.1') are allowed."
+        )
     return name
 
 
