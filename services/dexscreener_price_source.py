@@ -70,6 +70,13 @@ _FETCH_TIMEOUT = 10.0
 # interchangeable: DexScreener calls Ethereum "ethereum" where GeckoTerminal calls it "eth",
 # and Polygon "polygon" against GeckoTerminal's "polygon_pos".
 #
+# The segment alone is enough to key this, which is worth stating because it is not obvious:
+# Gateway hangs every EVM chain off the ``ethereum`` chain -- its network list holds
+# ethereum-mainnet, ethereum-base, ethereum-arbitrum, ethereum-bsc and so on -- so the segment is
+# what identifies the chain, and only Ethereum L1 carries "mainnet". There is no base-mainnet or
+# arbitrum-mainnet for it to collide with. An id shaped like one would break that identity rather
+# than merely extend the map, so it is worth checking instead of trusting.
+#
 # Only ids verified against the live API are listed (mode is absent for that reason alone), and
 # a network absent from the map is not priced via DexScreener at all. That is the point rather
 # than an omission: an unnameable chain cannot be verified, and an unverified pool can be the
