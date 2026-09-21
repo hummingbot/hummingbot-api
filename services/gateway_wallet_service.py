@@ -5,6 +5,7 @@ from typing import Dict, List, Optional
 
 from fastapi import HTTPException
 
+from services.dexscreener_price_source import DexScreenerPriceSource
 from services.gateway_client import GatewayClient, GatewayError, check_gateway_error
 from services.gecko_price_source import GeckoPriceSource
 
@@ -50,12 +51,15 @@ class GatewayWalletService:
         """
         self.gateway_client = gateway_client
         self._market_data_service = market_data_service
-        # Batched DEX price lookups via GeckoTerminal, tried before per-token Gateway quotes.
+        # Batched DEX price lookups, tried before per-token Gateway quotes. GeckoTerminal is
+        # authoritative; DexScreener only prices what it leaves unanswered.
         self._gecko_source = GeckoPriceSource(gateway_client)
+        self._dexscreener_source = DexScreenerPriceSource(gateway_client)
 
     async def close(self) -> None:
-        """Release resources held by this service (the GeckoTerminal HTTP client)."""
+        """Release resources held by this service (the price sources' HTTP clients)."""
         await self._gecko_source.close()
+        await self._dexscreener_source.close()
 
     async def _require_gateway(self) -> None:
         """Raise a 503 HTTPException if the Gateway service is not reachable."""
@@ -293,6 +297,21 @@ class GatewayWalletService:
         except Exception as e:
             logger.warning(f"GeckoTerminal pricing failed for {full_network}: {e}")
 
+        # DexScreener only for what GeckoTerminal left unanswered — GeckoTerminal stays the
+        # authoritative source, so a token it priced is never re-priced here. This is the last
+        # batch source before the per-token Gateway loop below, which costs one rate-limited
+        # Jupiter quote per token.
+        missing = [t for t in tokens if t not in prices]
+        if missing:
+            try:
+                dexscreener_prices = await self._dexscreener_source.fetch_prices(chain, network, missing)
+                for token, price in dexscreener_prices.items():
+                    prices[token] = price
+                    publish_price(f"{token}-{quote_asset}", price)
+                    logger.debug(f"Fetched DexScreener price for {token}: {price} {quote_asset}")
+            except Exception as e:
+                logger.warning(f"DexScreener pricing failed for {full_network}: {e}")
+
         for token in tokens:
             token_upper = token.upper()
 
@@ -303,7 +322,8 @@ class GatewayWalletService:
                 logger.debug(f"Skipping same-token quote for {token}, price=1")
                 continue
 
-            # Already priced by GeckoTerminal above - no Gateway quote needed.
+            # Already priced by a batch source above (GeckoTerminal, else DexScreener) - no
+            # Gateway quote needed.
             if token in prices:
                 continue
 
