@@ -14,10 +14,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4.1.1
 
-      - name: Extract version from main.py
+      - name: Extract version from version.py
         id: get_version
         run: |
-          VERSION=$(grep -E '^VERSION *= *' main.py | head -1 | sed -E 's/^VERSION *= *["\x27]?([^"\x27]*)["\x27]?/\1/')
+          VERSION=$(grep -E '^VERSION *= *' version.py | head -1 | sed -E 's/^VERSION *= *["\x27]?([^"\x27]*)["\x27]?/\1/')
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Set up QEMU

@@ -181,6 +181,9 @@ from .portfolio import (
 # Script models
 from .scripts import Script, ScriptConfig, ScriptConfigResponse, ScriptResponse
 
+# System models
+from .system import SelfUpgradeRequest
+
 # Trading models
 from .trading import (
     AccountBalance,
@@ -382,4 +385,6 @@ __all__ = [
     "ExecutorsSummaryResponse",
     "OrphanedPositionRecord",
     "OrphanedPositionsResponse",
+    # System models
+    "SelfUpgradeRequest",
 ]
