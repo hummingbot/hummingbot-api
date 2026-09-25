@@ -13,6 +13,8 @@ adopted by price.
 import json
 import logging
 import os
+import tempfile
+import threading
 import time
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
@@ -185,6 +187,11 @@ def order_ledger(executor: Any) -> Dict[str, Dict[str, Any]]:
 # database task gets a turn. Lives under bots/ so a container recreate keeps it:
 # compose mounts that directory, not /hummingbot-api/data.
 LEDGER_KEEP_SECONDS = 48 * 3600
+LEDGER_LOCK = threading.Lock()
+
+
+class _LedgerReadError(OSError):
+    """The ledger file exists but could not be read. Not an empty ledger."""
 
 
 def order_ledger_path() -> str:
@@ -210,21 +217,81 @@ def _read_ledger() -> List[Dict[str, Any]]:
                     rows.append(row)
     except OSError as exc:
         logger.warning("order ledger read failed: %s", exc)
-        return []
+        raise _LedgerReadError(str(exc)) from exc
     return rows
 
 
-def _write_ledger(rows: List[Dict[str, Any]]) -> None:
-    path = order_ledger_path()
+def _fsync_directory(path: str) -> None:
+    directory = os.path.dirname(path)
+    if not directory:
+        return
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as handle:
+        descriptor = os.open(directory, os.O_RDONLY)
+    except OSError as exc:
+        logger.warning("order ledger directory fsync failed: %s", exc)
+        return
+    try:
+        os.fsync(descriptor)
+    except OSError as exc:
+        logger.warning("order ledger directory fsync failed: %s", exc)
+    finally:
+        os.close(descriptor)
+
+
+def _write_ledger(rows: List[Dict[str, Any]]) -> None:
+    """Replace the ledger only after the new bytes are on disk."""
+    path = order_ledger_path()
+    temporary = None
+    descriptor = None
+    replaced = False
+    try:
+        directory = os.path.dirname(path) or "."
+        os.makedirs(directory, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(prefix=".order-ledger-", dir=directory)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            descriptor = None
             for row in rows:
                 handle.write(json.dumps(row) + "\n")
             handle.flush()
             os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        replaced = True
+        temporary = None
+        _fsync_directory(path)
     except OSError as exc:
         logger.warning("order ledger write failed: %s", exc)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if temporary and not replaced:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+
+
+def _append_ledger_line(row: Dict[str, Any]) -> None:
+    """Append one id when a rewrite would have to follow a failed read."""
+    path = order_ledger_path()
+    descriptor = None
+    try:
+        directory = os.path.dirname(path) or "."
+        os.makedirs(directory, exist_ok=True)
+        descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+        size = os.lseek(descriptor, 0, os.SEEK_END)
+        if size:
+            os.lseek(descriptor, size - 1, os.SEEK_SET)
+            last = os.read(descriptor, 1)
+            os.lseek(descriptor, 0, os.SEEK_END)
+            if last != b"\n":
+                os.write(descriptor, b"\n")
+        os.write(descriptor, (json.dumps(row) + "\n").encode("utf-8"))
+        os.fsync(descriptor)
+    except OSError as exc:
+        logger.warning("order ledger append failed: %s", exc)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 def remember_order_now(executor_id: str, order_id: Optional[str]) -> None:
@@ -232,26 +299,38 @@ def remember_order_now(executor_id: str, order_id: Optional[str]) -> None:
     if not executor_id or not order_id:
         return
     now = time.time()
-    cutoff = now - LEDGER_KEEP_SECONDS
-    kept = []
-    for row in _read_ledger():
+    row = {"executor_id": executor_id, "order_id": order_id, "ts": now}
+    with LEDGER_LOCK:
         try:
-            ts = float(row.get("ts") or 0)
-        except (TypeError, ValueError):
-            continue
-        if ts >= cutoff:
-            kept.append(row)
-    kept.append({"executor_id": executor_id, "order_id": order_id, "ts": now})
-    _write_ledger(kept)
+            existing = _read_ledger()
+        except _LedgerReadError:
+            _append_ledger_line(row)
+            return
+        cutoff = now - LEDGER_KEEP_SECONDS
+        kept = []
+        for item in existing:
+            try:
+                ts = float(item.get("ts") or 0)
+            except (TypeError, ValueError):
+                continue
+            if ts >= cutoff:
+                kept.append(item)
+        kept.append(row)
+        _write_ledger(kept)
 
 
 def recent_order_ids(executor_id: str) -> List[str]:
     """Ids noted for this executor inside the keep window, newest unique."""
     if not executor_id:
         return []
+    try:
+        rows = _read_ledger()
+    except _LedgerReadError:
+        logger.warning("order ledger unreadable during resume; no extra ids")
+        return []
     cutoff = time.time() - LEDGER_KEEP_SECONDS
     latest: Dict[str, float] = {}
-    for row in _read_ledger():
+    for row in rows:
         if row.get("executor_id") != executor_id or not row.get("order_id"):
             continue
         try:
@@ -486,6 +565,21 @@ def resolve_saved_order(
 TOUCH_BAND = Decimal("0.003")
 
 
+def _price_missing(value: Any) -> bool:
+    """True for a missing quote, including NaN, which does not raise."""
+    if value is None:
+        return True
+    if isinstance(value, float):
+        return value != value
+    if isinstance(value, Decimal):
+        return value.is_nan()
+    try:
+        parsed = Decimal(str(value))
+    except (ArithmeticError, ValueError, TypeError):
+        return True
+    return parsed.is_nan()
+
+
 def _near_market(price: Any, market: Any) -> bool:
     try:
         mid = Decimal(str(market))
@@ -670,11 +764,22 @@ def grid_resume_plan(
             "notice": None,
             "ambiguous_ids": [],
             "blocked_prices": [],
+            "blocked_orders": [],
+            "touch_hold_ids": [],
+            "touch_zero_unknown_market": False,
         }
-    near = [order for order in loose if _near_market(_order_price(order), market_price)]
-    budget = 0 if near or market_price is None else 1
+    unknown_market = _price_missing(market_price)
+    near = [] if unknown_market else [
+        order for order in loose if _near_market(_order_price(order), market_price)
+    ]
+    budget = 0 if near or unknown_market else 1
     blocked_prices = [
         _text(_order_price(order)) for order in loose if _order_price(order) is not None
+    ]
+    blocked_orders = [
+        {"order_id": _order_id(order), "price": _text(_order_price(order))}
+        for order in loose
+        if _order_id(order)
     ]
     pair = checkpoint.get("trading_pair") or "the grid"
     side_name = "buy" if side == "BUY" else "sell" if side == "SELL" else "either"
@@ -696,6 +801,9 @@ def grid_resume_plan(
         "notice": notice,
         "ambiguous_ids": [_order_id(order) for order in loose],
         "blocked_prices": blocked_prices,
+        "blocked_orders": blocked_orders,
+        "touch_hold_ids": [_order_id(order) for order in near if _order_id(order)],
+        "touch_zero_unknown_market": unknown_market,
     }
 
 
@@ -898,3 +1006,507 @@ def apply_checkpoint(executor: Any, checkpoint: Dict[str, Any], live_orders: Lis
         return
 
     raise ValueError(f"cannot apply checkpoint for {kind}")
+
+def cap_arguments(plan: Any) -> Dict[str, Any]:
+    """Copy installer inputs without turning a missing key into an empty list."""
+    if not isinstance(plan, dict):
+        return {}
+    keys = (
+        "touch_budget",
+        "blocked_orders",
+        "blocked_prices",
+        "touch_hold_ids",
+        "touch_zero_unknown_market",
+    )
+    return {key: plan[key] for key in keys if key in plan}
+
+
+def _decimal(value: Any) -> Optional[Decimal]:
+    if isinstance(value, Decimal):
+        return None if value.is_nan() else value
+    if isinstance(value, float) and value != value:
+        return None
+    try:
+        parsed = Decimal(str(value))
+    except (ArithmeticError, ValueError, TypeError):
+        return None
+    if parsed.is_nan():
+        return None
+    return parsed
+
+
+def _positive_tick(executor: Any) -> Optional[Decimal]:
+    rules = getattr(executor, "trading_rules", None)
+    tick = _decimal(getattr(rules, "min_price_increment", None))
+    if tick is None or tick <= 0:
+        return None
+    return tick
+
+
+def _quantize(price: Any, tick: Decimal) -> Optional[Decimal]:
+    number = _decimal(price)
+    if number is None:
+        return None
+    return (number // tick) * tick
+
+
+def _same_tick(left: Any, right: Any, tick: Optional[Decimal]) -> Optional[bool]:
+    """True when both prices land on one tick. None means the tick cannot be used."""
+    if tick is None:
+        return None
+    quantized_left = _quantize(left, tick)
+    quantized_right = _quantize(right, tick)
+    if quantized_left is None or quantized_right is None:
+        return None
+    return quantized_left == quantized_right
+
+
+def _side_from_config(executor: Any) -> Optional[str]:
+    side = getattr(getattr(executor, "config", None), "side", None)
+    name = getattr(side, "name", None)
+    if name in ("BUY", "SELL"):
+        return name
+    return None
+
+
+def _spread(executor: Any) -> Optional[Decimal]:
+    spread = _decimal(getattr(getattr(executor, "config", None), "safe_extra_spread", None))
+    if spread is None or spread < 0:
+        return None
+    return spread
+
+
+def _quote(executor: Any) -> Optional[Decimal]:
+    return _decimal(getattr(executor, "current_open_quote", None))
+
+
+def _touch_formula(quote: Decimal, side: str, spread: Decimal) -> Decimal:
+    if side == "BUY":
+        return quote * (1 - spread)
+    return quote * (1 + spread)
+
+
+def _placement(level_price: Any, quote: Decimal, side: str, spread: Decimal) -> Optional[Decimal]:
+    price = _decimal(level_price)
+    if price is None:
+        return None
+    if side == "BUY" and price >= quote:
+        return _touch_formula(quote, side, spread)
+    if side == "SELL" and price <= quote:
+        return _touch_formula(quote, side, spread)
+    return price
+
+
+def _pair_name(executor: Any) -> Optional[str]:
+    return getattr(getattr(executor, "config", None), "trading_pair", None)
+
+
+def _on_pair(order: Any, pair: Optional[str]) -> bool:
+    if not pair:
+        return True
+    order_pair = getattr(order, "trading_pair", None)
+    if order_pair is None and isinstance(order, dict):
+        order_pair = order.get("trading_pair")
+    return order_pair in (None, pair)
+
+
+def _read_order_book(executor: Any) -> Optional[Dict[str, Any]]:
+    """Active book plus tracker caches. None means the active book was not read."""
+    connectors = getattr(executor, "connectors", None)
+    if not connectors:
+        return None
+    pair = _pair_name(executor)
+    active: List[Any] = []
+    cached: List[Any] = []
+    lost: List[Any] = []
+    ready = True
+    try:
+        values = list(connectors.values())
+        if not values:
+            return None
+        for connector in values:
+            if getattr(connector, "ready", None) is not True:
+                ready = False
+            inflight = getattr(connector, "in_flight_orders", None)
+            if not isinstance(inflight, dict):
+                return None
+            for order in inflight.values():
+                if _on_pair(order, pair):
+                    active.append(order)
+            tracker = getattr(connector, "_order_tracker", None)
+            if tracker is None:
+                continue
+            for order in (getattr(tracker, "cached_orders", None) or {}).values():
+                if _on_pair(order, pair):
+                    cached.append(order)
+            for order in (getattr(tracker, "lost_orders", None) or {}).values():
+                if _on_pair(order, pair):
+                    lost.append(order)
+    except Exception:
+        logger.warning("grid resume book unreadable", exc_info=True)
+        return None
+    return {"ready": ready, "active": active, "cached": cached, "lost": lost}
+
+
+def _cached_finished(book: Optional[Dict[str, Any]], remembered: set) -> set:
+    """Completions already in the tracker cache. An unread active book is not a completion."""
+    done = set(remembered)
+    if not book:
+        return done
+    for order in book["cached"]:
+        order_id = _order_id(order)
+        if order_id and not _is_open(order):
+            done.add(order_id)
+    return done
+
+
+def _finished_ids(book: Optional[Dict[str, Any]], remembered: set) -> set:
+    done = _cached_finished(book, remembered)
+    if not book or not book["ready"]:
+        return done
+    for order in book["active"]:
+        order_id = _order_id(order)
+        if order_id and not _is_open(order):
+            done.add(order_id)
+    return done
+
+
+def _rows(value: Any) -> Optional[List[Dict[str, Any]]]:
+    if not isinstance(value, list):
+        return None
+    return [row for row in value if isinstance(row, dict)]
+
+
+def _unfinished_rows(rows: Optional[List[Dict[str, Any]]], finished: set) -> List[Dict[str, Any]]:
+    if not rows:
+        return []
+    kept = []
+    for row in rows:
+        order_id = row.get("order_id")
+        if order_id and order_id in finished:
+            continue
+        kept.append(row)
+    return kept
+
+
+def _eternal_prices(prices: Any, pairs: Optional[List[Dict[str, Any]]], tick: Optional[Decimal]) -> List[Any]:
+    if not isinstance(prices, list):
+        return []
+    if not isinstance(pairs, list):
+        return list(prices)
+    eternal = []
+    for price in prices:
+        paired = False
+        for row in pairs:
+            same = _same_tick(price, row.get("price"), tick)
+            if same is True:
+                paired = True
+                break
+        if not paired:
+            eternal.append(price)
+    return eternal
+
+
+def _order_at_price(book: Optional[Dict[str, Any]], price: Any, tick: Optional[Decimal]) -> bool:
+    if book is None or tick is None or price is None:
+        return True
+    for order in list(book["active"]) + list(book["lost"]):
+        if order in book["active"] and not _is_open(order):
+            continue
+        if _same_tick(_order_price(order), price, tick) is True:
+            return True
+    return False
+
+
+def _should_install(arguments: Dict[str, Any]) -> bool:
+    orders = arguments.get("blocked_orders", None)
+    holds = arguments.get("touch_hold_ids", None)
+    prices = arguments.get("blocked_prices", None)
+    if isinstance(orders, list) and orders:
+        return True
+    if isinstance(holds, list) and holds:
+        return True
+    if isinstance(prices, list) and prices and not isinstance(orders, list):
+        return True
+    if arguments.get("touch_zero_unknown_market"):
+        return True
+    if "touch_budget" in arguments and arguments["touch_budget"] is not None:
+        return True
+    return False
+
+
+def install_grid_resume_cap(executor: Any, plan: Any) -> bool:
+    """Wrap order proposals. False when there is nothing to limit."""
+    arguments = cap_arguments(plan)
+    if not _should_install(arguments):
+        return False
+    _bind_precise_cap(executor, arguments)
+    return True
+
+
+def blank_grid_cap(executor: Any) -> None:
+    """Last resort: do not leave the original proposer in place."""
+    executor.get_open_orders_to_create = lambda: []
+
+
+def conservative_grid_cap(executor: Any, plan: Any) -> None:
+    """Block known prices without ever turning a zero into one."""
+    arguments = cap_arguments(plan)
+    if not _should_install(arguments):
+        return
+    _bind_conservative_cap(executor, arguments)
+
+
+def _known_prices(arguments: Dict[str, Any]) -> List[Any]:
+    prices = list(arguments.get("blocked_prices") or [])
+    orders = arguments.get("blocked_orders")
+    if isinstance(orders, list):
+        for row in orders:
+            if isinstance(row, dict) and row.get("price") is not None:
+                prices.append(row.get("price"))
+    return prices
+
+
+def _bind_conservative_cap(executor: Any, arguments: Dict[str, Any]) -> None:
+    initial = arguments["touch_budget"] if "touch_budget" in arguments else 0
+    executor._touch_initial_budget = initial
+    executor._touch_place_budget = 0 if initial == 0 else initial
+    executor._touch_zero_released = False
+    original = executor.get_open_orders_to_create
+    banned = _known_prices(arguments)
+
+    def wrapped():
+        try:
+            proposed = list(original())
+        except Exception:
+            logger.warning("grid proposal failed under conservative cap", exc_info=True)
+            return []
+        allowed = []
+        for level in proposed:
+            price = getattr(level, "price", None)
+            if any(str(price) == str(item) for item in banned):
+                continue
+            if initial == 0 and _conservative_touch(level, executor):
+                continue
+            allowed.append(level)
+        return allowed
+
+    executor.get_open_orders_to_create = wrapped
+
+
+def _conservative_touch(level: Any, executor: Any) -> bool:
+    side = getattr(getattr(executor, "config", None), "side", None)
+    name = getattr(side, "name", None)
+    quote = _decimal(getattr(executor, "current_open_quote", None))
+    price = _decimal(getattr(level, "price", None))
+    if name not in ("BUY", "SELL") or quote is None or price is None:
+        return True
+    if name == "BUY":
+        return price >= quote
+    return price <= quote
+
+
+def _bind_precise_cap(executor: Any, arguments: Dict[str, Any]) -> None:
+    initial = arguments["touch_budget"] if "touch_budget" in arguments else None
+    executor._touch_initial_budget = initial
+    executor._touch_place_budget = initial
+    executor._touch_zero_released = initial in (1, None)
+    executor._seen_finished = set()
+    executor._seen_open = set()
+    executor._cap_arguments = arguments
+    original = executor.get_open_orders_to_create
+
+    def wrapped():
+        try:
+            proposed = list(original())
+        except Exception:
+            logger.warning("grid proposal failed under resume cap", exc_info=True)
+            return []
+        try:
+            return _filter_proposals(executor, proposed)
+        except Exception:
+            logger.warning("grid resume cap failed closed", exc_info=True)
+            return []
+
+    executor.get_open_orders_to_create = wrapped
+
+
+def _filter_proposals(executor: Any, proposed: List[Any]) -> List[Any]:
+    arguments = executor._cap_arguments
+    book = _read_order_book(executor)
+    if book is None or not book["ready"]:
+        executor._seen_finished = _cached_finished(book, executor._seen_finished)
+        return []
+    finished = _finished_ids(book, executor._seen_finished)
+    seen_open = _remember_open_ids(book, executor._seen_open)
+    executor._seen_finished = finished
+    executor._seen_open = seen_open
+    tick = _positive_tick(executor)
+    side = _side_from_config(executor)
+    quote = _quote(executor)
+    spread = _spread(executor)
+    pairs = _rows(arguments.get("blocked_orders")) if "blocked_orders" in arguments else None
+    prices = arguments.get("blocked_prices")
+    if tick is None and (pairs or (isinstance(prices, list) and prices)):
+        return []
+    if side is None or quote is None or spread is None:
+        return []
+    touch_entry = _touch_formula(quote, side, spread)
+    unfinished = _unfinished_rows(pairs, finished)
+    eternal = _eternal_prices(prices, pairs, tick)
+    if _uncomparable(unfinished, eternal, book, tick):
+        return []
+    allowed = []
+    touch_returned = False
+    for level in proposed:
+        level_price = getattr(level, "price", None)
+        placement = _placement(level_price, quote, side, spread)
+        if placement is None or tick is None:
+            continue
+        touching = _same_tick(placement, touch_entry, tick) is True
+        if _blocked(placement, tick, unfinished, eternal, book):
+            continue
+        if not touching:
+            allowed.append(level)
+            continue
+        if touch_returned:
+            continue
+        if not _allow_touch(
+            executor, arguments, book, finished, seen_open, unfinished, eternal, touch_entry, tick,
+        ):
+            continue
+        if not _spend_touch(
+            executor, arguments, book, finished, seen_open, unfinished, eternal, touch_entry, tick,
+        ):
+            continue
+        touch_returned = True
+        allowed.append(level)
+    return allowed
+
+
+def _uncomparable(unfinished, eternal, book, tick) -> bool:
+    """A price we cannot compare is not proof that it differs from the level."""
+    sources = [row.get("price") for row in unfinished]
+    sources.extend(eternal)
+    if book:
+        for order in book["active"]:
+            if _is_open(order):
+                sources.append(_order_price(order))
+        for order in book["lost"]:
+            sources.append(_order_price(order))
+    for price in sources:
+        if _decimal(price) is None or tick is None or _quantize(price, tick) is None:
+            return True
+    return False
+
+
+def _blocked(
+    placement: Decimal,
+    tick: Decimal,
+    unfinished: List[Dict[str, Any]],
+    eternal: List[Any],
+    book: Dict[str, Any],
+) -> bool:
+    for row in unfinished:
+        if row.get("price") is None:
+            continue
+        if _same_tick(row.get("price"), placement, tick) is True:
+            return True
+    for price in eternal:
+        if _same_tick(price, placement, tick) is True:
+            return True
+    return _order_at_price(book, placement, tick)
+
+
+def _holds_done(arguments: Dict[str, Any], finished: set) -> bool:
+    holds = arguments.get("touch_hold_ids") or []
+    if not isinstance(holds, list):
+        return False
+    return all(item in finished for item in holds)
+
+
+def _remember_open_ids(book: Optional[Dict[str, Any]], remembered: set) -> set:
+    seen = set(remembered)
+    if not book:
+        return seen
+    for order in book["active"]:
+        order_id = _order_id(order)
+        if order_id and _is_open(order):
+            seen.add(order_id)
+    return seen
+
+
+def _lost_ids(book: Optional[Dict[str, Any]]) -> set:
+    if not book:
+        return set()
+    return {order_id for order in book["lost"] if (order_id := _order_id(order))}
+
+
+def _unseen_or_lost(arguments: Dict[str, Any], book, finished: set, seen_open: set) -> bool:
+    """An id we have not seen finished still holds the zero, whatever its price."""
+    if "blocked_orders" not in arguments or not isinstance(arguments.get("blocked_orders"), list):
+        return False
+    lost = _lost_ids(book)
+    for row in arguments["blocked_orders"]:
+        if not isinstance(row, dict):
+            return True
+        order_id = row.get("order_id")
+        if not order_id or order_id in lost:
+            return True
+        if order_id not in finished and order_id not in seen_open:
+            return True
+    return False
+
+
+def _allow_touch(executor, arguments, book, finished, seen_open, unfinished, eternal, touch_entry, tick) -> bool:
+    remaining = executor._touch_place_budget
+    if remaining is None:
+        return True
+    if remaining > 0:
+        return True
+    return _can_release_zero(
+        executor, arguments, book, finished, seen_open, unfinished, eternal, touch_entry, tick,
+    )
+
+
+def _can_release_zero(executor, arguments, book, finished, seen_open, unfinished, eternal, touch_entry, tick) -> bool:
+    if executor._touch_initial_budget != 0 or executor._touch_zero_released:
+        return False
+    if book is None or not book["ready"] or tick is None:
+        return False
+    if not _holds_done(arguments, finished):
+        return False
+    if _unseen_or_lost(arguments, book, finished, seen_open):
+        return False
+    if "blocked_orders" not in arguments and isinstance(arguments.get("blocked_prices"), list) and arguments["blocked_prices"]:
+        return False
+    for row in unfinished:
+        if _decimal(row.get("price")) is None:
+            return False
+        if _same_tick(row.get("price"), touch_entry, tick) is True:
+            return False
+    for price in eternal:
+        same = _same_tick(price, touch_entry, tick)
+        if same is None or same:
+            return False
+    if _order_at_price(book, touch_entry, tick):
+        return False
+    return True
+
+
+def _spend_touch(executor, arguments, book, finished, seen_open, unfinished, eternal, touch_entry, tick) -> bool:
+    remaining = executor._touch_place_budget
+    if remaining is None:
+        return True
+    if remaining == 0:
+        if not _can_release_zero(
+            executor, arguments, book, finished, seen_open, unfinished, eternal, touch_entry, tick,
+        ):
+            return False
+        executor._touch_place_budget = 1
+        remaining = 1
+    if remaining <= 0:
+        return False
+    executor._touch_place_budget = remaining - 1
+    executor._touch_zero_released = True
+    return True

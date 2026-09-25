@@ -57,10 +57,11 @@ from utils.executor_checkpoint import (
     note_placed,
     parse_checkpoint,
     recent_order_ids,
-    matches_blocked_price,
+    blank_grid_cap,
+    conservative_grid_cap,
+    install_grid_resume_cap,
     remember_order_now,
     saved_order_ids,
-    would_place_at_touch,
 )
 from utils.executor_log_capture import ExecutorLogCapture, current_executor_id
 from utils.trading_pair import InvalidTradingPair, split_trading_pair
@@ -1068,34 +1069,20 @@ class ExecutorService:
         except Exception:
             return None
 
-    def _install_touch_cap(self, executor: ExecutorBase, budget, blocked_prices=None) -> None:
-        """Cap new orders at the current price, and skip prices already occupied."""
-        executor._touch_place_budget = budget
-        blocked = list(blocked_prices or [])
-        original = executor.get_open_orders_to_create
-
-        def wrapped():
-            proposed = original()
-            remaining = getattr(executor, "_touch_place_budget", None)
-            market = getattr(executor, "current_open_quote", None)
-            side = getattr(getattr(executor, "config", None), "side", None)
-            side_name = getattr(side, "name", None)
-            allowed = []
-            for level in proposed:
-                if matches_blocked_price(getattr(level, "price", None), blocked):
-                    continue
-                if remaining is None or not would_place_at_touch(
-                    getattr(level, "price", None), market, side_name
-                ):
-                    allowed.append(level)
-                    continue
-                if remaining > 0:
-                    remaining -= 1
-                    executor._touch_place_budget = remaining
-                    allowed.append(level)
-            return allowed
-
-        executor.get_open_orders_to_create = wrapped
+    def _install_touch_cap(self, executor: ExecutorBase, plan: Dict[str, Any]) -> None:
+        """Limit new grid orders. A failure here must not drop the running row."""
+        try:
+            install_grid_resume_cap(executor, plan)
+        except Exception:
+            logger.exception("grid resume cap failed; keeping known prices blocked")
+            try:
+                conservative_grid_cap(executor, plan)
+            except Exception:
+                logger.exception("conservative grid cap failed; blocking new orders")
+                try:
+                    blank_grid_cap(executor)
+                except Exception:
+                    logger.exception("blank grid cap failed; resume continues")
 
     async def _resume_one(self, row: Dict[str, Any], owned_by: Optional[Dict[str, str]] = None) -> Optional[str]:
         """None on success. A string is why this row was left for cleanup."""
@@ -1169,14 +1156,8 @@ class ExecutorService:
                 executor.validate_sufficient_balance = _skip_balance_check
             apply_checkpoint(executor, checkpoint, live_orders)
             notice = None
-            if plan and (
-                plan.get("touch_budget") is not None or plan.get("blocked_prices")
-            ):
-                self._install_touch_cap(
-                    executor,
-                    plan.get("touch_budget"),
-                    plan.get("blocked_prices") or [],
-                )
+            if plan:
+                self._install_touch_cap(executor, plan)
                 notice = plan.get("notice")
             self._start_registered_executor(row["executor_id"], executor)
             started = True
