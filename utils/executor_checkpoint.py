@@ -5,14 +5,19 @@ Recreating the executor from its create-config places a second set of orders.
 This module records the order ids (and, for a filled order, the order itself)
 so the same executor can be started again and reattached.
 
-Nothing here places or cancels an order. If the saved state cannot be attached
-without guessing, resume is refused and the row stays for the unattended list.
+Nothing here places or cancels an order. A grid is not refused because one
+open order fits two levels: that order stays unattached and new orders at its
+price are capped. An order id this checkpoint does not already own is never
+adopted by price.
 """
 import json
+import logging
 import os
 import time
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 CHECKPOINT_VERSION = 1
 
@@ -177,44 +182,86 @@ def order_ledger(executor: Any) -> Dict[str, Dict[str, Any]]:
 
 
 # Written in the same moment the exchange accepts the order, before the
-# database task gets a turn. A restart reads this if the database note is behind.
-ORDER_LEDGER_PATH = "/hummingbot-api/data/order-ledger.jsonl"
+# database task gets a turn. Lives under bots/ so a container recreate keeps it:
+# compose mounts that directory, not /hummingbot-api/data.
+LEDGER_KEEP_SECONDS = 48 * 3600
+
+
+def order_ledger_path() -> str:
+    return os.environ.get(
+        "EXECUTOR_ORDER_LEDGER",
+        "/hummingbot-api/bots/data/order-ledger.jsonl",
+    )
+
+
+def _read_ledger() -> List[Dict[str, Any]]:
+    path = order_ledger_path()
+    if not os.path.exists(path):
+        return []
+    rows = []
+    try:
+        with open(path, encoding="utf-8") as handle:
+            for line in handle:
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(row, dict):
+                    rows.append(row)
+    except OSError as exc:
+        logger.warning("order ledger read failed: %s", exc)
+        return []
+    return rows
+
+
+def _write_ledger(rows: List[Dict[str, Any]]) -> None:
+    path = order_ledger_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            for row in rows:
+                handle.write(json.dumps(row) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+    except OSError as exc:
+        logger.warning("order ledger write failed: %s", exc)
 
 
 def remember_order_now(executor_id: str, order_id: Optional[str]) -> None:
     """Durably note an order id before the async database write runs."""
     if not executor_id or not order_id:
         return
-    try:
-        os.makedirs(os.path.dirname(ORDER_LEDGER_PATH), exist_ok=True)
-        with open(ORDER_LEDGER_PATH, "a", encoding="utf-8") as handle:
-            handle.write(json.dumps({
-                "executor_id": executor_id,
-                "order_id": order_id,
-                "ts": time.time(),
-            }) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-    except OSError:
-        return
+    now = time.time()
+    cutoff = now - LEDGER_KEEP_SECONDS
+    kept = []
+    for row in _read_ledger():
+        try:
+            ts = float(row.get("ts") or 0)
+        except (TypeError, ValueError):
+            continue
+        if ts >= cutoff:
+            kept.append(row)
+    kept.append({"executor_id": executor_id, "order_id": order_id, "ts": now})
+    _write_ledger(kept)
 
 
 def recent_order_ids(executor_id: str) -> List[str]:
-    if not executor_id or not os.path.exists(ORDER_LEDGER_PATH):
+    """Ids noted for this executor inside the keep window, newest unique."""
+    if not executor_id:
         return []
-    found = []
-    try:
-        with open(ORDER_LEDGER_PATH, encoding="utf-8") as handle:
-            for line in handle:
-                try:
-                    row = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if row.get("executor_id") == executor_id and row.get("order_id"):
-                    found.append(row["order_id"])
-    except OSError:
-        return []
-    return found
+    cutoff = time.time() - LEDGER_KEEP_SECONDS
+    latest: Dict[str, float] = {}
+    for row in _read_ledger():
+        if row.get("executor_id") != executor_id or not row.get("order_id"):
+            continue
+        try:
+            ts = float(row.get("ts") or 0)
+        except (TypeError, ValueError):
+            continue
+        if ts < cutoff:
+            continue
+        latest[str(row["order_id"])] = ts
+    return list(latest)
 
 
 def note_placed(executor: Any, order_id: Optional[str]) -> None:
@@ -496,6 +543,103 @@ def would_place_at_touch(level_price: Any, market_price: Any, side: Optional[str
     return False
 
 
+def _order_id(order: Any) -> Optional[str]:
+    if isinstance(order, dict):
+        raw = order.get("order_id") or order.get("client_order_id")
+    else:
+        raw = getattr(order, "client_order_id", None) or getattr(order, "order_id", None)
+    return str(raw) if raw else None
+
+
+def _order_price(order: Any) -> Any:
+    if isinstance(order, dict):
+        return order.get("price")
+    return getattr(order, "price", None)
+
+
+def _is_open(order: Any) -> bool:
+    if isinstance(order, dict):
+        return bool(order.get("is_open", True))
+    return bool(getattr(order, "is_open", False))
+
+
+def _side_name(raw: Any) -> Optional[str]:
+    if raw is None:
+        return None
+    name = getattr(raw, "name", None)
+    text = str(name or raw).upper()
+    if text.endswith("BUY"):
+        return "BUY"
+    if text.endswith("SELL"):
+        return "SELL"
+    return None
+
+
+def _order_side(order: Any) -> Optional[str]:
+    if isinstance(order, dict):
+        return _side_name(order.get("side") or order.get("trade_type"))
+    return _side_name(getattr(order, "trade_type", None) or getattr(order, "side", None))
+
+
+def _level_side(level: Dict[str, Any]) -> Optional[str]:
+    return _side_name(level.get("side"))
+
+
+def _copy_levels(levels: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    copied = []
+    for level in levels:
+        item = dict(level)
+        if item.get("open_order"):
+            item["open_order"] = dict(item["open_order"])
+        copied.append(item)
+    return copied
+
+
+def seat_known_opens(
+    levels: List[Dict[str, Any]],
+    live_orders: List[Any],
+    allowed_ids: set,
+) -> set:
+    """Seat an order this checkpoint already owns onto one empty level.
+
+    A foreign id is not seated. Two matching levels are not a guess: the order
+    stays loose and the resume plan caps a new order at that price.
+    """
+    claimed = set()
+    for level in levels:
+        for key in ("open_order", "close_order"):
+            saved = level.get(key) or {}
+            if saved.get("order_id"):
+                claimed.add(saved["order_id"])
+    seated = set()
+    for order in live_orders:
+        order_id = _order_id(order)
+        if not order_id or order_id not in allowed_ids or order_id in claimed or not _is_open(order):
+            continue
+        side = _order_side(order)
+        if side is None:
+            continue
+        matches = [
+            level for level in levels
+            if not (level.get("open_order") or {}).get("order_id")
+            and _level_side(level) == side
+            and _prices_match(_order_price(order), level.get("price"))
+        ]
+        if len(matches) != 1:
+            continue
+        payload = {"order_id": order_id, "filled": False, "order": None}
+        if hasattr(order, "to_json"):
+            payload["order"] = order.to_json()
+        matches[0]["open_order"] = payload
+        claimed.add(order_id)
+        seated.add(order_id)
+    return seated
+
+
+def matches_blocked_price(level_price: Any, blocked_prices: List[Any]) -> bool:
+    return any(_prices_match(level_price, blocked) for blocked in blocked_prices)
+
+
 def grid_resume_plan(
     checkpoint: Dict[str, Any],
     live_orders: List[Dict[str, Any]],
@@ -504,33 +648,34 @@ def grid_resume_plan(
 ) -> Dict[str, Any]:
     """How a grid may continue when one order was not in the last note.
 
-    The grid stays alive. Orders whose numbers we have keep working. A lost
-    order at its own unique price may be placed again. Orders that would all
-    land on the current market price are capped: if one unrecognized order is
-    already there, add none; otherwise add at most one.
+    The grid stays alive. Orders whose numbers we have keep working. An order
+    that is still open and not seated on a level blocks a new order at that
+    price. Orders that would land on the current market price are capped.
     """
-    claimed = _saved_ids(checkpoint)
-    unclaimed = [
+    levels = _copy_levels(checkpoint.get("levels") or [])
+    seat_known_opens(levels, live_orders, _saved_ids(checkpoint))
+    attached = set()
+    for level in levels:
+        for key in ("open_order", "close_order"):
+            saved = level.get(key) or {}
+            if saved.get("order_id"):
+                attached.add(saved["order_id"])
+    loose = [
         order for order in live_orders
-        if order.get("order_id") not in claimed and order.get("is_open", True)
+        if _is_open(order) and _order_id(order) and _order_id(order) not in attached
     ]
-    empty = [
-        level for level in checkpoint.get("levels") or []
-        if not (level.get("open_order") or {}).get("order_id")
-    ]
-    ambiguous = []
-    for order in unclaimed:
-        matches = [
-            level for level in empty
-            if _prices_match(order.get("price"), level.get("price"))
-        ]
-        if len(matches) == 1:
-            continue
-        ambiguous.append(order)
-    if not ambiguous:
-        return {"touch_budget": None, "notice": None, "ambiguous_ids": []}
-    near = [order for order in ambiguous if _near_market(order.get("price"), market_price)]
+    if not loose:
+        return {
+            "touch_budget": None,
+            "notice": None,
+            "ambiguous_ids": [],
+            "blocked_prices": [],
+        }
+    near = [order for order in loose if _near_market(_order_price(order), market_price)]
     budget = 0 if near or market_price is None else 1
+    blocked_prices = [
+        _text(_order_price(order)) for order in loose if _order_price(order) is not None
+    ]
     pair = checkpoint.get("trading_pair") or "the grid"
     side_name = "buy" if side == "BUY" else "sell" if side == "SELL" else "either"
     if budget == 0:
@@ -542,14 +687,15 @@ def grid_resume_plan(
         detail = "At most one new order is placed at the current price."
     notice = (
         f"Grid {pair} ({side_name}) continued after restart. "
-        f"{len(ambiguous)} order(s) were missing from the last checkpoint. {detail} "
+        f"{len(loose)} order(s) were missing from the last checkpoint. {detail} "
         "Other levels that would land on that same price are not restored. "
         "Known orders keep working."
     )
     return {
         "touch_budget": budget,
         "notice": notice,
-        "ambiguous_ids": [order.get("order_id") for order in ambiguous],
+        "ambiguous_ids": [_order_id(order) for order in loose],
+        "blocked_prices": blocked_prices,
     }
 
 
@@ -598,6 +744,7 @@ def live_order_view(order: Any) -> Dict[str, Any]:
         "order_id": getattr(order, "client_order_id", None),
         "price": _text(getattr(order, "price", None)),
         "trading_pair": getattr(order, "trading_pair", None),
+        "side": _order_side(order),
         "is_open": bool(getattr(order, "is_open", False)),
         "is_filled": bool(getattr(order, "is_filled", False)),
     }
@@ -626,37 +773,6 @@ def _attach(saved: Optional[Dict[str, Any]], live_by_id: Dict[str, Any]) -> Any:
     return None
 
 
-def _adopt_grid_opens(levels: List[Dict[str, Any]], live_orders: List[Any]) -> Optional[str]:
-    """Attach a still-open order the checkpoint missed, when exactly one level fits."""
-    claimed = set()
-    for level in levels:
-        for key in ("open_order", "close_order"):
-            saved = level.get(key) or {}
-            if saved.get("order_id"):
-                claimed.add(saved["order_id"])
-    for order in live_orders:
-        order_id = getattr(order, "client_order_id", None)
-        if not order_id or order_id in claimed or not getattr(order, "is_open", False):
-            continue
-        matches = [
-            level for level in levels
-            if not (level.get("open_order") or {}).get("order_id")
-            and _prices_match(getattr(order, "price", None), level.get("price"))
-        ]
-        if len(matches) > 1:
-            return (
-                f"open order {order_id} is not in the checkpoint "
-                f"and matches {len(matches)} grid levels"
-            )
-        if len(matches) == 0:
-            continue
-        matches[0]["open_order"] = {
-            "order_id": order_id,
-            "filled": False,
-            "order": order.to_json() if hasattr(order, "to_json") else None,
-        }
-        claimed.add(order_id)
-    return None
 
 
 def seed_ledger(executor: Any, checkpoint: Dict[str, Any]) -> None:
@@ -691,9 +807,11 @@ def apply_checkpoint(executor: Any, checkpoint: Dict[str, Any], live_orders: Lis
     kind = checkpoint.get("type")
 
     if kind == "grid_executor":
-        adopted = _adopt_grid_opens(checkpoint.get("levels") or [], live_orders)
-        if adopted:
-            raise ValueError(adopted)
+        seat_known_opens(
+            checkpoint.get("levels") or [],
+            live_orders,
+            _saved_ids(checkpoint),
+        )
         restored = []
         for raw in checkpoint.get("levels") or []:
             level = GridLevel(

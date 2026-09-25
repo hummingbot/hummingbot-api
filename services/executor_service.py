@@ -57,6 +57,7 @@ from utils.executor_checkpoint import (
     note_placed,
     parse_checkpoint,
     recent_order_ids,
+    matches_blocked_price,
     remember_order_now,
     saved_order_ids,
     would_place_at_touch,
@@ -1067,22 +1068,25 @@ class ExecutorService:
         except Exception:
             return None
 
-    def _install_touch_cap(self, executor: ExecutorBase, budget: int) -> None:
-        """Allow at most `budget` new orders that would sit on the current price."""
+    def _install_touch_cap(self, executor: ExecutorBase, budget, blocked_prices=None) -> None:
+        """Cap new orders at the current price, and skip prices already occupied."""
         executor._touch_place_budget = budget
+        blocked = list(blocked_prices or [])
         original = executor.get_open_orders_to_create
 
         def wrapped():
             proposed = original()
             remaining = getattr(executor, "_touch_place_budget", None)
-            if remaining is None:
-                return proposed
             market = getattr(executor, "current_open_quote", None)
             side = getattr(getattr(executor, "config", None), "side", None)
             side_name = getattr(side, "name", None)
             allowed = []
             for level in proposed:
-                if not would_place_at_touch(getattr(level, "price", None), market, side_name):
+                if matches_blocked_price(getattr(level, "price", None), blocked):
+                    continue
+                if remaining is None or not would_place_at_touch(
+                    getattr(level, "price", None), market, side_name
+                ):
                     allowed.append(level)
                     continue
                 if remaining > 0:
@@ -1108,6 +1112,7 @@ class ExecutorService:
         config["type"] = row["executor_type"]
 
         account = row["account_name"]
+        started = False
         try:
             trading_interface = self._get_trading_interface(account)
             await self._prepare_market(account, row["connector_name"], row["trading_pair"])
@@ -1164,10 +1169,17 @@ class ExecutorService:
                 executor.validate_sufficient_balance = _skip_balance_check
             apply_checkpoint(executor, checkpoint, live_orders)
             notice = None
-            if plan and plan.get("touch_budget") is not None:
-                self._install_touch_cap(executor, plan["touch_budget"])
+            if plan and (
+                plan.get("touch_budget") is not None or plan.get("blocked_prices")
+            ):
+                self._install_touch_cap(
+                    executor,
+                    plan.get("touch_budget"),
+                    plan.get("blocked_prices") or [],
+                )
                 notice = plan.get("notice")
             self._start_registered_executor(row["executor_id"], executor)
+            started = True
             async with self.db_manager.get_session_context() as session:
                 await ExecutorRepository(session).update_executor(
                     executor_id=row["executor_id"],
@@ -1177,6 +1189,14 @@ class ExecutorService:
             if notice:
                 logger.warning(notice)
         except Exception as e:
+            if started and row["executor_id"] in self._active_executors:
+                logger.error(
+                    "Resumed %s is running but the database note failed; leaving it registered: %s",
+                    row["executor_id"],
+                    e,
+                    exc_info=True,
+                )
+                return None
             self._active_executors.pop(row["executor_id"], None)
             self._executor_metadata.pop(row["executor_id"], None)
             logger.error(f"Error resuming executor {row['executor_id']}: {e}", exc_info=True)

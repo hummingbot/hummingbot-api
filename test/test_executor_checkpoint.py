@@ -16,6 +16,9 @@ from utils.executor_checkpoint import (
     note_gone,
     note_placed,
     parse_checkpoint,
+    recent_order_ids,
+    remember_order_now,
+    seat_known_opens,
     would_place_at_touch,
 )
 
@@ -125,6 +128,52 @@ def test_unrecognized_touch_order_keeps_the_grid_and_adds_no_second():
     assert "no new order is placed there" in plan["notice"]
     assert would_place_at_touch("125", "118.20", "BUY") is True
     assert would_place_at_touch("100", "118.20", "BUY") is False
+
+
+def test_foreign_order_is_not_seated_by_price():
+    levels = [_level("L0", "100")]
+    foreign = {"order_id": "other", "price": "100", "is_open": True, "side": "BUY"}
+    assert seat_known_opens(levels, [foreign], allowed_ids=set()) == set()
+    assert levels[0]["open_order"] is None
+    plan = grid_resume_plan(_grid(levels), [foreign], market_price="90", side="BUY")
+    assert "100" in plan["blocked_prices"]
+
+
+def test_known_order_seats_on_one_level_and_not_on_two():
+    one = [_level("L0", "100"), _level("L1", "110")]
+    own = {"order_id": "mine", "price": "100", "is_open": True, "side": "BUY"}
+    assert seat_known_opens(one, [own], allowed_ids={"mine"}) == {"mine"}
+    assert one[0]["open_order"]["order_id"] == "mine"
+
+    two = [_level("L0", "100"), _level("L1", "100")]
+    assert seat_known_opens(two, [own], allowed_ids={"mine"}) == set()
+    assert two[0]["open_order"] is None
+    plan = grid_resume_plan(_grid(two), [own], market_price="90", side="BUY")
+    assert can_resume(_grid(two), [own]) is None
+    assert plan["ambiguous_ids"] == ["mine"]
+    assert plan["touch_budget"] == 1
+
+
+def test_unattached_retained_id_still_blocks_the_current_price():
+    checkpoint = _grid([_level("L0", "120"), _level("L1", "125")])
+    checkpoint["retained_orders"] = [{"order_id": "late", "filled": False}]
+    live = [{"order_id": "late", "price": "118.18", "is_open": True, "side": "BUY"}]
+    plan = grid_resume_plan(checkpoint, live, market_price="118.20", side="BUY")
+    assert plan["touch_budget"] == 0
+    assert "118.18" in plan["blocked_prices"]
+
+
+def test_order_ledger_drops_ids_older_than_the_keep_window(tmp_path, monkeypatch):
+    monkeypatch.setenv("EXECUTOR_ORDER_LEDGER", str(tmp_path / "ledger.jsonl"))
+    remember_order_now("ex", "new")
+    path = tmp_path / "ledger.jsonl"
+    path.write_text(
+        '{"executor_id": "ex", "order_id": "old", "ts": 1}\n' + path.read_text(),
+        encoding="utf-8",
+    )
+    assert recent_order_ids("ex") == ["new"]
+    remember_order_now("ex", "newer")
+    assert "old" not in path.read_text(encoding="utf-8")
 
 
 def test_lp_open_without_an_address_is_not_minted_again():
