@@ -44,6 +44,23 @@ from database import (
 from models.executors import PositionHold
 from services.gateway_client import get_native_gas_token
 from services.trading_service import AccountTradingInterface, TradingService
+from utils.executor_checkpoint import (
+    apply_checkpoint,
+    can_resume,
+    capture_executor,
+    grid_resume_plan,
+    has_exposure,
+    live_order_view,
+    merge_recent_ids,
+    note_filled,
+    note_gone,
+    note_placed,
+    parse_checkpoint,
+    recent_order_ids,
+    remember_order_now,
+    saved_order_ids,
+    would_place_at_touch,
+)
 from utils.executor_log_capture import ExecutorLogCapture, current_executor_id
 from utils.trading_pair import InvalidTradingPair, split_trading_pair
 
@@ -210,6 +227,7 @@ class ExecutorService:
         # Control loop task
         self._control_loop_task: Optional[asyncio.Task] = None
         self._is_running = False
+        self._checkpoint_written: Dict[str, str] = {}
 
     def start(self):
         """Start the executor service control loop."""
@@ -315,6 +333,11 @@ class ExecutorService:
                 pass
             self._control_loop_task = None
 
+        try:
+            await self._checkpoint_active_executors()
+        except Exception as e:
+            logger.error(f"Error checkpointing executors on shutdown: {e}", exc_info=True)
+
         # Stop all active executors
         for executor_id in list(self._active_executors.keys()):
             try:
@@ -371,6 +394,7 @@ class ExecutorService:
                 # inside the tick (see _record_lp_position_rent), so the cadence is one
                 # guard rather than another thing to schedule and shut down.
                 now = time.monotonic()
+                await self._checkpoint_active_executors()
                 if now - self._last_snapshot_at >= self.performance_snapshot_interval:
                     self._last_snapshot_at = now
                     await self._dump_executor_performance()
@@ -823,7 +847,8 @@ class ExecutorService:
         executor_class: Type[ExecutorBase],
         typed_config: ExecutorConfigBase,
         trading_interface: AccountTradingInterface,
-        metadata: Dict[str, Any]
+        metadata: Dict[str, Any],
+        start: bool = True,
     ) -> tuple[str, ExecutorBase]:
         """
         Instantiate the executor, register it in memory and start it.
@@ -856,13 +881,311 @@ class ExecutorService:
         executor_id = typed_config.id
         self._active_executors[executor_id] = executor
         self._executor_metadata[executor_id] = metadata
-
-        # Set ContextVar so the asyncio Task created by start() inherits it
-        token = current_executor_id.set(executor_id)
-        executor.start()
-        current_executor_id.reset(token)
-
+        self._install_checkpoint_hook(executor_id, executor)
+        if start:
+            self._start_registered_executor(executor_id, executor)
         return executor_id, executor
+
+    def _start_registered_executor(self, executor_id: str, executor: ExecutorBase) -> None:
+        token = current_executor_id.set(executor_id)
+        try:
+            executor.start()
+        finally:
+            current_executor_id.reset(token)
+
+    def _install_checkpoint_hook(self, executor_id: str, executor: ExecutorBase) -> None:
+        """Write the id when the order is placed, and the fill when the fill event arrives."""
+        if getattr(executor, "_checkpoint_hooked", False):
+            return
+        service = self
+        original_place = executor.place_order
+
+        def place_wrapped(*args, **kwargs):
+            result = original_place(*args, **kwargs)
+            order_id = result if isinstance(result, str) else None
+            note_placed(executor, order_id)
+            remember_order_now(executor_id, order_id)
+            service._schedule_checkpoint(executor_id)
+            return result
+
+        executor.place_order = place_wrapped
+        for name, marker in (
+            ("process_order_filled_event", "filled"),
+            ("process_order_completed_event", "filled"),
+            ("process_order_canceled_event", "gone"),
+            ("process_order_failed_event", "gone"),
+        ):
+            original = getattr(executor, name, None)
+            if original is None:
+                continue
+            setattr(executor, name, self._event_wrapper(executor_id, executor, original, marker))
+        executor._checkpoint_hooked = True
+
+    def _event_wrapper(self, executor_id, executor, original, marker):
+        service = self
+
+        def wrapped(*args, **kwargs):
+            result = original(*args, **kwargs)
+            order_id = service._event_order_id(args)
+            if marker == "filled":
+                note_filled(executor, order_id, service._event_order_json(executor, order_id))
+            else:
+                note_gone(executor, order_id)
+            service._schedule_checkpoint(executor_id)
+            return result
+
+        return wrapped
+
+    @staticmethod
+    def _event_order_id(args) -> Optional[str]:
+        for arg in args:
+            order_id = getattr(arg, "order_id", None)
+            if order_id:
+                return order_id
+        return None
+
+    @staticmethod
+    def _event_order_json(executor, order_id: Optional[str]):
+        if not order_id:
+            return None
+        for connector in (getattr(executor, "connectors", None) or {}).values():
+            live = (getattr(connector, "in_flight_orders", None) or {}).get(order_id)
+            if live is not None and hasattr(live, "to_json"):
+                return live.to_json()
+        return None
+
+    def _schedule_checkpoint(self, executor_id: str) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(self._checkpoint_executor(executor_id))
+
+    def _initial_checkpoint(self, executor_id: str, executor: ExecutorBase) -> Optional[str]:
+        """Ownership at insert time. Empty is still a checkpoint: resume may start it.
+
+        A missing checkpoint means "we do not know", and resume refuses those.
+        """
+        metadata = self._executor_metadata.get(executor_id) or {}
+        executor_type = metadata.get("executor_type")
+        if not executor_type:
+            return None
+        try:
+            body = json.dumps(
+                capture_executor(executor, executor_type), default=_json_default, sort_keys=True
+            )
+        except Exception as e:
+            logger.error(f"Error capturing initial checkpoint for {executor_id}: {e}", exc_info=True)
+            return None
+        self._checkpoint_written[executor_id] = body
+        return body
+
+    async def _checkpoint_executor(self, executor_id: str) -> None:
+        """Persist ownership if it changed. Never raises into the control loop."""
+        if not self.db_manager:
+            return
+        executor = self._active_executors.get(executor_id)
+        metadata = self._executor_metadata.get(executor_id) or {}
+        executor_type = metadata.get("executor_type")
+        if executor is None or not executor_type or executor.is_closed:
+            return
+        try:
+            body = json.dumps(
+                capture_executor(executor, executor_type), default=_json_default, sort_keys=True
+            )
+        except Exception as e:
+            logger.error(f"Error capturing checkpoint for {executor_id}: {e}", exc_info=True)
+            return
+        if self._checkpoint_written.get(executor_id) == body:
+            return
+        try:
+            async with self.db_manager.get_session_context() as session:
+                await ExecutorRepository(session).update_executor(
+                    executor_id=executor_id, checkpoint=body
+                )
+            self._checkpoint_written[executor_id] = body
+        except Exception as e:
+            logger.error(f"Error writing checkpoint for {executor_id}: {e}", exc_info=True)
+
+    async def _checkpoint_active_executors(self) -> None:
+        for executor_id in list(self._active_executors):
+            await self._checkpoint_executor(executor_id)
+
+    async def resume_running_executors(self) -> None:
+        """Rebuild RUNNING executors and reattach their orders. Does not place new ones.
+
+        Called after order reconcile and before cleanup_orphaned_executors. A row
+        that cannot be reattached is left RUNNING so cleanup still marks it, and
+        the unattended list still names it. Starting it from the create-config
+        would open a second trade beside the first.
+        """
+        if not self.db_manager:
+            return
+        try:
+            async with self.db_manager.get_session_context() as session:
+                rows = await ExecutorRepository(session).get_running_for_resume()
+        except Exception as e:
+            logger.error(f"Error loading executors to resume: {e}", exc_info=True)
+            return
+
+        owned_by: Dict[str, str] = {}
+        for row in rows:
+            for order_id in saved_order_ids(parse_checkpoint(row.get("checkpoint"))):
+                owned_by.setdefault(order_id, row["executor_id"])
+
+        resumed = 0
+        for row in rows:
+            if row["executor_id"] in self._active_executors:
+                continue
+            reason = await self._resume_one(row, owned_by)
+            if reason is None:
+                resumed += 1
+            else:
+                logger.warning(
+                    f"Not resuming {row['executor_id']} ({row['executor_type']} "
+                    f"{row['connector_name']} {row['trading_pair']}): {reason}"
+                )
+        if resumed:
+            logger.info(f"Resumed {resumed} executor(s) after restart")
+
+    @staticmethod
+    def _config_side_name(config: Dict[str, Any]) -> Optional[str]:
+        side = config.get("side")
+        if side in (1, "1", "BUY"):
+            return "BUY"
+        if side in (2, "2", "SELL"):
+            return "SELL"
+        return side if isinstance(side, str) else None
+
+    @staticmethod
+    def _resume_market_price(connector: Any, trading_pair: str):
+        if connector is None:
+            return None
+        try:
+            from hummingbot.core.data_type.common import PriceType
+            return connector.get_price_by_type(trading_pair, PriceType.MidPrice)
+        except Exception:
+            return None
+
+    def _install_touch_cap(self, executor: ExecutorBase, budget: int) -> None:
+        """Allow at most `budget` new orders that would sit on the current price."""
+        executor._touch_place_budget = budget
+        original = executor.get_open_orders_to_create
+
+        def wrapped():
+            proposed = original()
+            remaining = getattr(executor, "_touch_place_budget", None)
+            if remaining is None:
+                return proposed
+            market = getattr(executor, "current_open_quote", None)
+            side = getattr(getattr(executor, "config", None), "side", None)
+            side_name = getattr(side, "name", None)
+            allowed = []
+            for level in proposed:
+                if not would_place_at_touch(getattr(level, "price", None), market, side_name):
+                    allowed.append(level)
+                    continue
+                if remaining > 0:
+                    remaining -= 1
+                    executor._touch_place_budget = remaining
+                    allowed.append(level)
+            return allowed
+
+        executor.get_open_orders_to_create = wrapped
+
+    async def _resume_one(self, row: Dict[str, Any], owned_by: Optional[Dict[str, str]] = None) -> Optional[str]:
+        """None on success. A string is why this row was left for cleanup."""
+        checkpoint = parse_checkpoint(row.get("checkpoint"))
+        if not row.get("config"):
+            return "no stored config"
+        try:
+            config = json.loads(row["config"])
+        except (json.JSONDecodeError, TypeError):
+            return "config is not JSON"
+        if not isinstance(config, dict):
+            return "config is not an object"
+        config["id"] = row["executor_id"]
+        config["type"] = row["executor_type"]
+
+        account = row["account_name"]
+        try:
+            trading_interface = self._get_trading_interface(account)
+            await self._prepare_market(account, row["connector_name"], row["trading_pair"])
+            connector = trading_interface.get_connector(row["connector_name"])
+            pair = row["trading_pair"]
+            others = {
+                order_id for order_id, owner in (owned_by or {}).items()
+                if owner != row["executor_id"]
+            }
+            live_orders = [
+                order for order in (
+                    getattr(connector, "in_flight_orders", {}).values() if connector else []
+                )
+                if getattr(order, "trading_pair", None) == pair
+                and getattr(order, "client_order_id", None) not in others
+            ]
+            views = [live_order_view(order) for order in live_orders]
+            if checkpoint and row["executor_type"] == "grid_executor":
+                checkpoint = merge_recent_ids(checkpoint, recent_order_ids(row["executor_id"]))
+            reason = can_resume(checkpoint, views)
+            if reason:
+                return reason
+            plan = None
+            if checkpoint and row["executor_type"] == "grid_executor":
+                checkpoint = dict(checkpoint)
+                checkpoint["trading_pair"] = row.get("trading_pair") or ""
+                plan = grid_resume_plan(
+                    checkpoint,
+                    views,
+                    self._resume_market_price(connector, pair),
+                    self._config_side_name(config),
+                )
+
+            executor_class, _, typed_config = self._validate_executor_config(
+                config, default_timestamp=trading_interface.current_timestamp
+            )
+            if typed_config.id != row["executor_id"]:
+                return "rebuilt config id does not match the stored executor"
+            metadata = {
+                "account_name": account,
+                "connector_name": row["connector_name"],
+                "trading_pair": row["trading_pair"],
+                "executor_type": row["executor_type"],
+                "controller_id": row["controller_id"],
+                "created_at": row.get("created_at") or datetime.now(timezone.utc),
+                "config": config,
+            }
+            _, executor = self._instantiate_and_register(
+                executor_class, typed_config, trading_interface, metadata, start=False
+            )
+            if has_exposure(checkpoint):
+                async def _skip_balance_check():
+                    return None
+                executor.validate_sufficient_balance = _skip_balance_check
+            apply_checkpoint(executor, checkpoint, live_orders)
+            notice = None
+            if plan and plan.get("touch_budget") is not None:
+                self._install_touch_cap(executor, plan["touch_budget"])
+                notice = plan.get("notice")
+            self._start_registered_executor(row["executor_id"], executor)
+            async with self.db_manager.get_session_context() as session:
+                await ExecutorRepository(session).update_executor(
+                    executor_id=row["executor_id"],
+                    status="RUNNING",
+                    error_log=notice,
+                )
+            if notice:
+                logger.warning(notice)
+        except Exception as e:
+            self._active_executors.pop(row["executor_id"], None)
+            self._executor_metadata.pop(row["executor_id"], None)
+            logger.error(f"Error resuming executor {row['executor_id']}: {e}", exc_info=True)
+            return str(e)
+        logger.info(
+            f"Resumed {row['executor_type']} {row['executor_id']} "
+            f"on {row['connector_name']}/{row['trading_pair']}"
+        )
+        return None
 
     async def create_executor(
         self,
@@ -896,6 +1219,9 @@ class ExecutorService:
 
         # Instantiate the executor, register it in memory and start it
         controller_id = controller_id or getattr(typed_config, "controller_id", "main") or "main"
+        stored_config = dict(executor_config)
+        stored_config["id"] = typed_config.id
+        stored_config["type"] = executor_type
         metadata = {
             "account_name": account,
             "connector_name": connector_name,
@@ -903,12 +1229,13 @@ class ExecutorService:
             "executor_type": executor_type,
             "controller_id": controller_id,
             "created_at": datetime.now(timezone.utc),
-            "config": executor_config
+            "config": stored_config,
         }
-        executor_id, executor = self._instantiate_and_register(executor_class, typed_config, trading_interface, metadata)
-
-        # Persist to database
+        executor_id, executor = self._instantiate_and_register(
+            executor_class, typed_config, trading_interface, metadata, start=False
+        )
         await self._persist_executor_created(executor_id, executor)
+        self._start_registered_executor(executor_id, executor)
 
         # Capture created_at before potential cleanup
         created_at = metadata["created_at"].isoformat()
@@ -1589,7 +1916,8 @@ class ExecutorService:
                     trading_pair=metadata.get("trading_pair"),
                     config=json.dumps(metadata.get("config", {}), default=_json_default),
                     status=executor.status.name,
-                    controller_id=metadata.get("controller_id", "main")
+                    controller_id=metadata.get("controller_id", "main"),
+                    checkpoint=self._initial_checkpoint(executor_id, executor),
                 )
 
             logger.debug(f"Persisted executor {executor_id} creation to database")

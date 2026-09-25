@@ -538,6 +538,10 @@ class ExecutorRecord(Base):
     # Configuration (JSON)
     config = Column(Text, nullable=True)
 
+    # Live ownership snapshot (JSON). Written while the executor is RUNNING so a
+    # restart can reattach the same orders instead of marking the row dead.
+    checkpoint = Column(Text, nullable=True)
+
     # Final state (JSON)
     final_state = Column(Text, nullable=True)
 
