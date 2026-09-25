@@ -295,18 +295,43 @@ def _append_ledger_line(row: Dict[str, Any]) -> None:
 
 
 def remember_order_now(executor_id: str, order_id: Optional[str]) -> None:
-    """Durably note an order id before the async database write runs."""
+    """Durably note an order id before the async database write runs.
+
+    Append only. Rewriting the file here waits on a multi-day ledger and delays
+    the next order the exchange has not accepted yet.
+    """
     if not executor_id or not order_id:
         return
-    now = time.time()
-    row = {"executor_id": executor_id, "order_id": order_id, "ts": now}
+    row = {"executor_id": executor_id, "order_id": order_id, "ts": time.time()}
     with LEDGER_LOCK:
+        _append_ledger_line(row)
+
+
+def prune_order_ledger() -> None:
+    """Drop ids older than the keep window once, before resume places again.
+
+    Not on the place path. The same keep rule as the old rewrite: a row with no
+    numeric ts is not kept, and ts below the cutoff is not kept. A failed read
+    must not replace the live file.
+    """
+    path = order_ledger_path()
+    with LEDGER_LOCK:
+        if not os.path.exists(path):
+            return
+        try:
+            size = os.path.getsize(path)
+        except OSError as exc:
+            logger.warning("order ledger prune skipped: %s", exc)
+            return
         try:
             existing = _read_ledger()
         except _LedgerReadError:
-            _append_ledger_line(row)
+            logger.warning("order ledger prune skipped; file left unchanged")
             return
-        cutoff = now - LEDGER_KEEP_SECONDS
+        if size > 0 and not existing:
+            logger.warning("order ledger prune skipped; file has no readable rows")
+            return
+        cutoff = time.time() - LEDGER_KEEP_SECONDS
         kept = []
         for item in existing:
             try:
@@ -315,7 +340,8 @@ def remember_order_now(executor_id: str, order_id: Optional[str]) -> None:
                 continue
             if ts >= cutoff:
                 kept.append(item)
-        kept.append(row)
+        if len(kept) == len(existing):
+            return
         _write_ledger(kept)
 
 

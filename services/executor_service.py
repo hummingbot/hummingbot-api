@@ -61,6 +61,7 @@ from utils.executor_checkpoint import (
     conservative_grid_cap,
     install_grid_resume_cap,
     remember_order_now,
+    prune_order_ledger,
     saved_order_ids,
 )
 from utils.executor_log_capture import ExecutorLogCapture, current_executor_id
@@ -1021,6 +1022,11 @@ class ExecutorService:
         the unattended list still names it. Starting it from the create-config
         would open a second trade beside the first.
         """
+        # Before any resumed grid can place. A prune failure must not skip resume.
+        try:
+            prune_order_ledger()
+        except Exception:
+            logger.exception("order ledger prune failed; resume continues")
         if not self.db_manager:
             return
         try:

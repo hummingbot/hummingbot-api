@@ -173,7 +173,22 @@ def test_order_ledger_drops_ids_older_than_the_keep_window(tmp_path, monkeypatch
     )
     assert recent_order_ids("ex") == ["new"]
     remember_order_now("ex", "newer")
-    assert "old" not in path.read_text(encoding="utf-8")
+    before_prune = path.read_text(encoding="utf-8")
+    assert "old" in before_prune
+    assert recent_order_ids("ex") == ["new", "newer"]
+    modes = []
+    opens = []
+    _track_ledger_opens(monkeypatch, modes, opens)
+    prune_order_ledger()
+    ids = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line:
+            continue
+        ids.append(json.loads(line)["order_id"])
+    assert ids == ["new", "newer"]
+    assert recent_order_ids("ex") == ["new", "newer"]
+    assert not list(tmp_path.glob(".order-ledger-*"))
+    assert not _live_opened_for_rewrite(path, modes, opens)
 
 
 def test_lp_open_without_an_address_is_not_minted_again():
@@ -198,13 +213,43 @@ import os
 import threading
 import time
 
+import json
+
 from utils.executor_checkpoint import (
     LEDGER_LOCK,
     _LedgerReadError,
     cap_arguments,
     install_grid_resume_cap,
     merge_recent_ids,
+    prune_order_ledger,
 )
+
+
+def _track_ledger_opens(monkeypatch, modes, opens):
+    real_open = open
+    real_os_open = os.open
+
+    def tracking_open(file, mode="r", *args, **kwargs):
+        modes.append((str(file), mode))
+        return real_open(file, mode, *args, **kwargs)
+
+    def tracking_os_open(file, flags, *args, **kwargs):
+        opens.append((str(file), flags))
+        return real_os_open(file, flags, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", tracking_open)
+    monkeypatch.setattr(os, "open", tracking_os_open)
+
+
+def _live_opened_for_rewrite(path, modes, opens):
+    live = str(path)
+    if any(name == live and isinstance(mode, str) and "w" in mode for name, mode in modes):
+        return True
+    return any(
+        name == live and isinstance(flags, int) and flags & os.O_TRUNC
+        for name, flags in opens
+    )
+
 
 
 class _Side:
@@ -265,25 +310,24 @@ def _wrapped(proposals, plan, orders=None, cached=None, lost=None, ready=True,
 
 def test_ledger_replace_failure_keeps_the_old_file(tmp_path, monkeypatch):
     path = tmp_path / "ledger.jsonl"
-    path.write_text('{"executor_id": "ex", "order_id": "keep", "ts": 10}\n', encoding="utf-8")
+    fresh = json.dumps({"executor_id": "ex", "order_id": "keep", "ts": time.time()})
+    path.write_text(
+        '{"executor_id": "ex", "order_id": "old", "ts": 1}\n' + fresh + "\n",
+        encoding="utf-8",
+    )
     monkeypatch.setenv("EXECUTOR_ORDER_LEDGER", str(path))
     before = path.read_bytes()
     modes = []
-    real_open = open
-
-    def tracking_open(file, mode="r", *args, **kwargs):
-        modes.append((str(file), mode))
-        return real_open(file, mode, *args, **kwargs)
-
-    monkeypatch.setattr("builtins.open", tracking_open)
+    opens = []
+    _track_ledger_opens(monkeypatch, modes, opens)
 
     def fail_replace(*_args, **_kwargs):
         raise OSError("replace failed")
 
     monkeypatch.setattr(os, "replace", fail_replace)
-    remember_order_now("ex", "new")
+    prune_order_ledger()
     assert path.read_bytes() == before
-    assert not any(str(path) == name and "w" in mode for name, mode in modes)
+    assert not _live_opened_for_rewrite(path, modes, opens)
     assert not list(tmp_path.glob(".order-ledger-*"))
 
 
@@ -359,6 +403,134 @@ def test_ledger_lock_covers_read_and_write(tmp_path, monkeypatch):
     worker.join(1)
     text = path.read_text(encoding="utf-8")
     assert "first" in text and "second" in text
+
+
+def test_remember_order_appends_without_replace_or_truncate(tmp_path, monkeypatch):
+    path = tmp_path / "ledger.jsonl"
+    path.write_bytes(b'{"executor_id": "ex", "order_id": "keep", "ts": 10}')
+    monkeypatch.setenv("EXECUTOR_ORDER_LEDGER", str(path))
+    modes = []
+    opens = []
+    _track_ledger_opens(monkeypatch, modes, opens)
+    replaced = []
+    monkeypatch.setattr(os, "replace", lambda *args: replaced.append(args))
+    remember_order_now("ex", "new")
+    text = path.read_text(encoding="utf-8")
+    assert text.startswith('{"executor_id": "ex", "order_id": "keep", "ts": 10}\n')
+    assert json.loads(text.splitlines()[-1])["order_id"] == "new"
+    assert replaced == []
+    assert not _live_opened_for_rewrite(path, modes, opens)
+
+
+def test_prune_read_error_does_not_replace(tmp_path, monkeypatch):
+    path = tmp_path / "ledger.jsonl"
+    path.write_text('{"executor_id": "ex", "order_id": "keep", "ts": 10}\n', encoding="utf-8")
+    monkeypatch.setenv("EXECUTOR_ORDER_LEDGER", str(path))
+    before = path.read_bytes()
+    monkeypatch.setattr(
+        "utils.executor_checkpoint._read_ledger",
+        lambda: (_ for _ in ()).throw(_LedgerReadError("unread")),
+    )
+    replaced = []
+    monkeypatch.setattr(os, "replace", lambda *args: replaced.append(args))
+    prune_order_ledger()
+    assert path.read_bytes() == before
+    assert replaced == []
+
+
+def test_prune_skips_nonempty_file_with_no_rows(tmp_path, monkeypatch):
+    path = tmp_path / "ledger.jsonl"
+    path.write_text("not-json\n", encoding="utf-8")
+    monkeypatch.setenv("EXECUTOR_ORDER_LEDGER", str(path))
+    before = path.read_bytes()
+    replaced = []
+    monkeypatch.setattr(os, "replace", lambda *args: replaced.append(args))
+    prune_order_ledger()
+    assert path.read_bytes() == before
+    assert replaced == []
+    assert not list(tmp_path.glob(".order-ledger-*"))
+
+
+def test_prune_does_not_create_a_missing_file(tmp_path, monkeypatch):
+    path = tmp_path / "missing.jsonl"
+    monkeypatch.setenv("EXECUTOR_ORDER_LEDGER", str(path))
+    prune_order_ledger()
+    assert not path.exists()
+
+
+def test_prune_waits_for_the_lock_and_keeps_both_fresh_ids(tmp_path, monkeypatch):
+    path = tmp_path / "ledger.jsonl"
+    fresh = json.dumps({"executor_id": "ex", "order_id": "fresh", "ts": time.time()})
+    path.write_text(
+        '{"executor_id": "ex", "order_id": "old", "ts": 1}\n' + fresh + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EXECUTOR_ORDER_LEDGER", str(path))
+    done = []
+    LEDGER_LOCK.acquire()
+    try:
+        def prune():
+            prune_order_ledger()
+            done.append("prune")
+
+        def append():
+            remember_order_now("ex", "second")
+            done.append("append")
+
+        pruner = threading.Thread(target=prune)
+        appender = threading.Thread(target=append)
+        pruner.start()
+        appender.start()
+        time.sleep(0.1)
+        assert done == []
+    finally:
+        LEDGER_LOCK.release()
+    pruner.join(2)
+    appender.join(2)
+    assert not pruner.is_alive() and not appender.is_alive()
+    text = path.read_text(encoding="utf-8")
+    assert "fresh" in text and "second" in text and "old" not in text
+
+
+def test_prune_keeps_a_line_appended_after_read_before_replace(tmp_path, monkeypatch):
+    path = tmp_path / "ledger.jsonl"
+    fresh = json.dumps({"executor_id": "ex", "order_id": "fresh", "ts": time.time()})
+    path.write_text(
+        '{"executor_id": "ex", "order_id": "old", "ts": 1}\n' + fresh + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EXECUTOR_ORDER_LEDGER", str(path))
+    read_done = threading.Event()
+    real_read = __import__("utils.executor_checkpoint", fromlist=["_read_ledger"])._read_ledger
+
+    def wrapped_read():
+        rows = real_read()
+        read_done.set()
+        return rows
+
+    monkeypatch.setattr("utils.executor_checkpoint._read_ledger", wrapped_read)
+
+    def appender():
+        assert read_done.wait(2)
+        remember_order_now("ex", "during")
+
+    worker = threading.Thread(target=appender)
+    worker.start()
+    real_replace = os.replace
+
+    def replace_after_append_window(src, dst):
+        # If the lock was dropped after the read, this append finishes and the
+        # following replace would erase it. A held lock makes the join time out.
+        worker.join(1)
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", replace_after_append_window)
+    prune_order_ledger()
+    worker.join(2)
+    assert not worker.is_alive()
+    ids = [json.loads(line)["order_id"] for line in path.read_text(encoding="utf-8").splitlines() if line]
+    assert "old" not in ids
+    assert "fresh" in ids and "during" in ids
 
 
 def test_two_orders_at_one_price_stay_blocked_until_both_are_finished():
