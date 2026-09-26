@@ -1561,3 +1561,381 @@ def _spend_touch(executor, arguments, book, finished, seen_open, unfinished, ete
     executor._touch_place_budget = remaining - 1
     executor._touch_zero_released = True
     return True
+
+
+OPEN_PAGE_LIMIT = 100
+
+
+def exchange_open_request(venue: str, symbol: str, page: int = 1, after: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """One authenticated request for open orders of this pair. None if the venue is unknown."""
+    if venue == "gate":
+        # Do not send account=spot. The connector places without account, so a spot-only
+        # list can miss a unified-account order and look like an empty book.
+        return {
+            "path": "spot/orders",
+            "params": {
+                "currency_pair": symbol,
+                "status": "open",
+                "page": page,
+                "limit": OPEN_PAGE_LIMIT,
+            },
+            "is_auth_required": True,
+        }
+    if venue == "okx":
+        params = {"instId": symbol, "limit": str(OPEN_PAGE_LIMIT)}
+        if after:
+            params["after"] = after
+        return {
+            "path": "/api/v5/trade/orders-pending",
+            "params": params,
+            "is_auth_required": True,
+        }
+    return None
+
+
+def exchange_pass_key(account: str, connector: Any, pair: str) -> tuple:
+    """One pass per account, connector instance, and pair. A name alone is not the key."""
+    return (account, id(connector), pair)
+
+
+def _exchange_side(raw: Any) -> Optional[str]:
+    text = str(raw or "").upper()
+    if text in ("BUY", "SELL"):
+        return text
+    return None
+
+
+def _unread_page() -> Dict[str, Any]:
+    return {"read": False, "orders": [], "done": False, "cursor": None}
+
+
+def _page(orders: List[Dict[str, Any]], done: bool, cursor: Optional[str]) -> Dict[str, Any]:
+    return {"read": True, "orders": orders, "done": done, "cursor": cursor}
+
+
+def _gate_groups(body: Any) -> bool:
+    if not isinstance(body, list) or not body:
+        return False
+    return any(isinstance(item, dict) and "orders" in item for item in body)
+
+
+def parse_exchange_open_page(
+    body: Any,
+    venue: str,
+    symbol: str,
+    cursor_kind: Optional[str] = None,
+) -> Dict[str, Any]:
+    """One page. A full page returns its orders and a cursor. It is not an unread void."""
+    if cursor_kind == "before":
+        return _unread_page()
+    if venue == "gate":
+        return _parse_gate_page(body, symbol)
+    if venue == "okx":
+        return _parse_okx_page(body)
+    return _unread_page()
+
+
+def _parse_gate_page(body: Any, symbol: str) -> Dict[str, Any]:
+    if _gate_groups(body) or not isinstance(body, list):
+        return _unread_page()
+    orders = []
+    for row in body:
+        if not isinstance(row, dict):
+            return _unread_page()
+        pair = row.get("currency_pair")
+        if pair != symbol:
+            continue
+        order_id = row.get("text")
+        price = row.get("price")
+        side = _exchange_side(row.get("side"))
+        if not order_id or price is None or row.get("side") in (None, ""):
+            return _unread_page()
+        orders.append({
+            "order_id": str(order_id),
+            "price": None if side is None else _text(price),
+            "side": side,
+            "unknown_side": side is None,
+        })
+    full = len(orders) >= OPEN_PAGE_LIMIT
+    return _page(orders, done=not full, cursor="page+1" if full else None)
+
+
+def _parse_okx_page(body: Any) -> Dict[str, Any]:
+    if not isinstance(body, dict) or str(body.get("code")) != "0" or not isinstance(body.get("data"), list):
+        return _unread_page()
+    data = body["data"]
+    orders = []
+    for row in data:
+        if not isinstance(row, dict):
+            return _unread_page()
+        state = str(row.get("state") or "")
+        if state not in ("live", "partially_filled"):
+            continue
+        order_id = row.get("clOrdId")
+        price = row.get("px")
+        side = _exchange_side(row.get("side"))
+        if not order_id or price is None or row.get("side") in (None, ""):
+            return _unread_page()
+        orders.append({
+            "order_id": str(order_id),
+            "price": None if side is None else _text(price),
+            "side": side,
+            "unknown_side": side is None,
+        })
+    if len(data) >= OPEN_PAGE_LIMIT:
+        last = data[-1]
+        cursor = last.get("ordId") if isinstance(last, dict) else None
+        if not cursor:
+            return _unread_page()
+        return _page(orders, done=False, cursor=str(cursor))
+    return _page(orders, done=True, cursor=None)
+
+
+def merge_exchange_open_pages(pages: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Join pages. An unread tail is not an empty success and does not drop earlier orders into one."""
+    if not pages:
+        return {"read": False, "orders": []}
+    collected: List[Dict[str, Any]] = []
+    for page in pages:
+        if not isinstance(page, dict) or not page.get("read"):
+            return {"read": False, "orders": []}
+        collected.extend(page.get("orders") or [])
+        if page.get("done"):
+            return {"read": True, "orders": collected}
+    return {"read": False, "orders": []}
+
+
+def foreign_order_ids(
+    rows: List[Dict[str, Any]],
+    ledger_ids: Dict[str, List[str]],
+    self_id: str,
+) -> set:
+    """Ids owned by other executors, from checkpoints and the ledger. Not this grid's ids."""
+    foreign = set()
+    for row in rows:
+        owner = row.get("executor_id")
+        if not owner or owner == self_id:
+            continue
+        foreign.update(saved_order_ids(parse_checkpoint(row.get("checkpoint"))))
+        foreign.update(ledger_ids.get(owner) or [])
+    return foreign
+
+
+def hold_new_opens(executor: Any) -> None:
+    """Replace the open proposer. Leave close orders alone. Do not call blank_grid_cap."""
+    executor.get_open_orders_to_create = lambda: []
+
+
+def install_occupied_open_brake(
+    executor: Any,
+    exchange_pass: Any,
+    foreign_ids_fn: Any,
+    own_ids: Optional[set] = None,
+    prior_tracker_ids: Optional[set] = None,
+) -> None:
+    """Block a second open at a price the exchange or the book still holds."""
+    original = executor.get_open_orders_to_create
+    state = {
+        "exchange": exchange_pass if isinstance(exchange_pass, dict) else {"read": False, "orders": []},
+        "foreign_ids_fn": foreign_ids_fn,
+        "own_ids": set(own_ids or []),
+        "prior": set(prior_tracker_ids or []),
+        "released": set(),
+        "held": set(),
+    }
+
+    def wrapped():
+        try:
+            proposed = list(original())
+        except Exception:
+            logger.warning("occupied open proposal failed", exc_info=True)
+            return []
+        try:
+            return _filter_occupied_opens(executor, proposed, state)
+        except Exception:
+            logger.warning("occupied open brake failed closed", exc_info=True)
+            return []
+
+    executor.get_open_orders_to_create = wrapped
+
+
+def _filter_occupied_opens(executor: Any, proposed: List[Any], state: Dict[str, Any]) -> List[Any]:
+    exchange = state["exchange"]
+    if not exchange.get("read"):
+        return []
+    book = _read_active_book(executor)
+    if book is None:
+        return []
+    _remember_strict_finishes(book, state)
+    foreign = _call_foreign(state)
+    if foreign is None:
+        return []
+    side = _side_from_config(executor)
+    if side is None:
+        return []
+    for order_id in list(state["held"]):
+        if _is_foreign(order_id, state, foreign):
+            state["held"].discard(order_id)
+    _collect_held(exchange, book, state, foreign, side)
+    if _held_blocks_all(exchange, book, state):
+        return []
+    tick = _positive_tick(executor)
+    if tick is None:
+        return []
+    allowed = []
+    for level in proposed:
+        placement = _open_placement(executor, getattr(level, "price", None))
+        if placement is None or _held_matches(exchange, book, state, placement, tick, side):
+            continue
+        allowed.append(level)
+    return allowed
+
+
+def _read_active_book(executor: Any) -> Optional[Dict[str, Any]]:
+    """Active book. ready is not required. None means the dictionary was not read."""
+    try:
+        connectors = getattr(executor, "connectors", None)
+        if not connectors:
+            return None
+        values = list(connectors.values())
+        if not values:
+            return None
+        pair = _pair_name(executor)
+        active = []
+        cached = []
+        for connector in values:
+            inflight = getattr(connector, "in_flight_orders", None)
+            if not isinstance(inflight, dict):
+                return None
+            for order in inflight.values():
+                if _on_pair(order, pair):
+                    active.append(order)
+            tracker = getattr(connector, "_order_tracker", None)
+            if tracker is None:
+                continue
+            for order in (getattr(tracker, "cached_orders", None) or {}).values():
+                if _on_pair(order, pair):
+                    cached.append(order)
+        return {"active": active, "cached": cached}
+    except Exception:
+        logger.warning("occupied open book unreadable", exc_info=True)
+        return None
+
+
+def _finish_name(order: Any) -> Optional[str]:
+    if isinstance(order, dict):
+        raw = order.get("current_state") or order.get("state")
+    else:
+        raw = getattr(order, "current_state", None)
+        if raw is None:
+            raw = getattr(order, "state", None)
+    name = getattr(raw, "name", None)
+    text = str(name or raw or "").upper()
+    if "FAIL" in text or "NOT_FOUND" in text or "NOTFOUND" in text:
+        return "FAILED"
+    if text in ("FILLED", "CANCELED", "CANCELLED"):
+        return "CANCELED" if text.startswith("CANCEL") else "FILLED"
+    return None
+
+
+def _remember_strict_finishes(book: Dict[str, Any], state: Dict[str, Any]) -> None:
+    for order in list(book["active"]) + list(book["cached"]):
+        order_id = _order_id(order)
+        if not order_id or order_id not in state["prior"] or _is_open(order):
+            continue
+        if _finish_name(order) in ("FILLED", "CANCELED"):
+            state["released"].add(order_id)
+            state["held"].discard(order_id)
+
+
+def _call_foreign(state: Dict[str, Any]) -> Optional[set]:
+    try:
+        found = state["foreign_ids_fn"]()
+    except Exception:
+        logger.warning("occupied open foreign ids failed", exc_info=True)
+        return None
+    if not isinstance(found, (set, list, tuple)):
+        return None
+    return {str(item) for item in found if item}
+
+
+def _is_foreign(order_id: str, state: Dict[str, Any], foreign: set) -> bool:
+    if order_id in state["own_ids"]:
+        return False
+    return order_id in foreign
+
+
+def _collect_held(exchange: Dict[str, Any], book: Dict[str, Any], state: Dict[str, Any], foreign: set, side: str) -> None:
+    for row in exchange.get("orders") or []:
+        order_id = str(row.get("order_id") or "")
+        if not order_id or order_id in state["released"] or _is_foreign(order_id, state, foreign):
+            continue
+        row_side = row.get("side")
+        if row.get("unknown_side") or row_side in (None, side):
+            state["held"].add(order_id)
+    for order in book["active"]:
+        if not _is_open(order):
+            continue
+        order_id = _order_id(order)
+        if not order_id or order_id in state["released"] or _is_foreign(order_id, state, foreign):
+            continue
+        order_side = _order_side(order)
+        if order_side in (None, side):
+            state["held"].add(order_id)
+
+
+def _comparable_held(exchange: Dict[str, Any], book: Dict[str, Any], state: Dict[str, Any]) -> set:
+    found = set()
+    for row in exchange.get("orders") or []:
+        order_id = str(row.get("order_id") or "")
+        if order_id in state["held"] and row.get("price") is not None and not row.get("unknown_side"):
+            found.add(order_id)
+    for order in book["active"]:
+        order_id = _order_id(order)
+        if order_id in state["held"] and _is_open(order) and _order_price(order) is not None and _order_side(order):
+            found.add(order_id)
+    return found
+
+
+def _held_blocks_all(exchange: Dict[str, Any], book: Dict[str, Any], state: Dict[str, Any]) -> bool:
+    """An id we still hold but can no longer price is not proof of a different tick."""
+    if not state["held"]:
+        return False
+    if state["held"] - _comparable_held(exchange, book, state):
+        return True
+    return False
+
+
+def _open_placement(executor: Any, level_price: Any) -> Optional[Decimal]:
+    side = _side_from_config(executor)
+    quote = _quote(executor)
+    spread = _spread(executor)
+    if side is None or quote is None or spread is None:
+        return None
+    return _placement(level_price, quote, side, spread)
+
+
+def _held_matches(
+    exchange: Dict[str, Any],
+    book: Dict[str, Any],
+    state: Dict[str, Any],
+    placement: Decimal,
+    tick: Decimal,
+    side: str,
+) -> bool:
+    for row in exchange.get("orders") or []:
+        if str(row.get("order_id") or "") not in state["held"]:
+            continue
+        if row.get("side") not in (None, side):
+            continue
+        if _same_tick(row.get("price"), placement, tick) is True:
+            return True
+    for order in book["active"]:
+        order_id = _order_id(order)
+        if order_id not in state["held"] or not _is_open(order):
+            continue
+        if _order_side(order) not in (None, side):
+            continue
+        if _same_tick(_order_price(order), placement, tick) is True:
+            return True
+    return False

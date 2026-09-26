@@ -60,6 +60,13 @@ from utils.executor_checkpoint import (
     blank_grid_cap,
     conservative_grid_cap,
     install_grid_resume_cap,
+    exchange_open_request,
+    exchange_pass_key,
+    foreign_order_ids,
+    hold_new_opens,
+    install_occupied_open_brake,
+    merge_exchange_open_pages,
+    parse_exchange_open_page,
     remember_order_now,
     prune_order_ledger,
     saved_order_ids,
@@ -1037,8 +1044,16 @@ class ExecutorService:
             return
 
         owned_by: Dict[str, str] = {}
+        ledger_ids = {
+            row["executor_id"]: recent_order_ids(row["executor_id"])
+            for row in rows
+        }
+        self._resume_rows = rows
+        self._resume_ledger_ids = ledger_ids
         for row in rows:
             for order_id in saved_order_ids(parse_checkpoint(row.get("checkpoint"))):
+                owned_by.setdefault(order_id, row["executor_id"])
+            for order_id in ledger_ids[row["executor_id"]]:
                 owned_by.setdefault(order_id, row["executor_id"])
 
         resumed = 0
@@ -1089,6 +1104,110 @@ class ExecutorService:
                     blank_grid_cap(executor)
                 except Exception:
                     logger.exception("blank grid cap failed; resume continues")
+
+    @staticmethod
+    def _open_venue(connector: Any) -> Optional[str]:
+        name = type(connector).__name__.lower() if connector is not None else ""
+        if "gate" in name:
+            return "gate"
+        if "okx" in name:
+            return "okx"
+        return None
+
+    @staticmethod
+    def _open_limit_id(connector: Any, venue: str) -> str:
+        """A path the throttler already knows. The request URL stays the open-order list."""
+        name = type(connector).__name__.lower() if connector is not None else ""
+        if venue == "okx" and "perpetual" in name:
+            return "GET-/api/v5/trade/order"
+        if venue == "okx":
+            return "/api/v5/trade/order"
+        return "spot/orders"
+
+    async def _exchange_open_pass(self, account: str, connector: Any, pair: str) -> Dict[str, Any]:
+        """One exchange list per account, connector instance, and pair. Unread is not an empty success."""
+        cache = getattr(self, "_exchange_open_passes", None)
+        if cache is None:
+            cache = {}
+            self._exchange_open_passes = cache
+        key = exchange_pass_key(account, connector, pair)
+        if key in cache:
+            return cache[key]
+        try:
+            result = await self._read_exchange_open_pass(connector, pair)
+        except Exception:
+            logger.exception("exchange open list failed for %s %s", account, pair)
+            result = {"read": False, "orders": []}
+        if not isinstance(result, dict) or not result.get("read"):
+            result = {"read": False, "orders": []}
+        cache[key] = result
+        return result
+
+    async def _read_exchange_open_pass(self, connector: Any, pair: str) -> Dict[str, Any]:
+        venue = self._open_venue(connector)
+        if venue is None:
+            return {"read": False, "orders": []}
+        symbol = await connector.exchange_symbol_associated_to_pair(pair)
+        if not symbol:
+            return {"read": False, "orders": []}
+        pages = []
+        after = None
+        page = 1
+        for _ in range(1000):
+            request = exchange_open_request(venue, symbol, page=page, after=after)
+            if request is None:
+                return {"read": False, "orders": []}
+            body = await connector._api_get(
+                path_url=request["path"],
+                params=request["params"],
+                is_auth_required=True,
+                limit_id=self._open_limit_id(connector, venue),
+            )
+            parsed = parse_exchange_open_page(body, venue, symbol)
+            pages.append(parsed)
+            if not parsed.get("read") or parsed.get("done"):
+                break
+            if venue == "gate":
+                page += 1
+            else:
+                after = parsed.get("cursor")
+                if not after:
+                    return {"read": False, "orders": []}
+        else:
+            return {"read": False, "orders": []}
+        return merge_exchange_open_pages(pages)
+
+    def _foreign_ids_now(self, self_id: str, owned_by: Dict[str, str]) -> set:
+        foreign = foreign_order_ids(
+            getattr(self, "_resume_rows", []) or [],
+            getattr(self, "_resume_ledger_ids", {}) or {},
+            self_id,
+        )
+        foreign.update(order_id for order_id, owner in owned_by.items() if owner != self_id)
+        for executor_id, executor in self._active_executors.items():
+            if executor_id == self_id:
+                continue
+            for level in getattr(executor, "grid_levels", []) or []:
+                for tracked in (
+                    getattr(level, "active_open_order", None),
+                    getattr(level, "active_close_order", None),
+                ):
+                    order_id = getattr(tracked, "order_id", None)
+                    if order_id:
+                        foreign.add(order_id)
+        return foreign
+
+    @staticmethod
+    def _prior_tracker_ids(connector: Any) -> set:
+        found = set()
+        inflight = getattr(connector, "in_flight_orders", None)
+        if isinstance(inflight, dict):
+            found.update(str(order_id) for order_id in inflight if order_id)
+        tracker = getattr(connector, "_order_tracker", None)
+        cached = getattr(tracker, "cached_orders", None) if tracker is not None else None
+        if isinstance(cached, dict):
+            found.update(str(order_id) for order_id in cached if order_id)
+        return found
 
     async def _resume_one(self, row: Dict[str, Any], owned_by: Optional[Dict[str, str]] = None) -> Optional[str]:
         """None on success. A string is why this row was left for cleanup."""
@@ -1165,6 +1284,26 @@ class ExecutorService:
             if plan:
                 self._install_touch_cap(executor, plan)
                 notice = plan.get("notice")
+            if row["executor_type"] == "grid_executor":
+                # A throw here must not reach the outer except: that pops the row and
+                # cleanup marks SYSTEM_CLEANUP while the exchange order is still live.
+                try:
+                    exchange_pass = await self._exchange_open_pass(account, connector, pair)
+                    own_ids = set(saved_order_ids(checkpoint))
+                    own_ids.update(recent_order_ids(row["executor_id"]))
+                    install_occupied_open_brake(
+                        executor,
+                        exchange_pass,
+                        lambda: self._foreign_ids_now(row["executor_id"], owned_by or {}),
+                        own_ids=own_ids,
+                        prior_tracker_ids=self._prior_tracker_ids(connector),
+                    )
+                except Exception:
+                    logger.exception("occupied open brake was not installed; blocking new opens")
+                    try:
+                        hold_new_opens(executor)
+                    except Exception:
+                        logger.exception("could not block new opens; resume still continues")
             self._start_registered_executor(row["executor_id"], executor)
             started = True
             async with self.db_manager.get_session_context() as session:

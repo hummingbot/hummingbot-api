@@ -10,12 +10,18 @@ from utils.executor_checkpoint import (
     can_resume,
     capture_executor,
     capture_tracked,
+    exchange_open_request,
+    exchange_pass_key,
+    foreign_order_ids,
     grid_resume_plan,
     has_exposure,
+    install_occupied_open_brake,
+    merge_exchange_open_pages,
     note_filled,
     note_gone,
     note_placed,
     parse_checkpoint,
+    parse_exchange_open_page,
     recent_order_ids,
     remember_order_now,
     seat_known_opens,
@@ -991,3 +997,333 @@ def test_conservative_cap_does_not_release_zero():
     conservative_grid_cap(executor, plan)
     assert executor.get_open_orders_to_create() == [_proposal("80")]
     assert executor._touch_place_budget == 0
+
+
+def _brake(
+    proposals, orders=None, cached=None, quote="100", tick="0.01", side="BUY",
+    exchange=None, foreign=None, own=None, prior=None, spread="0.0001",
+    ready=True, raise_book=False, pair="SOL-USDT",
+):
+    orders = list(orders or [])
+    cached = list(cached or [])
+
+    class _Inflight(dict):
+        def values(self):
+            if raise_book:
+                raise OSError("book")
+            return super().values()
+
+    inflight = _Inflight({order.client_order_id: order for order in orders})
+    connector = SimpleNamespace(
+        ready=ready,
+        in_flight_orders=inflight,
+        _order_tracker=SimpleNamespace(
+            cached_orders={order.client_order_id: order for order in cached},
+            lost_orders={},
+        ),
+    )
+    closes = ["sell-a", "sell-b"]
+    config = SimpleNamespace(
+        side=_Side(side) if side else SimpleNamespace(),
+        safe_extra_spread=Decimal(str(spread)),
+        trading_pair=pair,
+    )
+    executor = SimpleNamespace(
+        config=config,
+        trading_rules=None if tick is None else SimpleNamespace(min_price_increment=Decimal(str(tick))),
+        current_open_quote=None if quote is None else Decimal(str(quote)),
+        connectors={"okx": connector},
+        get_open_orders_to_create=lambda: list(proposals),
+        get_close_orders_to_create=lambda: list(closes),
+        grid_levels=[],
+    )
+    install_occupied_open_brake(
+        executor,
+        exchange if exchange is not None else {"read": True, "orders": []},
+        foreign if foreign is not None else (lambda: set()),
+        own_ids=set(own or []),
+        prior_tracker_ids=set(prior or []),
+    )
+    executor._book = inflight
+    executor._closes = closes
+    return executor
+
+
+def _done(order_id, state, is_open=False):
+    return SimpleNamespace(
+        client_order_id=order_id,
+        price=Decimal("100"),
+        is_open=is_open,
+        trading_pair="SOL-USDT",
+        current_state=SimpleNamespace(name=state),
+        trade_type=SimpleNamespace(name="BUY"),
+    )
+
+
+def _buy(order_id, price, pair="SOL-USDT"):
+    order = _live(order_id, price)
+    order.trading_pair = pair
+    order.trade_type = SimpleNamespace(name="BUY")
+    return order
+
+
+def test_open_buy_at_the_same_tick_is_not_repeated_and_is_not_seated():
+    near = _proposal("99")
+    same = _proposal("100")
+    executor = _brake([same, near], orders=[_buy("loose", "100")], quote="110")
+    assert executor.get_open_orders_to_create() == [near]
+    assert executor.grid_levels == []
+    assert "loose" in executor._book
+
+
+def _move_finished(executor, order_id, state):
+    executor.connectors["okx"].in_flight_orders.clear()
+    executor.connectors["okx"]._order_tracker.cached_orders = {order_id: _done(order_id, state)}
+
+
+def test_filled_tracker_id_releases_and_failed_or_lost_does_not():
+    filled = _brake([_proposal("100")], orders=[_buy("was", "100")], prior={"was"}, quote="110")
+    assert filled.get_open_orders_to_create() == []
+    _move_finished(filled, "was", "FILLED")
+    assert filled.get_open_orders_to_create() == [_proposal("100")]
+    filled.connectors["okx"]._order_tracker.cached_orders = {}
+    assert filled.get_open_orders_to_create() == [_proposal("100")]
+    failed = _brake([_proposal("100")], orders=[_buy("was", "100")], prior={"was"}, quote="110")
+    assert failed.get_open_orders_to_create() == []
+    _move_finished(failed, "was", "FAILED")
+    assert failed.get_open_orders_to_create() == []
+    lost = _brake([_proposal("100")], orders=[_buy("was", "100")], prior={"was"}, quote="110")
+    assert lost.get_open_orders_to_create() == []
+    lost.connectors["okx"].in_flight_orders.clear()
+    lost.connectors["okx"]._order_tracker.lost_orders = {"was": _buy("was", "100")}
+    assert lost.get_open_orders_to_create() == []
+
+
+def test_ready_false_still_blocks_a_buy_already_in_the_dictionary():
+    executor = _brake([_proposal("100")], orders=[_buy("late", "100")], ready=False, quote="110")
+    assert executor.get_open_orders_to_create() == []
+    assert executor.grid_levels == []
+
+
+def test_unread_book_or_unread_exchange_list_places_no_open_and_keeps_closes():
+    unread_book = _brake([_proposal("100")], raise_book=True, quote="110")
+    closes = unread_book.get_close_orders_to_create
+    assert unread_book.get_open_orders_to_create() == []
+    assert unread_book.get_close_orders_to_create is closes
+    assert unread_book.get_close_orders_to_create() == ["sell-a", "sell-b"]
+    empty = SimpleNamespace(connectors={})
+    no_dict = _brake([_proposal("100")], quote="110")
+    no_dict.connectors = {"okx": SimpleNamespace(in_flight_orders=[], _order_tracker=None)}
+    assert no_dict.get_open_orders_to_create() == []
+    unread_list = _brake([_proposal("100")], exchange={"read": False, "orders": []}, quote="110")
+    assert unread_list.get_open_orders_to_create() == []
+    assert empty.connectors == {}
+
+
+def test_exchange_list_buy_is_not_seated_and_an_empty_book_does_not_release_it():
+    exchange = {"read": True, "orders": [{"order_id": "ex", "price": "100", "side": "BUY"}]}
+    executor = _brake([_proposal("100"), _proposal("99")], exchange=exchange, quote="110")
+    before = set(executor._book)
+    assert executor.get_open_orders_to_create() == [_proposal("99")]
+    assert set(executor._book) == before
+    assert executor.grid_levels == []
+    executor.connectors["okx"].in_flight_orders = {}
+    assert executor.get_open_orders_to_create() == [_proposal("99")]
+
+
+def test_ledger_id_missing_from_a_read_list_does_not_block_a_priceless_row_does():
+    clear = _brake(
+        [_proposal("100")],
+        exchange={"read": True, "orders": []},
+        own={"ledger-only"},
+        quote="110",
+    )
+    assert clear.get_open_orders_to_create() == [_proposal("100")]
+    held = _brake(
+        [_proposal("100"), _proposal("99")],
+        exchange={"read": True, "orders": [{"order_id": "ex", "price": None, "side": "BUY"}]},
+        quote="110",
+    )
+    assert held.get_open_orders_to_create() == []
+
+
+def test_inventory_sell_and_a_foreign_buy_do_not_block_our_open():
+    sell = _buy("tp", "100")
+    sell.trade_type = SimpleNamespace(name="SELL")
+    executor = _brake([_proposal("100")], orders=[sell], quote="110")
+    assert executor.get_open_orders_to_create() == [_proposal("100")]
+    foreign = _brake(
+        [_proposal("100")],
+        orders=[_buy("other", "100")],
+        foreign=lambda: {"other"},
+        quote="110",
+    )
+    assert foreign.get_open_orders_to_create() == [_proposal("100")]
+    assert foreign.grid_levels == []
+
+
+def test_level_under_the_quote_places_at_its_own_price_not_the_touch_formula():
+    own = _proposal("120")
+    blocked = _brake([own], orders=[_buy("live", "120")], quote="120.01", tick="0.0001")
+    assert blocked.get_open_orders_to_create() == []
+    crossing = _proposal("130")
+    free = _brake([crossing], orders=[_buy("live", "120")], quote="120.01", tick="0.0001")
+    assert free.get_open_orders_to_create() == [crossing]
+    sell_own = _brake(
+        [_proposal("120")],
+        orders=[_buy("live", "120")],
+        quote="119.99",
+        side="SELL",
+        tick="0.0001",
+    )
+    sell_own.connectors["okx"].in_flight_orders["live"].trade_type = SimpleNamespace(name="SELL")
+    assert sell_own.get_open_orders_to_create() == []
+    blind = _brake(
+        [_proposal("100"), _proposal("99")],
+        orders=[_buy("live", "100")],
+        quote=None,
+        tick=None,
+    )
+    assert blind.get_open_orders_to_create() == []
+
+
+def test_foreign_ids_are_read_each_call_and_our_id_is_never_foreign():
+    seen = {"ids": set()}
+
+    def foreign():
+        return set(seen["ids"])
+
+    neighbor = _brake(
+        [_proposal("100")],
+        exchange={"read": True, "orders": [{"order_id": "neighbor", "price": "100", "side": "BUY"}]},
+        foreign=foreign,
+        quote="110",
+    )
+    assert neighbor.get_open_orders_to_create() == []
+    seen["ids"] = {"neighbor"}
+    assert neighbor.get_open_orders_to_create() == [_proposal("100")]
+    own = _brake(
+        [_proposal("100")],
+        exchange={"read": True, "orders": [{"order_id": "mine", "price": "100", "side": "BUY"}]},
+        foreign=lambda: {"mine"},
+        own={"mine"},
+        quote="110",
+    )
+    assert own.get_open_orders_to_create() == []
+
+
+def test_twenty_five_grids_only_this_unseated_order_blocks():
+    others = {f"grid-{index}" for index in range(24)}
+    exchange = {"read": True, "orders": [
+        {"order_id": "mine", "price": "100", "side": "BUY"},
+        *(
+            {"order_id": order_id, "price": "100", "side": "BUY"}
+            for order_id in others
+        ),
+    ]}
+    executor = _brake(
+        [_proposal("100"), _proposal("99")],
+        exchange=exchange,
+        foreign=lambda: set(others),
+        own={"mine"},
+        quote="110",
+    )
+    assert executor.get_open_orders_to_create() == [_proposal("99")]
+
+
+def _okx_row(order_id, price, state="live", ord_id=None, side="buy"):
+    return {
+        "clOrdId": order_id,
+        "px": price,
+        "side": side,
+        "state": state,
+        "ordId": ord_id or order_id,
+    }
+
+
+def test_exchange_page_parse_and_merge_keep_every_page():
+    gate = parse_exchange_open_page(
+        [{"currency_pair": "SOL_USDT", "text": "t-1", "price": "100", "side": "buy"}],
+        "gate",
+        "SOL_USDT",
+    )
+    assert gate["done"] is True
+    assert gate["orders"] == [{"order_id": "t-1", "price": "100", "side": "BUY", "unknown_side": False}]
+    other = parse_exchange_open_page(
+        [{"currency_pair": "DOGE_USDT", "text": "t-x", "price": "1", "side": "buy"}],
+        "gate",
+        "SOL_USDT",
+    )
+    assert other["orders"] == []
+    assert other["done"] is True
+    groups = [
+        {"currency_pair": "DOGE_USDT", "total": 1, "orders": [{"text": "a", "price": "1", "side": "buy"}]},
+        {"currency_pair": "SOL_USDT", "total": 100, "orders": [{"text": "s", "price": "100", "side": "buy"}]},
+    ]
+    assert parse_exchange_open_page(groups, "gate", "SOL_USDT")["read"] is False
+    assert parse_exchange_open_page([], "gate", "SOL_USDT", cursor_kind="before")["read"] is False
+    full = [
+        {"currency_pair": "SOL_USDT", "text": f"t-{index}", "price": "100", "side": "buy"}
+        for index in range(100)
+    ]
+    first = parse_exchange_open_page(full, "gate", "SOL_USDT")
+    assert first["done"] is False and first["cursor"] == "page+1"
+    tail = parse_exchange_open_page(
+        [{"currency_pair": "SOL_USDT", "text": "t-tail", "price": "101", "side": "buy"}],
+        "gate",
+        "SOL_USDT",
+    )
+    merged = merge_exchange_open_pages([first, tail])
+    assert merged["read"] is True
+    assert any(row["price"] == "100" for row in merged["orders"])
+    assert any(row["price"] == "101" for row in merged["orders"])
+    assert merge_exchange_open_pages([first, {"read": False}])["read"] is False
+    broken = parse_exchange_open_page(
+        [{"currency_pair": "SOL_USDT", "price": "100", "side": "buy"}],
+        "gate",
+        "SOL_USDT",
+    )
+    assert broken["read"] is False
+    okx_bad = parse_exchange_open_page({"code": "500", "data": []}, "okx", "SOL-USDT")
+    assert okx_bad["read"] is False
+    okx_empty = parse_exchange_open_page({"code": "0", "data": []}, "okx", "SOL-USDT")
+    assert okx_empty["read"] is True and okx_empty["done"] is True and okx_empty["orders"] == []
+    hundred = {"code": "0", "data": [_okx_row(f"c-{index}", "100", ord_id=str(index)) for index in range(100)]}
+    okx_full = parse_exchange_open_page(hundred, "okx", "SOL-USDT")
+    assert okx_full["done"] is False and okx_full["cursor"] == "99"
+    assert parse_exchange_open_page({"code": "0", "data": []}, "okx", "SOL-USDT", cursor_kind="before")["read"] is False
+    filled = parse_exchange_open_page(
+        {"code": "0", "data": [_okx_row("gone", "100", state="filled")]},
+        "okx",
+        "SOL-USDT",
+    )
+    assert filled["orders"] == []
+    unknown = parse_exchange_open_page(
+        {"code": "0", "data": [_okx_row("odd", "100", side="long")]},
+        "okx",
+        "SOL-USDT",
+    )
+    assert unknown["orders"][0]["unknown_side"] is True
+    held = _brake(
+        [_proposal("100"), _proposal("99")],
+        exchange={"read": True, "orders": unknown["orders"]},
+        quote="110",
+    )
+    assert held.get_open_orders_to_create() == []
+    request = exchange_open_request("gate", "SOL_USDT")
+    assert request["path"] == "spot/orders"
+    assert "account" not in request["params"]
+    assert exchange_open_request("okx", "SOL-USDT", after="99")["params"]["after"] == "99"
+    assert "before" not in exchange_open_request("okx", "SOL-USDT", after="99")["params"]
+
+
+def test_exchange_pass_key_does_not_share_an_empty_list_across_accounts():
+    first = SimpleNamespace(name="okx")
+    second = SimpleNamespace(name="okx")
+    cache = {exchange_pass_key("alpha", first, "SOL-USDT"): {"read": True, "orders": []}}
+    assert exchange_pass_key("beta", second, "SOL-USDT") not in cache
+    rows = [
+        {"executor_id": "other", "checkpoint": None},
+    ]
+    assert "other-ledger" in foreign_order_ids(rows, {"other": ["other-ledger"]}, "mine")
+    assert "mine-ledger" not in foreign_order_ids(rows, {"mine": ["mine-ledger"], "other": []}, "mine")
