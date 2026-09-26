@@ -415,6 +415,7 @@ class UnifiedConnectorService:
                 bids, asks = ob.snapshot
                 if len(bids) > 0 and len(asks) > 0:
                     logger.info(f"Order book for {trading_pair} already initialized")
+                    await self._ensure_okx_funding_streams(connector)
                     return True
             except Exception:
                 pass
@@ -511,6 +512,7 @@ class UnifiedConnectorService:
                     tracker._trading_pairs.append(trading_pair)
 
                 tracker.start()
+                await self._ensure_okx_funding_streams(connector)
                 try:
                     await asyncio.wait_for(tracker.wait_ready(), timeout=30.0)
                     logger.info(f"Order book tracker ready for {type(connector).__name__}")
@@ -541,6 +543,43 @@ class UnifiedConnectorService:
             logger.error(f"Error adding trading pair {trading_pair}: {e}", exc_info=True)
             self._purge_trading_pair_registration(connector, trading_pair)
             return False
+
+    def _is_okx_perpetual_connector(self, connector) -> bool:
+        """True for OKX perpetual, including the demo domain on the same class."""
+        try:
+            name = getattr(connector, "name", "")
+        except Exception:
+            name = ""
+        if name == "okx_perpetual":
+            return True
+        return type(connector).__name__ == "OkxPerpetualDerivative"
+
+    async def _ensure_okx_funding_streams(self, connector) -> None:
+        """Start OKX mark-price readers when the tracker starts without start_network."""
+        ensure = getattr(connector, "ensure_funding_price_streams", None)
+        if ensure is None:
+            if not self._is_okx_perpetual_connector(connector):
+                return
+            try:
+                already_warned = getattr(connector, "_okx_funding_hook_missing_warned", False)
+            except Exception:
+                already_warned = False
+            if already_warned:
+                return
+            try:
+                connector._okx_funding_hook_missing_warned = True
+            except Exception:
+                pass
+            logger.warning(
+                "OKX perpetual has no ensure_funding_price_streams; "
+                "the order book can start, but the mark-price queue will not be read"
+            )
+            return
+        logger.info("Starting OKX funding streams on %s" % type(connector).__name__)
+        try:
+            await ensure()
+        except Exception as e:
+            logger.warning(f"Could not start OKX funding price streams: {e}")
 
     async def remove_trading_pair(
         self,
@@ -1656,6 +1695,7 @@ class UnifiedConnectorService:
             # Restart the tracker
             logger.info(f"Restarting order book tracker for {connector_name} with pairs: {trading_pairs}")
             tracker.start()
+            await self._ensure_okx_funding_streams(connector)
 
             # Wait for initialization
             try:
