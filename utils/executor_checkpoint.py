@@ -221,21 +221,30 @@ def _read_ledger() -> List[Dict[str, Any]]:
     return rows
 
 
-def _fsync_directory(path: str) -> None:
+def _fsync_directory(path: str) -> bool:
+    """Fsync the parent of path. True only when that fsync succeeded."""
     directory = os.path.dirname(path)
     if not directory:
-        return
+        return False
     try:
         descriptor = os.open(directory, os.O_RDONLY)
     except OSError as exc:
         logger.warning("order ledger directory fsync failed: %s", exc)
-        return
+        return False
     try:
         os.fsync(descriptor)
     except OSError as exc:
         logger.warning("order ledger directory fsync failed: %s", exc)
+        return False
     finally:
         os.close(descriptor)
+    return True
+
+
+# One ledger path owes a directory entry until that fsync is seen to succeed.
+# A different path does not inherit the debt. Not a second file.
+_LEDGER_NAME_FSYNC_OWED: Optional[str] = None
+_LEDGER_PARENT_FSYNC_OWED: Optional[str] = None
 
 
 def _write_ledger(rows: List[Dict[str, Any]]) -> None:
@@ -271,13 +280,21 @@ def _write_ledger(rows: List[Dict[str, Any]]) -> None:
 
 
 def _append_ledger_line(row: Dict[str, Any]) -> None:
-    """Append one id when a rewrite would have to follow a failed read."""
+    """Append one id. Fsync the directory only while this process still owes the name."""
+    global _LEDGER_NAME_FSYNC_OWED, _LEDGER_PARENT_FSYNC_OWED
     path = order_ledger_path()
     descriptor = None
+    file_synced = False
+    directory = os.path.dirname(path) or "."
     try:
-        directory = os.path.dirname(path) or "."
+        created_directory = not os.path.isdir(directory)
         os.makedirs(directory, exist_ok=True)
+        if created_directory:
+            _LEDGER_PARENT_FSYNC_OWED = directory
+        created_file = not os.path.exists(path)
         descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+        if created_file:
+            _LEDGER_NAME_FSYNC_OWED = path
         size = os.lseek(descriptor, 0, os.SEEK_END)
         if size:
             os.lseek(descriptor, size - 1, os.SEEK_SET)
@@ -287,11 +304,19 @@ def _append_ledger_line(row: Dict[str, Any]) -> None:
                 os.write(descriptor, b"\n")
         os.write(descriptor, (json.dumps(row) + "\n").encode("utf-8"))
         os.fsync(descriptor)
+        file_synced = True
     except OSError as exc:
         logger.warning("order ledger append failed: %s", exc)
     finally:
         if descriptor is not None:
             os.close(descriptor)
+    if not file_synced:
+        return
+    if _LEDGER_NAME_FSYNC_OWED == path and _fsync_directory(path):
+        _LEDGER_NAME_FSYNC_OWED = None
+    if _LEDGER_PARENT_FSYNC_OWED == directory and _LEDGER_NAME_FSYNC_OWED != path:
+        if _fsync_directory(directory):
+            _LEDGER_PARENT_FSYNC_OWED = None
 
 
 def remember_order_now(executor_id: str, order_id: Optional[str]) -> None:

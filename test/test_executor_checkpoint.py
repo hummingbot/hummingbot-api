@@ -422,6 +422,109 @@ def test_remember_order_appends_without_replace_or_truncate(tmp_path, monkeypatc
     assert not _live_opened_for_rewrite(path, modes, opens)
 
 
+def _dir_fsync_log(monkeypatch):
+    calls = []
+    real = __import__("utils.executor_checkpoint", fromlist=["_fsync_directory"])._fsync_directory
+
+    def tracking(path):
+        calls.append(path)
+        return real(path)
+
+    monkeypatch.setattr("utils.executor_checkpoint._fsync_directory", tracking)
+    return calls
+
+
+def test_new_ledger_file_fsyncs_its_directory_once(tmp_path, monkeypatch):
+    path = tmp_path / "ledger.jsonl"
+    monkeypatch.setenv("EXECUTOR_ORDER_LEDGER", str(path))
+    order = []
+    real_fsync = os.fsync
+
+    def tracking_fsync(descriptor):
+        order.append("file")
+        return real_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", tracking_fsync)
+    seen = []
+    real_dir = __import__("utils.executor_checkpoint", fromlist=["_fsync_directory"])._fsync_directory
+
+    def tracking_dir(target):
+        seen.append((target, bool(order)))
+        return real_dir(target)
+
+    monkeypatch.setattr("utils.executor_checkpoint._fsync_directory", tracking_dir)
+    remember_order_now("ex", "new")
+    assert "new" in path.read_text(encoding="utf-8")
+    assert seen == [(str(path), True)]
+    remember_order_now("ex", "next")
+    assert seen == [(str(path), True)]
+
+
+def test_existing_ledger_does_not_fsync_the_directory(tmp_path, monkeypatch):
+    path = tmp_path / "ledger.jsonl"
+    path.write_text('{"executor_id": "ex", "order_id": "keep", "ts": 10}\n', encoding="utf-8")
+    monkeypatch.setenv("EXECUTOR_ORDER_LEDGER", str(path))
+    dirs = _dir_fsync_log(monkeypatch)
+    replaced = []
+    monkeypatch.setattr(os, "replace", lambda *args: replaced.append(args))
+    remember_order_now("ex", "new")
+    assert dirs == []
+    assert replaced == []
+    assert "keep" in path.read_text(encoding="utf-8")
+
+
+def test_failed_create_fsyncs_directory_on_the_next_success(tmp_path, monkeypatch):
+    path = tmp_path / "ledger.jsonl"
+    monkeypatch.setenv("EXECUTOR_ORDER_LEDGER", str(path))
+    dirs = _dir_fsync_log(monkeypatch)
+    real_write = os.write
+    failed = {"on": True}
+
+    def fail_once(descriptor, data):
+        if failed["on"]:
+            failed["on"] = False
+            raise OSError("append")
+        return real_write(descriptor, data)
+
+    monkeypatch.setattr(os, "write", fail_once)
+    remember_order_now("ex", "lost")
+    assert dirs == []
+    monkeypatch.setattr(os, "write", real_write)
+    remember_order_now("ex", "kept")
+    assert dirs == [str(path)]
+    text = path.read_text(encoding="utf-8")
+    assert "kept" in text
+    assert "lost" not in text
+
+
+def test_created_directory_fsyncs_parent_and_retries_only_parent(tmp_path, monkeypatch):
+    directory = tmp_path / "data"
+    path = directory / "ledger.jsonl"
+    monkeypatch.setenv("EXECUTOR_ORDER_LEDGER", str(path))
+    parent_ok = {"on": False}
+    calls = []
+
+    def tracking(target):
+        calls.append(target)
+        if target == str(directory):
+            return parent_ok["on"]
+        return True
+
+    monkeypatch.setattr("utils.executor_checkpoint._fsync_directory", tracking)
+    remember_order_now("ex", "new")
+    assert calls == [str(path), str(directory)]
+    calls.clear()
+    remember_order_now("ex", "retry")
+    assert calls == [str(directory)]
+    parent_ok["on"] = True
+    calls.clear()
+    remember_order_now("ex", "done")
+    assert calls == [str(directory)]
+    calls.clear()
+    remember_order_now("ex", "later")
+    assert calls == []
+
+
 def test_prune_read_error_does_not_replace(tmp_path, monkeypatch):
     path = tmp_path / "ledger.jsonl"
     path.write_text('{"executor_id": "ex", "order_id": "keep", "ts": 10}\n', encoding="utf-8")
