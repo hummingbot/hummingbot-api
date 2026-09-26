@@ -344,6 +344,9 @@ async def lifespan(app: FastAPI):
     market_data_service.start()
     await market_data_service.warmup_tickers()
     executor_service.start()
+    # Reattach RUNNING executors before cleanup. Cleanup marks whatever is still
+    # not in memory as SYSTEM_CLEANUP; a resumed executor is in memory and stays.
+    await executor_service.resume_running_executors()
     await executor_service.cleanup_orphaned_executors()
     await executor_service.recover_positions_from_db()
     accounts_service.start()
