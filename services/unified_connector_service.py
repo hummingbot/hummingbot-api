@@ -544,12 +544,35 @@ class UnifiedConnectorService:
             self._purge_trading_pair_registration(connector, trading_pair)
             return False
 
+    def _is_okx_perpetual_connector(self, connector) -> bool:
+        """True for OKX perpetual, including the demo domain on the same class."""
+        try:
+            name = getattr(connector, "name", "")
+        except Exception:
+            name = ""
+        if name == "okx_perpetual":
+            return True
+        return type(connector).__name__ == "OkxPerpetualDerivative"
+
     async def _ensure_okx_funding_streams(self, connector) -> None:
         """Start OKX mark-price readers when the tracker starts without start_network."""
         ensure = getattr(connector, "ensure_funding_price_streams", None)
         if ensure is None:
-            logger.info(
-                "No OKX funding stream hook on %s" % type(connector).__name__
+            if not self._is_okx_perpetual_connector(connector):
+                return
+            try:
+                already_warned = getattr(connector, "_okx_funding_hook_missing_warned", False)
+            except Exception:
+                already_warned = False
+            if already_warned:
+                return
+            try:
+                connector._okx_funding_hook_missing_warned = True
+            except Exception:
+                pass
+            logger.warning(
+                "OKX perpetual has no ensure_funding_price_streams; "
+                "the order book can start, but the mark-price queue will not be read"
             )
             return
         logger.info("Starting OKX funding streams on %s" % type(connector).__name__)
