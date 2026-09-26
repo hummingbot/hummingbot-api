@@ -63,6 +63,8 @@ from utils.executor_checkpoint import (
     exchange_open_request,
     exchange_pass_key,
     foreign_order_ids,
+    new_exchange_slot,
+    open_list_venue,
     hold_new_opens,
     install_occupied_open_brake,
     merge_exchange_open_pages,
@@ -154,6 +156,8 @@ class ExecutorService:
     # than N days does not get more correct for being done every minute, and the sweep is
     # a DELETE over two tables sharing the control loop's tick.
     PERFORMANCE_PRUNE_INTERVAL_SECONDS = 3600.0
+    OPEN_LIST_RETRY_SECONDS = 30.0
+    OPEN_LIST_REQUEST_TIMEOUT = 30.0
 
     # Mapping of executor type strings to (executor_class, config_class)
     EXECUTOR_REGISTRY: Dict[str, tuple[Type[ExecutorBase], Type[ExecutorConfigBase]]] = {
@@ -404,6 +408,7 @@ class ExecutorService:
                 # inside the tick (see _record_lp_position_rent), so the cadence is one
                 # guard rather than another thing to schedule and shut down.
                 now = time.monotonic()
+                await self._retry_unread_open_lists(now)
                 await self._checkpoint_active_executors()
                 if now - self._last_snapshot_at >= self.performance_snapshot_interval:
                     self._last_snapshot_at = now
@@ -1107,12 +1112,7 @@ class ExecutorService:
 
     @staticmethod
     def _open_venue(connector: Any) -> Optional[str]:
-        name = type(connector).__name__.lower() if connector is not None else ""
-        if "gate" in name:
-            return "gate"
-        if "okx" in name:
-            return "okx"
-        return None
+        return open_list_venue(type(connector).__name__ if connector is not None else "")
 
     @staticmethod
     def _open_limit_id(connector: Any, venue: str) -> str:
@@ -1124,24 +1124,127 @@ class ExecutorService:
             return "/api/v5/trade/order"
         return "spot/orders"
 
-    async def _exchange_open_pass(self, account: str, connector: Any, pair: str) -> Dict[str, Any]:
-        """One exchange list per account, connector instance, and pair. Unread is not an empty success."""
-        cache = getattr(self, "_exchange_open_passes", None)
-        if cache is None:
-            cache = {}
-            self._exchange_open_passes = cache
+    def _open_list_state(self) -> None:
+        if not hasattr(self, "_exchange_slots"):
+            self._exchange_slots = {}
+            self._exchange_open_passes = {}
+            self._exchange_fail_at = {}
+            self._exchange_inflight = {}
+            self._open_list_targets = {}
+
+    def _shared_open_slot(self, account: str, connector: Any, pair: str) -> Dict[str, Any]:
+        """Same dict for every grid on this account, connector, and pair."""
+        self._open_list_state()
         key = exchange_pass_key(account, connector, pair)
-        if key in cache:
-            return cache[key]
+        self._open_list_targets[key] = (connector, pair)
+        slot = self._exchange_slots.get(key)
+        if slot is None:
+            cached = self._exchange_open_passes.get(key)
+            slot = cached if isinstance(cached, dict) and cached.get("read") else new_exchange_slot()
+            self._exchange_slots[key] = slot
+        return slot
+
+    async def _exchange_open_pass(self, account: str, connector: Any, pair: str) -> Dict[str, Any]:
+        """Return the shared slot. A failed read is not stored as an empty book."""
+        slot = self._shared_open_slot(account, connector, pair)
+        if slot.get("read"):
+            return slot
+        if open_list_venue(type(connector).__name__ if connector is not None else "") is None:
+            return slot
+        key = exchange_pass_key(account, connector, pair)
+        now = time.monotonic()
+        failed_at = self._exchange_fail_at.get(key)
+        if failed_at is not None and now - failed_at < self.OPEN_LIST_RETRY_SECONDS:
+            return slot
+        running = self._exchange_inflight.get(key)
+        if running is None:
+            task = asyncio.create_task(self._fill_open_slot(key, connector, pair))
+            self._exchange_inflight[key] = (task, now)
+        else:
+            task = running[0]
         try:
-            result = await self._read_exchange_open_pass(connector, pair)
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if asyncio.current_task().cancelling():
+                raise
+            self._exchange_fail_at[key] = time.monotonic()
+        return slot
+
+    async def _fill_open_slot(self, key: tuple, connector: Any, pair: str) -> None:
+        """Write a successful list into the shared slot. A failure is only a timestamp."""
+        self._open_list_state()
+        slot = self._exchange_slots.get(key)
+        if slot is None:
+            slot = new_exchange_slot()
+            self._exchange_slots[key] = slot
+        if slot.get("read"):
+            return
+        now = time.monotonic()
+        failed_at = self._exchange_fail_at.get(key)
+        if failed_at is not None and now - failed_at < self.OPEN_LIST_RETRY_SECONDS:
+            return
+        current = self._exchange_inflight.get(key)
+        if current is not None and current[0] is not asyncio.current_task():
+            return
+        try:
+            result = await asyncio.wait_for(
+                self._read_exchange_open_pass(connector, pair),
+                timeout=self.OPEN_LIST_REQUEST_TIMEOUT,
+            )
+            if isinstance(result, dict) and result.get("read"):
+                slot["orders"] = list(result.get("orders") or [])
+                slot["read"] = True
+                self._exchange_open_passes[key] = slot
+                self._exchange_fail_at.pop(key, None)
+            else:
+                self._exchange_fail_at[key] = time.monotonic()
+        except asyncio.TimeoutError:
+            self._exchange_fail_at[key] = time.monotonic()
         except Exception:
-            logger.exception("exchange open list failed for %s %s", account, pair)
-            result = {"read": False, "orders": []}
-        if not isinstance(result, dict) or not result.get("read"):
-            result = {"read": False, "orders": []}
-        cache[key] = result
-        return result
+            logger.exception("exchange open list failed for %s", pair)
+            self._exchange_fail_at[key] = time.monotonic()
+        finally:
+            running = self._exchange_inflight.get(key)
+            if running is not None and running[0] is asyncio.current_task():
+                self._exchange_inflight.pop(key, None)
+
+    def _expire_open_list_tasks(self, now: float) -> None:
+        for key, (task, started) in list(self._exchange_inflight.items()):
+            if task.done():
+                self._exchange_inflight.pop(key, None)
+                continue
+            if now - started < self.OPEN_LIST_REQUEST_TIMEOUT:
+                continue
+            task.cancel()
+            self._exchange_inflight.pop(key, None)
+            self._exchange_fail_at[key] = now
+
+    async def _retry_unread_open_lists(self, now: float) -> None:
+        """One retry per key when a grid still wants an open. Does not call the proposer."""
+        self._open_list_state()
+        self._expire_open_list_tasks(now)
+        wanted = set()
+        for executor in list(self._active_executors.values()):
+            if not getattr(executor, "_occupied_wants_open", False):
+                continue
+            key = getattr(executor, "_occupied_pass_key", None)
+            if key is not None:
+                wanted.add(key)
+        for key in wanted:
+            slot = self._exchange_slots.get(key)
+            if slot is not None and slot.get("read"):
+                continue
+            if key in self._exchange_inflight:
+                continue
+            failed_at = self._exchange_fail_at.get(key)
+            if failed_at is not None and now - failed_at < self.OPEN_LIST_RETRY_SECONDS:
+                continue
+            target = self._open_list_targets.get(key)
+            if not target:
+                continue
+            connector, pair = target
+            task = asyncio.create_task(self._fill_open_slot(key, connector, pair))
+            self._exchange_inflight[key] = (task, now)
 
     async def _read_exchange_open_pass(self, connector: Any, pair: str) -> Dict[str, Any]:
         venue = self._open_venue(connector)
@@ -1298,6 +1401,7 @@ class ExecutorService:
                         own_ids=own_ids,
                         prior_tracker_ids=self._prior_tracker_ids(connector),
                     )
+                    executor._occupied_pass_key = exchange_pass_key(account, connector, pair)
                 except Exception:
                     logger.exception("occupied open brake was not installed; blocking new opens")
                     try:

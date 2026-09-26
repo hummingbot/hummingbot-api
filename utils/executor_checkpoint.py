@@ -1566,8 +1566,27 @@ def _spend_touch(executor, arguments, book, finished, seen_open, unfinished, ete
 OPEN_PAGE_LIMIT = 100
 
 
+def open_list_venue(class_name: str) -> Optional[str]:
+    """Where we already know how to ask. None means do not invent a URL."""
+    name = (class_name or "").lower()
+    if "perpetual" in name and "gate" in name:
+        return None
+    if "okx" in name:
+        return "okx"
+    if "gate" in name:
+        return "gate"
+    return None
+
+
+def new_exchange_slot() -> Dict[str, Any]:
+    """One shared result. Unread is not an empty book."""
+    return {"read": False, "orders": []}
+
+
 def exchange_open_request(venue: str, symbol: str, page: int = 1, after: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """One authenticated request for open orders of this pair. None if the venue is unknown."""
+    if not venue or not symbol:
+        return None
     if venue == "gate":
         # Do not send account=spot. The connector places without account, so a spot-only
         # list can miss a unified-account order and look like an empty book.
@@ -1735,16 +1754,26 @@ def install_occupied_open_brake(
 ) -> None:
     """Block a second open at a price the exchange or the book still holds."""
     original = executor.get_open_orders_to_create
+    if not isinstance(exchange_pass, dict):
+        exchange_pass = new_exchange_slot()
     state = {
-        "exchange": exchange_pass if isinstance(exchange_pass, dict) else {"read": False, "orders": []},
+        "exchange": exchange_pass,
         "foreign_ids_fn": foreign_ids_fn,
         "own_ids": set(own_ids or []),
         "prior": set(prior_tracker_ids or []),
         "released": set(),
         "held": set(),
     }
+    executor._occupied_wants_open = not bool(exchange_pass.get("read"))
 
     def wrapped():
+        exchange = state["exchange"]
+        if not isinstance(exchange, dict) or not exchange.get("read"):
+            # Do not call the touch cap. Spending it here would burn the one
+            # current-price order before the list exists.
+            executor._occupied_wants_open = True
+            return []
+        executor._occupied_wants_open = False
         try:
             proposed = list(original())
         except Exception:

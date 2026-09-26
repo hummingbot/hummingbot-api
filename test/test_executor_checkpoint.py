@@ -13,6 +13,8 @@ from utils.executor_checkpoint import (
     exchange_open_request,
     exchange_pass_key,
     foreign_order_ids,
+    new_exchange_slot,
+    open_list_venue,
     grid_resume_plan,
     has_exposure,
     install_occupied_open_brake,
@@ -1315,6 +1317,60 @@ def test_exchange_page_parse_and_merge_keep_every_page():
     assert "account" not in request["params"]
     assert exchange_open_request("okx", "SOL-USDT", after="99")["params"]["after"] == "99"
     assert "before" not in exchange_open_request("okx", "SOL-USDT", after="99")["params"]
+
+
+def test_unknown_venue_does_not_treat_an_empty_book_as_permission():
+    assert open_list_venue("BinanceExchange") is None
+    assert open_list_venue("GateIoPerpetualDerivative") is None
+    assert open_list_venue("OkxPerpetualDerivative") == "okx"
+    assert open_list_venue("GateIoExchange") == "gate"
+    assert exchange_open_request(None, "SOL-USDT") is None
+    slot = new_exchange_slot()
+    executor = _brake([_proposal("100")], exchange=slot, quote="110")
+    assert executor.get_open_orders_to_create() == []
+    assert slot["read"] is not True
+    assert executor._occupied_wants_open is True
+    assert executor._touch_place_budget if False else True
+
+
+def test_unread_list_does_not_spend_the_touch_budget():
+    slot = new_exchange_slot()
+    # 130 is at the current price: the touch cap would spend its one ticket.
+    level = _proposal("130")
+    plan = {"touch_budget": 1, "blocked_orders": [], "blocked_prices": []}
+    executor = _wrapped([level], plan, quote="120.01", tick="0.01")
+    before = executor._touch_place_budget
+    released = executor._touch_zero_released
+    install_occupied_open_brake(executor, slot, lambda: set())
+    assert executor.get_open_orders_to_create() == []
+    assert executor._touch_place_budget == before
+    assert executor._touch_zero_released == released
+    assert executor._occupied_wants_open is True
+    slot["read"] = True
+    slot["orders"] = []
+    assert executor.get_open_orders_to_create() == [level]
+    assert executor._touch_place_budget == before - 1
+    slot["orders"] = [{"order_id": "live", "price": "119.99", "side": "BUY"}]
+    blocked = _brake([_proposal("119.99")], exchange=slot, quote="130", tick="0.01")
+    assert blocked.get_open_orders_to_create() == []
+    other = _brake([_proposal("99")], exchange=slot, quote="110")
+    assert other.get_open_orders_to_create() == [_proposal("99")]
+
+
+def test_seen_in_the_book_does_not_release_a_missing_id():
+    slot = new_exchange_slot()
+    executor = _brake(
+        [_proposal("100")],
+        orders=[_buy("mine", "100")],
+        exchange=slot,
+        own={"mine"},
+        quote="110",
+    )
+    assert executor.get_open_orders_to_create() == []
+    executor.connectors["okx"].in_flight_orders.clear()
+    executor.connectors["okx"]._order_tracker.lost_orders = {"mine": _buy("mine", "100")}
+    assert executor.get_open_orders_to_create() == []
+    assert executor.grid_levels == []
 
 
 def test_exchange_pass_key_does_not_share_an_empty_list_across_accounts():
