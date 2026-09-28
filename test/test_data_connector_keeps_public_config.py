@@ -97,3 +97,36 @@ def test_a_required_field_has_no_default_to_keep():
     config = AllConnectorSettings.get_connector_config_keys("binance")
     assert config.__class__.model_fields["binance_api_key"].is_required()
     assert _public_values("binance")["binance_api_key"] == ""
+
+
+def test_a_plain_str_field_marked_is_secure_is_still_withheld():
+    """No shipped connector keeps a credential in a plain ``str`` today, so nothing
+    currently depends on this. It is pinned because the blanking here and the masking in
+    ``AccountsService.get_credentials`` have to agree: they now share one predicate, and
+    the day a connector does this, the lenient one would hand the secret to a connector
+    that is supposed to have none."""
+    from pydantic import BaseModel, Field
+
+    class PlainSecretConfigMap(BaseModel):
+        connector: str = "made_up"
+        token: str = Field(default="THISMUSTNEVERLEAK", json_schema_extra={"is_secure": True})
+        region: str = Field(default="eu-west-1")
+
+    values = UnifiedConnectorService._public_config_values(PlainSecretConfigMap())
+    assert values["token"] == ""
+    assert values["region"] == "eu-west-1"
+
+
+def test_the_two_paths_agree_on_what_a_credential_is():
+    """The masked read-back and the keyless blanking must not drift apart."""
+    import inspect
+
+    from services.accounts_service import AccountsService
+    from utils.security import is_secret_field
+
+    assert "is_secret_field" in inspect.getsource(UnifiedConnectorService._public_config_values)
+    assert "is_secret_field" in inspect.getsource(AccountsService.get_credentials)
+
+    config = AllConnectorSettings.get_connector_config_keys("binance")
+    field = config.__class__.model_fields["binance_api_key"]
+    assert is_secret_field(field)

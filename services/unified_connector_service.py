@@ -27,11 +27,10 @@ from hummingbot.connector.perpetual_derivative_py_base import PerpetualDerivativ
 from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, TradeType
 from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderState
 from hummingbot.core.utils.async_utils import safe_ensure_future
-from pydantic import SecretStr
 
 from utils.file_system import fs_util
 from utils.hummingbot_api_config_adapter import HummingbotAPIConfigAdapter
-from utils.security import BackendAPISecurity
+from utils.security import BackendAPISecurity, is_secret_field
 
 logger = logging.getLogger(__name__)
 
@@ -810,12 +809,16 @@ class UnifiedConnectorService:
 
         Required fields stay blanked: they have no default to fall back on, and in practice
         a required connector field is a credential.
+
+        What counts as a credential is ``is_secret_field``, the same predicate the masked
+        read-back uses, so the two cannot drift apart and let a plain-``str`` field marked
+        ``is_secure`` through here while the other hides it.
         """
         values: Dict[str, Any] = {}
         for key, field in connector_config.__class__.model_fields.items():
             if key == "connector":
                 continue
-            if field.annotation is SecretStr or field.is_required():
+            if is_secret_field(field) or field.is_required():
                 values[key] = ""
             else:
                 values[key] = getattr(connector_config, key, "")

@@ -9,10 +9,30 @@ from hummingbot.client.config.config_helpers import (
     update_connector_hb_config,
 )
 from hummingbot.client.config.security import Security
+from pydantic import SecretStr
 
 from config import settings
 from utils.file_system import fs_util
 from utils.hummingbot_api_config_adapter import HummingbotAPIConfigAdapter
+
+
+def is_secret_field(field) -> bool:
+    """Whether a connector config field holds a credential.
+
+    Two places have to answer this and must answer it identically: the masking in
+    ``AccountsService.get_credentials`` and the blanking in
+    ``UnifiedConnectorService._public_config_values``. If they ever disagree, the
+    lenient one hands a secret to something that should not have it.
+
+    ``SecretStr`` covers almost every credential, but a connector is free to keep
+    something sensitive in a plain ``str`` and mark it ``is_secure`` instead, so both
+    count. ``json_schema_extra`` may be a callable rather than a dict, hence the
+    isinstance guard.
+    """
+    if field.annotation is SecretStr:
+        return True
+    extra = field.json_schema_extra
+    return isinstance(extra, dict) and bool(extra.get("is_secure"))
 
 
 class BackendAPISecurity(Security):
