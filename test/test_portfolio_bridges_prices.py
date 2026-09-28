@@ -42,6 +42,7 @@ class FakeConnector:
 def service():
     svc = AccountsService.__new__(AccountsService)
     svc._bridged_rates = weakref.WeakKeyDictionary()
+    svc._leg_prices = weakref.WeakKeyDictionary()
     svc._last_known_prices = {}
     return svc
 
@@ -153,3 +154,67 @@ def test_the_quote_itself_is_never_a_link():
     assert "RLUSD" not in AccountsService._bridge_candidates(
         "FUZZY", "RLUSD", {"FUZZY-RLUSD", "FUZZY-XRP"}
     )
+
+
+@pytest.mark.asyncio
+async def test_the_shared_link_leg_is_fetched_once_for_the_whole_wallet(service):
+    """Every bridged token in a refresh crosses the same link leg — XRP-RLUSD for all of
+    them — so fetching it per token doubles the request budget for nothing."""
+    connector = FakeConnector(
+        markets=MARKETS | {"CORE-XRP", "CSC-XRP"},
+        prices={**PRICES, "CORE-XRP": 0.008, "CSC-XRP": 0.00004},
+    )
+
+    for token in ("FUZZY", "CORE", "CSC"):
+        assert await service._bridged_price(connector, "xrpl", f"{token}-RLUSD") is not None
+
+    assert connector.price_calls.count("XRP-RLUSD") == 1
+    assert len(connector.price_calls) == 4  # three base legs, one shared link leg
+
+
+@pytest.mark.asyncio
+async def test_a_starved_link_leg_does_not_zero_the_rest_of_the_wallet(service):
+    """The failure this guards against: the connector's rate budget runs out partway
+    through a refresh, so the tokens at the back of the queue lose their link leg. With
+    the leg fetched once up front they are priced from the value already in hand instead
+    of reporting $0.00 — and reporting it every cycle, since a failed lookup is never
+    cached and never recovers."""
+    connector = FakeConnector(
+        markets=MARKETS | {"CORE-XRP"}, prices={**PRICES, "CORE-XRP": 0.008}
+    )
+    assert await service._bridged_price(connector, "xrpl", "FUZZY-RLUSD") is not None
+
+    # The node stops answering for the link leg, as a drained rate limiter does.
+    connector._prices = {"CORE-XRP": 0.008}
+
+    rate = await service._bridged_price(connector, "xrpl", "CORE-RLUSD")
+    assert rate == Decimal(str(0.008)) * Decimal(str(1.38))
+
+
+@pytest.mark.asyncio
+async def test_a_stale_link_leg_is_refetched(service):
+    connector = FakeConnector()
+    await service._bridged_price(connector, "xrpl", "FUZZY-RLUSD")
+    stamped_at, price = service._leg_prices[connector]["XRP-RLUSD"]
+    service._leg_prices[connector]["XRP-RLUSD"] = (
+        stamped_at - AccountsService.BRIDGED_RATE_TTL - 1,
+        price,
+    )
+    service._bridged_rates[connector].clear()
+
+    await service._bridged_price(connector, "xrpl", "FUZZY-RLUSD")
+    assert connector.price_calls.count("XRP-RLUSD") == 2
+
+
+@pytest.mark.asyncio
+async def test_two_accounts_do_not_share_a_link_leg_either(service):
+    """Same reasoning as the bridged rate: a connector instance is what a configuration
+    is scoped to, so one account's leg price must not answer for another's."""
+    account_a = FakeConnector(prices={"FUZZY-XRP": 0.000050, "XRP-RLUSD": 1.38})
+    account_b = FakeConnector(prices={"FUZZY-XRP": 0.000050, "XRP-RLUSD": 1.61})
+
+    rate_a = await service._bridged_price(account_a, "xrpl", "FUZZY-RLUSD")
+    rate_b = await service._bridged_price(account_b, "xrpl", "FUZZY-RLUSD")
+
+    assert rate_a != rate_b
+    assert "XRP-RLUSD" in account_b.price_calls

@@ -10,7 +10,6 @@ from typing import Any, Dict, List, Optional
 from fastapi import HTTPException
 from hummingbot.client.config.config_crypt import ETHKeyFileSecretManger
 from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, TradeType
-from pydantic import SecretStr
 
 from config import settings
 from database import AccountRepository, AsyncDatabaseManager
@@ -21,7 +20,7 @@ from services.perpetual_trading_service import PerpetualTradingService
 from services.portfolio_analytics_service import PortfolioAnalyticsService
 from utils.file_system import fs_util
 from utils.gateway_certs import build_client_ssl_context
-from utils.security import BackendAPISecurity
+from utils.security import BackendAPISecurity, is_secret_field
 
 # Create module-specific logger
 logger = logging.getLogger(__name__)
@@ -114,6 +113,10 @@ class AccountsService:
         # different custom markets, so the same pair name can mean different assets with
         # different prices. Weak so a stopped connector's entries go with it.
         self._bridged_rates: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+        # Prices of the link leg of a bridge (e.g. XRP-RLUSD), same shape and scoping:
+        # connector -> {pair: (fetched_at, price)}. Kept apart from _bridged_rates so the
+        # two key spaces cannot be read into one another.
+        self._leg_prices: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 
         # Database setup for account states and orders (shared manager injected from main.py;
         # tables are created once at startup so no per-service bootstrap is needed)
@@ -584,6 +587,16 @@ class AccountsService:
         Results are cached briefly because a portfolio refresh prices every held token and
         each bridge costs two live lookups; without it a wallet of N bridged tokens would
         issue 2N calls on every cycle.
+
+        The link leg is cached separately, and that is not just an optimisation. Every
+        bridged token in a refresh shares the same one — it is XRP-RLUSD for all of them —
+        so refetching it per token doubles a budget that is already small: xrpl defaults to
+        12 requests a minute, which its node pool spends at 2 per 10s, while
+        ``_safe_get_last_traded_prices`` gives each call 10 seconds. Past a handful of
+        bridged tokens the tail of the queue times out every cycle, and because a failure
+        is never cached and ``_last_known_prices`` never gets a value for that leg, those
+        tokens report $0.00 forever — the very thing this method exists to prevent. Fetching
+        the shared leg once takes a wallet of 8 bridged tokens from 16 lookups to 9.
         """
         cached_for_connector = self._bridged_rates.setdefault(connector, {})
         cached = cached_for_connector.get(market)
@@ -608,16 +621,30 @@ class AccountsService:
         if link is None:
             return None
 
-        legs = await self._safe_get_last_traded_prices(connector, [f"{base}-{link}", f"{link}-{quote}"])
-        first = Decimal(str(legs.get(f"{base}-{link}", 0)))
-        second = Decimal(str(legs.get(f"{link}-{quote}", 0)))
+        base_pair, link_pair = f"{base}-{link}", f"{link}-{quote}"
+        second = self._cached_leg_price(connector, link_pair)
+        wanted = [base_pair] if second is not None else [base_pair, link_pair]
+        legs = await self._safe_get_last_traded_prices(connector, wanted)
+        if second is None:
+            second = Decimal(str(legs.get(link_pair, 0)))
+            if second > 0:
+                self._leg_prices.setdefault(connector, {})[link_pair] = (time.time(), second)
+
+        first = Decimal(str(legs.get(base_pair, 0)))
         if first <= 0 or second <= 0:
             return None
 
         rate = first * second
         cached_for_connector[market] = (time.time(), rate)
-        logger.info(f"Priced {market} on {connector_name} via {base}-{link} x {link}-{quote}")
+        logger.info(f"Priced {market} on {connector_name} via {base_pair} x {link_pair}")
         return rate
+
+    def _cached_leg_price(self, connector, pair: str) -> Optional[Decimal]:
+        """A link leg's price if one was fetched within the TTL, else None."""
+        cached = self._leg_prices.setdefault(connector, {}).get(pair)
+        if cached is not None and time.time() - cached[0] < self.BRIDGED_RATE_TTL:
+            return cached[1]
+        return None
 
     @staticmethod
     def _bridge_candidates(base: str, quote: str, available: set) -> List[str]:
@@ -783,8 +810,7 @@ class AccountsService:
         hb_config = config.hb_config
         values = hb_config.model_dump(mode="json")
         for key, field in hb_config.__class__.model_fields.items():
-            extra = field.json_schema_extra or {}
-            if field.annotation is SecretStr or extra.get("is_secure"):
+            if is_secret_field(field):
                 values[key] = self.MASKED_SECRET
         return values
 
