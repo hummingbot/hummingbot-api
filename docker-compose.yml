@@ -1,3 +1,20 @@
+# Pinned, rather than derived from the directory name.
+#
+# Compose names the project after the directory when this is absent, and the
+# project name is what namespaces the volumes. So `postgres-data` is really
+# `<dirname>_postgres-data`, and the directory the repo happens to sit in
+# silently decides which database the stack comes up on: clone to `hbapi/`
+# instead of `hummingbot-api/` and `make deploy` starts against an empty one
+# while the old volume sits there unreferenced.
+#
+# Pinning it also makes the reverse case deliberate: two checkouts on one host
+# are the *same* project, which is what the deploy guard in the Makefile now
+# says out loud instead of letting the second one adopt the first's containers.
+#
+# `COMPOSE_PROJECT_NAME` in .env still overrides this, which is the supported
+# way to run a second, isolated stack.
+name: hummingbot-api
+
 services:
   hummingbot-api:
     container_name: hummingbot-api
