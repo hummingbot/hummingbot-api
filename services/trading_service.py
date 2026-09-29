@@ -10,6 +10,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Dict, List, Optional, Set
 
 from hummingbot.connector.connector_base import ConnectorBase
+from hummingbot.connector.perpetual_derivative_py_base import PerpetualDerivativePyBase
 from hummingbot.core.data_type.common import OrderType, PositionAction
 
 if TYPE_CHECKING:
@@ -171,7 +172,15 @@ class AccountTradingInterface:
         logger.info(f"Order book initialized successfully for {connector_name}/{trading_pair}")
 
         # Register trading pair with connector
+        first_pair = not connector._trading_pairs
         self._register_trading_pair_with_connector(connector, trading_pair)
+
+        # Some connectors can only read the account's position mode once a pair is
+        # registered (bitget), so the read at connector init found nothing. Read it again
+        # now, before any order is placed under the ONEWAY default.
+        if (first_pair and isinstance(connector, PerpetualDerivativePyBase)
+                and len(connector.supported_position_modes()) > 1):
+            await connector._initialize_position_mode()
 
         # Update balances to include tokens from new trading pair
         if hasattr(connector, '_update_balances'):
