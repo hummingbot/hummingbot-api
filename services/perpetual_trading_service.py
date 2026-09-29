@@ -2,10 +2,27 @@ import logging
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from fastapi import HTTPException
+from hummingbot.connector.connector_base import ConnectorBase
+from hummingbot.connector.perpetual_derivative_py_base import PerpetualDerivativePyBase
 from hummingbot.core.data_type.common import PositionMode
 
 # Create module-specific logger
 logger = logging.getLogger(__name__)
+
+
+async def register_trading_pair(connector: ConnectorBase, trading_pair: str) -> None:
+    """Register a pair on a connector, reading the account's position mode on a perpetual's first pair.
+
+    Some connectors can only read the account's position mode once a pair is registered
+    (bitget queries it per pair), so the read at connector init found nothing and the local
+    mode sits at the ONEWAY default. Read it again before any order is placed under it.
+    """
+    first_pair = not connector._trading_pairs
+    if trading_pair not in connector._trading_pairs:
+        connector._trading_pairs.append(trading_pair)
+    if (first_pair and isinstance(connector, PerpetualDerivativePyBase)
+            and len(connector.supported_position_modes()) > 1):
+        await connector._initialize_position_mode()
 
 
 class PerpetualTradingService:
@@ -107,7 +124,7 @@ class PerpetualTradingService:
                     status_code=400,
                     detail=f"Trading pair '{trading_pair}' is not listed on {connector_name}"
                 )
-            connector._trading_pairs.append(trading_pair)
+            await register_trading_pair(connector, trading_pair)
 
         # With no registered pair the connector cannot apply the switch: the base
         # implementation logs a warning and returns, bybit/bitget flip only the local mode.

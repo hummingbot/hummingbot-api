@@ -9,6 +9,8 @@ happened, and orders went out with the wrong position side. #210.
 
 These drive the real bitget connector with only its HTTP layer replaced by a fake account.
 """
+import asyncio
+from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -16,8 +18,10 @@ from bidict import bidict
 from fastapi import HTTPException
 from hummingbot.connector.derivative.bitget_perpetual import bitget_perpetual_constants as CONSTANTS
 from hummingbot.connector.derivative.bitget_perpetual.bitget_perpetual_derivative import BitgetPerpetualDerivative
-from hummingbot.core.data_type.common import PositionMode
+from hummingbot.connector.trading_rule import TradingRule
+from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, TradeType
 
+from services.accounts_service import AccountsService
 from services.perpetual_trading_service import PerpetualTradingService
 from services.trading_service import AccountTradingInterface
 
@@ -27,12 +31,16 @@ class FakeBitgetAccount:
         self.pos_mode = pos_mode
         self.accept_switch = accept_switch
         self.switch_requests = []
+        self.orders = []
 
     async def get(self, path_url, params=None, is_auth_required=False, **kwargs):
         assert path_url == CONSTANTS.ACCOUNT_INFO_ENDPOINT
         return {"code": CONSTANTS.RET_CODE_OK, "data": {"posMode": self.pos_mode}}
 
     async def post(self, path_url, data=None, is_auth_required=False, **kwargs):
+        if path_url == CONSTANTS.PLACE_ORDER_ENDPOINT:
+            self.orders.append(data)
+            return {"code": CONSTANTS.RET_CODE_OK, "data": {"orderId": "1"}}
         assert path_url == CONSTANTS.SET_POSITION_MODE_ENDPOINT
         self.switch_requests.append(data["posMode"])
         if not self.accept_switch:
@@ -52,6 +60,27 @@ def _bitget(account: FakeBitgetAccount) -> BitgetPerpetualDerivative:
     connector._api_get = account.get
     connector._api_post = account.post
     return connector
+
+
+async def test_direct_order_on_a_fresh_connector_goes_out_in_the_accounts_hedge_mode():
+    account = FakeBitgetAccount("hedge_mode")
+    connector = _bitget(account)
+    connector._trading_rules["BTC-USDT"] = TradingRule(
+        "BTC-USDT", min_order_size=Decimal("0.001"), min_price_increment=Decimal("0.1"),
+        min_base_amount_increment=Decimal("0.001"), min_notional_size=Decimal("5"))
+    service = AccountsService.__new__(AccountsService)
+    service.list_accounts = lambda: ["master"]
+    service._connector_service = MagicMock()
+    service._connector_service.get_trading_connector = AsyncMock(return_value=connector)
+
+    await service.place_trade("master", "bitget_perpetual", "BTC-USDT", TradeType.BUY, Decimal("0.01"),
+                              OrderType.LIMIT, Decimal("60000"), PositionAction.OPEN)
+    for _ in range(100):
+        if account.orders:
+            break
+        await asyncio.sleep(0.01)
+
+    assert account.orders[0]["tradeSide"] == "open"
 
 
 def _service(connector) -> PerpetualTradingService:
