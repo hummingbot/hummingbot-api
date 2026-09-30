@@ -92,8 +92,13 @@ def _service(connector) -> PerpetualTradingService:
 async def test_first_pair_adopts_the_bitget_accounts_hedge_mode():
     account = FakeBitgetAccount("hedge_mode")
     connector = _bitget(account)
+
+    async def initialize_order_book(connector_name, trading_pair, **kwargs):
+        # The tracker's pair list is the connector's own, so the order book registers the pair
+        connector.order_book_tracker._trading_pairs.append(trading_pair)
+        return True
     market_data = MagicMock()
-    market_data.initialize_order_book = AsyncMock(return_value=True)
+    market_data.initialize_order_book = initialize_order_book
     connector_service = MagicMock()
     connector_service.get_trading_connector = AsyncMock(return_value=connector)
     connector_service.get_account_connectors.return_value = {"bitget_perpetual": connector}

@@ -158,6 +158,10 @@ class AccountTradingInterface:
         if not connector:
             raise ValueError(f"Connector {connector_name} not available. Check credentials.")
 
+        # The order book tracker shares the connector's pair list, so note whether this is the
+        # connector's first pair before the order book registers it
+        first_pair = not connector._trading_pairs
+
         # Initialize order book via MarketDataService (uses best available connector)
         logger.info(f"Initializing order book for {connector_name}/{trading_pair}")
         success = await self._market_data_service.initialize_order_book(
@@ -172,7 +176,7 @@ class AccountTradingInterface:
 
         logger.info(f"Order book initialized successfully for {connector_name}/{trading_pair}")
 
-        await register_trading_pair(connector, trading_pair)
+        await register_trading_pair(connector, trading_pair, first_pair=first_pair)
 
         # Update balances to include tokens from new trading pair
         if hasattr(connector, '_update_balances'):

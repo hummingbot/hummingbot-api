@@ -10,14 +10,19 @@ from hummingbot.core.data_type.common import PositionMode
 logger = logging.getLogger(__name__)
 
 
-async def register_trading_pair(connector: ConnectorBase, trading_pair: str) -> None:
+async def register_trading_pair(connector: ConnectorBase, trading_pair: str,
+                                first_pair: Optional[bool] = None) -> None:
     """Register a pair on a connector, reading the account's position mode on a perpetual's first pair.
 
     Some connectors can only read the account's position mode once a pair is registered
     (bitget queries it per pair), so the read at connector init found nothing and the local
     mode sits at the ONEWAY default. Read it again before any order is placed under it.
+
+    A caller that has already set up the pair's order book passes first_pair as it was before:
+    the order book tracker shares the connector's pair list, so the pair is already in it.
     """
-    first_pair = not connector._trading_pairs
+    if first_pair is None:
+        first_pair = not connector._trading_pairs
     if trading_pair not in connector._trading_pairs:
         connector._trading_pairs.append(trading_pair)
     if (first_pair and isinstance(connector, PerpetualDerivativePyBase)
