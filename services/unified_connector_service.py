@@ -24,7 +24,7 @@ from hummingbot.connector.connector_metrics_collector import TradeVolumeMetricCo
 from hummingbot.connector.exchange_py_base import ExchangePyBase
 from hummingbot.connector.gateway.gateway import Gateway
 from hummingbot.connector.perpetual_derivative_py_base import PerpetualDerivativePyBase
-from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, TradeType
+from hummingbot.core.data_type.common import OrderType, PositionAction, TradeType
 from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderState
 from hummingbot.core.utils.async_utils import safe_ensure_future
 
@@ -684,8 +684,12 @@ class UnifiedConnectorService:
 
         # Perpetual-specific setup
         if self._is_perpetual_connector(connector):
-            if PositionMode.HEDGE in connector.supported_position_modes():
-                connector.set_position_mode(PositionMode.HEDGE)
+            # Adopt the exchange's current mode rather than forcing one: with no pairs
+            # registered yet a switch cannot reach the exchange, and bybit/bitget would
+            # only flip the local mode to HEDGE. start_network() does the same, but the API
+            # runs the polling tasks itself and never calls it for CEX connectors.
+            if len(connector.supported_position_modes()) > 1:
+                await connector._initialize_position_mode()
             await connector._update_positions()
 
         # Load existing orders from database

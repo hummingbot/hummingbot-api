@@ -83,10 +83,12 @@ from utils.core_compatibility import require_core_surface  # noqa: E402
 from utils.security import BackendAPISecurity  # noqa: E402
 from utils.validation_errors import validation_exception_handler  # noqa: E402
 
-# Set up logging configuration
+# Set up logging configuration. force: an imported dependency (pyinjective) has already
+# configured the root logger, which would otherwise leave it at WARNING
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    force=True
 )
 
 # Enable info logging for MQTT manager

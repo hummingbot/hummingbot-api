@@ -424,17 +424,20 @@ async def set_position_mode(
         account_name: Name of the account
         connector_name: Name of the perpetual connector
         position_mode: Position mode to set (HEDGE or ONEWAY)
+        trading_pair: Pair to register first, required if the connector has none registered
 
     Returns:
         Success message with status
 
     Raises:
-        HTTPException: 400 if not a perpetual connector or invalid position mode
+        HTTPException: 400 if not a perpetual connector, invalid position mode or no registered
+            trading pair; 502 if the exchange did not accept the switch
     """
     try:
         # Convert string to PositionMode enum
         mode = PositionMode[request.position_mode.upper()]
-        result = await accounts_service.set_position_mode(account_name, connector_name, mode)
+        result = await accounts_service.set_position_mode(
+            account_name, connector_name, mode, trading_pair=request.trading_pair)
         return result
     except KeyError:
         raise HTTPException(

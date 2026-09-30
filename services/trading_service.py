@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Set
 from hummingbot.connector.connector_base import ConnectorBase
 from hummingbot.core.data_type.common import OrderType, PositionAction
 
+from services.perpetual_trading_service import register_trading_pair
+
 if TYPE_CHECKING:
     from services.market_data_service import MarketDataService
     from services.unified_connector_service import UnifiedConnectorService
@@ -156,6 +158,10 @@ class AccountTradingInterface:
         if not connector:
             raise ValueError(f"Connector {connector_name} not available. Check credentials.")
 
+        # The order book tracker shares the connector's pair list, so note whether this is the
+        # connector's first pair before the order book registers it
+        first_pair = not connector._trading_pairs
+
         # Initialize order book via MarketDataService (uses best available connector)
         logger.info(f"Initializing order book for {connector_name}/{trading_pair}")
         success = await self._market_data_service.initialize_order_book(
@@ -170,8 +176,7 @@ class AccountTradingInterface:
 
         logger.info(f"Order book initialized successfully for {connector_name}/{trading_pair}")
 
-        # Register trading pair with connector
-        self._register_trading_pair_with_connector(connector, trading_pair)
+        await register_trading_pair(connector, trading_pair, first_pair=first_pair)
 
         # Update balances to include tokens from new trading pair
         if hasattr(connector, '_update_balances'):
@@ -216,22 +221,6 @@ class AccountTradingInterface:
                 logger.warning(f"Failed to remove order book for {connector_name}/{trading_pair}: {e}")
 
         logger.info(f"Removed market {connector_name}/{trading_pair}")
-
-    def _register_trading_pair_with_connector(
-        self,
-        connector: ConnectorBase,
-        trading_pair: str
-    ):
-        """
-        Register a trading pair with the connector's internal structures.
-
-        Args:
-            connector: The connector instance (ExchangePyBase)
-            trading_pair: Trading pair to register
-        """
-        if trading_pair not in connector._trading_pairs:
-            connector._trading_pairs.append(trading_pair)
-            logger.debug(f"Registered {trading_pair} with connector {type(connector).__name__}")
 
     # ========================================
     # ScriptStrategyBase-compatible methods

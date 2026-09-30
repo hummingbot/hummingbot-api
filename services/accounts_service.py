@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException
 from hummingbot.client.config.config_crypt import ETHKeyFileSecretManger
+from hummingbot.connector.perpetual_derivative_py_base import PerpetualDerivativePyBase
 from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, TradeType
 
 from config import settings
@@ -14,7 +15,7 @@ from database import AccountRepository, AsyncDatabaseManager
 from services.gateway_client import GatewayClient
 from services.gateway_transaction_poller import GatewayTransactionPoller
 from services.gateway_wallet_service import GatewayWalletService, balance_entry
-from services.perpetual_trading_service import PerpetualTradingService
+from services.perpetual_trading_service import PerpetualTradingService, register_trading_pair
 from services.portfolio_analytics_service import PortfolioAnalyticsService
 from utils.file_system import fs_util
 from utils.gateway_certs import build_client_ssl_context
@@ -921,7 +922,12 @@ class AccountsService:
             )
         
         trading_rule = connector.trading_rules[trading_pair]
-        
+
+        # A perpetual order goes out under the connector's position mode, which some
+        # connectors can only read from the account once a pair is registered (bitget).
+        if isinstance(connector, PerpetualDerivativePyBase):
+            await register_trading_pair(connector, trading_pair)
+
         # Validate order type is supported
         if order_type not in connector.supported_order_types():
             supported_types = [ot.name for ot in connector.supported_order_types()]
@@ -1061,12 +1067,14 @@ class AccountsService:
         return await self.perpetual_trading_service.set_leverage(account_name, connector_name, trading_pair, leverage)
 
     async def set_position_mode(self, account_name: str, connector_name: str,
-                               position_mode: PositionMode) -> Dict[str, str]:
+                                position_mode: PositionMode,
+                                trading_pair: Optional[str] = None) -> Dict[str, str]:
         """
         Set position mode for a perpetual connector.
         Delegates to PerpetualTradingService.
         """
-        return await self.perpetual_trading_service.set_position_mode(account_name, connector_name, position_mode)
+        return await self.perpetual_trading_service.set_position_mode(
+            account_name, connector_name, position_mode, trading_pair=trading_pair)
 
     async def get_position_mode(self, account_name: str, connector_name: str) -> Dict[str, str]:
         """
