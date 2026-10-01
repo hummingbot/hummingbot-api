@@ -1,12 +1,67 @@
-import asyncio
 import logging
-from typing import Any, Awaitable, Callable, Dict, List
+from contextlib import asynccontextmanager
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from fastapi import HTTPException
+from hummingbot.connector.connector_base import ConnectorBase
+from hummingbot.connector.perpetual_derivative_py_base import PerpetualDerivativePyBase
 from hummingbot.core.data_type.common import PositionMode
 
 # Create module-specific logger
 logger = logging.getLogger(__name__)
+
+
+def _reads_position_mode(connector: PerpetualDerivativePyBase) -> bool:
+    """Whether the connector can ask the exchange for the account's position mode."""
+    return (type(connector)._fetch_account_position_mode
+            is not PerpetualDerivativePyBase._fetch_account_position_mode)
+
+
+def _switches_pair_by_pair(connector: PerpetualDerivativePyBase) -> bool:
+    """Whether the mode lives on each symbol rather than on the account (bybit).
+
+    Such a connector loops over its registered pairs to switch and cannot report a mode,
+    so there is no account-level default the API could address on its own.
+    """
+    return (type(connector)._execute_set_position_mode
+            is not PerpetualDerivativePyBase._execute_set_position_mode
+            and not _reads_position_mode(connector))
+
+
+@asynccontextmanager
+async def _exchange_context(connector: PerpetualDerivativePyBase, trading_pair: Optional[str] = None):
+    """Lend the connector a listed pair for the duration of an account-level call.
+
+    hummingbot addresses the account through the connector's registered pairs: the base
+    switch returns early with none, and bitget derives its product type from the first one.
+    The API creates connectors with no pairs, so it supplies one here and takes it back,
+    rather than asking the caller for it. The pair list is shared with the order book
+    tracker, so the pair must not stay registered without an order book.
+
+    With no trading_pair given, a USDT pair is borrowed only if none is registered.
+    """
+    pairs = connector._trading_pairs
+    pair = trading_pair
+    if pair is None and not pairs:
+        rules = connector.trading_rules
+        pair = next((p for p in rules if p.endswith("-USDT")), next(iter(rules), None))
+    borrowed = pair is not None and pair not in pairs
+    if borrowed:
+        pairs.insert(0, pair)
+    try:
+        yield
+    finally:
+        if borrowed and pair in pairs:
+            pairs.remove(pair)
+
+
+async def sync_position_mode(connector: ConnectorBase) -> None:
+    """Adopt the exchange's position mode as the connector's local mode, if it can be read."""
+    if not isinstance(connector, PerpetualDerivativePyBase) or not _reads_position_mode(connector):
+        return
+    async with _exchange_context(connector):
+        if len(connector.supported_position_modes()) > 1:
+            await connector._initialize_position_mode()
 
 
 class PerpetualTradingService:
@@ -77,7 +132,8 @@ class PerpetualTradingService:
             raise HTTPException(status_code=500, detail=f"Failed to set leverage: {str(e)}")
 
     async def set_position_mode(self, account_name: str, connector_name: str,
-                                position_mode: PositionMode) -> Dict[str, str]:
+                                position_mode: PositionMode,
+                                trading_pair: Optional[str] = None) -> Dict[str, str]:
         """
         Set position mode for a perpetual connector.
 
@@ -85,38 +141,65 @@ class PerpetualTradingService:
             account_name: Name of the account
             connector_name: Name of the connector (must be perpetual)
             position_mode: PositionMode.HEDGE or PositionMode.ONEWAY
+            trading_pair: Optional scope for exchanges whose mode is not account-wide: the
+                product type on bitget (USDT by default), the symbol on bybit. Never registered.
 
         Returns:
             Dictionary with success status and message
 
         Raises:
-            HTTPException: If account/connector not found, not perpetual, or operation fails
+            HTTPException: 400 if the pair is unknown, the mode is unsupported or the exchange
+                switches per symbol and none is given; 502 if the exchange did not accept the switch
         """
         connector = await self._get_perpetual_connector(account_name, connector_name)
 
-        # Check if the requested position mode is supported
-        supported_modes = connector.supported_position_modes()
-        if position_mode not in supported_modes:
-            supported_values = [mode.value for mode in supported_modes]
+        if trading_pair and trading_pair not in connector.trading_pairs:
+            try:
+                await connector.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
+            except KeyError:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Trading pair '{trading_pair}' is not listed on {connector_name}"
+                )
+
+        if not trading_pair and not connector.trading_pairs and _switches_pair_by_pair(connector):
             raise HTTPException(
                 status_code=400,
-                detail=f"Position mode '{position_mode.value}' not supported. Supported modes: {supported_values}"
+                detail=f"{connector_name} sets the position mode per symbol; pass trading_pair "
+                       f"to say which one to switch"
             )
 
-        try:
-            # Try to call the method - it might be sync or async
-            result = connector.set_position_mode(position_mode)
-            # If it's a coroutine, await it
-            if asyncio.iscoroutine(result):
-                await result
+        async with _exchange_context(connector, trading_pair):
+            # Validated with the pair in place: bybit's supported_position_modes() depends on
+            # the pairs and returns both modes when there are none.
+            supported_modes = connector.supported_position_modes()
+            if position_mode not in supported_modes:
+                supported_values = [mode.value for mode in supported_modes]
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Position mode '{position_mode.value}' not supported. Supported modes: {supported_values}"
+                )
 
-            message = f"Position mode set to {position_mode.value} on {connector_name}"
-            logger.info(f"Set position mode to {position_mode.value} on {connector_name} (Account: {account_name})")
-            return {"status": "success", "message": message}
+            try:
+                # connector.set_position_mode() runs this in the background and cannot report a
+                # rejection (e.g. Binance -4068 with open positions). Awaiting it directly does,
+                # since the local mode only changes once the exchange confirms.
+                await connector._execute_set_position_mode(position_mode)
+            except Exception as e:
+                logger.error(f"Failed to set position mode to {position_mode.value}: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to set position mode: {str(e)}")
 
-        except Exception as e:
-            logger.error(f"Failed to set position mode to {position_mode.value}: {e}")
-            raise HTTPException(status_code=500, detail=f"Failed to set position mode: {str(e)}")
+        if connector.position_mode != position_mode:
+            raise HTTPException(
+                status_code=502,
+                detail=f"{connector_name} did not accept position mode {position_mode.value} "
+                       f"(still {connector.position_mode.value}); check for open positions or orders "
+                       f"and the connector logs"
+            )
+
+        message = f"Position mode set to {position_mode.value} on {connector_name}"
+        logger.info(f"Set position mode to {position_mode.value} on {connector_name} (Account: {account_name})")
+        return {"status": "success", "message": message}
 
     async def get_position_mode(self, account_name: str, connector_name: str) -> Dict[str, str]:
         """
@@ -138,6 +221,8 @@ class PerpetualTradingService:
             raise HTTPException(status_code=400, detail=f"Connector '{connector_name}' does not support position mode")
 
         try:
+            # Report the exchange's mode, not a cached one: it may have been changed elsewhere
+            await sync_position_mode(connector)
             current_mode = connector.position_mode
             return {
                 "position_mode": current_mode.value if current_mode else "UNKNOWN",
