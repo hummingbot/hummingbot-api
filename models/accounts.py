@@ -14,8 +14,8 @@ class PositionModeRequest(BaseModel):
     position_mode: str = Field(description="Position mode (HEDGE or ONEWAY)")
     trading_pair: Optional[str] = Field(
         default=None,
-        description="Pair to register on the connector before switching. Connectors apply the "
-                    "switch through their registered pairs, so one is required if none is registered yet.")
+        description="Optional. Only for exchanges whose position mode is not account-wide: selects "
+                    "the product type on bitget (USDT by default) or the symbol on bybit.")
 
 
 class CredentialRequest(BaseModel):

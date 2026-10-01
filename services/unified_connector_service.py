@@ -28,6 +28,7 @@ from hummingbot.core.data_type.common import OrderType, PositionAction, TradeTyp
 from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderState
 from hummingbot.core.utils.async_utils import safe_ensure_future
 
+from services.perpetual_trading_service import sync_position_mode
 from utils.file_system import fs_util
 from utils.hummingbot_api_config_adapter import HummingbotAPIConfigAdapter
 from utils.security import BackendAPISecurity
@@ -688,8 +689,7 @@ class UnifiedConnectorService:
             # registered yet a switch cannot reach the exchange, and bybit/bitget would
             # only flip the local mode to HEDGE. start_network() does the same, but the API
             # runs the polling tasks itself and never calls it for CEX connectors.
-            if len(connector.supported_position_modes()) > 1:
-                await connector._initialize_position_mode()
+            await sync_position_mode(connector)
             await connector._update_positions()
 
         # Load existing orders from database

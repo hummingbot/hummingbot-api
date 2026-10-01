@@ -424,13 +424,13 @@ async def set_position_mode(
         account_name: Name of the account
         connector_name: Name of the perpetual connector
         position_mode: Position mode to set (HEDGE or ONEWAY)
-        trading_pair: Pair to register first, required if the connector has none registered
+        trading_pair: Optional scope where the mode is not account-wide (bitget product type, bybit symbol)
 
     Returns:
         Success message with status
 
     Raises:
-        HTTPException: 400 if not a perpetual connector, invalid position mode or no registered
+        HTTPException: 400 if not a perpetual connector, invalid position mode or unknown
             trading pair; 502 if the exchange did not accept the switch
     """
     try:

@@ -7,7 +7,6 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException
 from hummingbot.client.config.config_crypt import ETHKeyFileSecretManger
-from hummingbot.connector.perpetual_derivative_py_base import PerpetualDerivativePyBase
 from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, TradeType
 
 from config import settings
@@ -15,7 +14,7 @@ from database import AccountRepository, AsyncDatabaseManager
 from services.gateway_client import GatewayClient
 from services.gateway_transaction_poller import GatewayTransactionPoller
 from services.gateway_wallet_service import GatewayWalletService, balance_entry
-from services.perpetual_trading_service import PerpetualTradingService, register_trading_pair
+from services.perpetual_trading_service import PerpetualTradingService
 from services.portfolio_analytics_service import PortfolioAnalyticsService
 from utils.file_system import fs_util
 from utils.gateway_certs import build_client_ssl_context
@@ -922,11 +921,6 @@ class AccountsService:
             )
         
         trading_rule = connector.trading_rules[trading_pair]
-
-        # A perpetual order goes out under the connector's position mode, which some
-        # connectors can only read from the account once a pair is registered (bitget).
-        if isinstance(connector, PerpetualDerivativePyBase):
-            await register_trading_pair(connector, trading_pair)
 
         # Validate order type is supported
         if order_type not in connector.supported_order_types():
