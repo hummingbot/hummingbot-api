@@ -15,6 +15,7 @@ from services.gateway_clmm_service import GatewayCLMMService
 from services.gateway_service import GatewayService
 from services.gateway_swap_service import GatewaySwapService
 from services.market_data_service import MarketDataService
+from services.self_upgrade import SelfUpgradeService
 from services.trading_history_service import TradingHistoryService
 from services.trading_service import TradingService
 from services.unified_connector_service import UnifiedConnectorService
@@ -59,6 +60,11 @@ async def require_gateway_online(accounts_service: AccountsService = Depends(get
 def get_docker_service(request: Request) -> DockerService:
     """Get DockerService from app state."""
     return request.app.state.docker_service
+
+
+def get_self_upgrade_service(request: Request) -> SelfUpgradeService:
+    """Get SelfUpgradeService from app state."""
+    return request.app.state.self_upgrade_service
 
 
 def get_gateway_service(request: Request) -> GatewayService:

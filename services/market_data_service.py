@@ -1107,6 +1107,10 @@ class MarketDataService:
         """The global quote token everything is valued in."""
         return self._quote_token
 
+    @quote_token.setter
+    def quote_token(self, value: str) -> None:
+        self._quote_token = value
+
     @property
     def connector_service(self) -> "UnifiedConnectorService":
         """Get the connector service instance."""
