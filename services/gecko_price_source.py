@@ -72,7 +72,10 @@ def _to_decimal(value) -> Optional[Decimal]:
         dec = Decimal(str(value))
     except (InvalidOperation, ValueError, TypeError):
         return None
-    return dec if dec > 0 else None
+    # GeckoTerminal reports ``nan`` for an address it cannot price. ``Decimal('nan') > 0`` raises
+    # InvalidOperation, which escapes the except above and — raised mid-loop in ``_fetch_prices`` —
+    # makes ``fetch_prices`` drop the whole batch, unpricing every token it had already resolved.
+    return dec if dec.is_finite() and dec > 0 else None
 
 
 class GeckoPriceSource:
