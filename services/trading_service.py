@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Set
 from hummingbot.connector.connector_base import ConnectorBase
 from hummingbot.core.data_type.common import OrderType, PositionAction
 
+from services.perpetual_trading_service import sync_position_mode
+
 if TYPE_CHECKING:
     from services.market_data_service import MarketDataService
     from services.unified_connector_service import UnifiedConnectorService
@@ -172,6 +174,9 @@ class AccountTradingInterface:
 
         # Register trading pair with connector
         self._register_trading_pair_with_connector(connector, trading_pair)
+
+        # Cheap re-read: picks up a mode changed on the exchange, or a read that failed at init
+        await sync_position_mode(connector)
 
         # Update balances to include tokens from new trading pair
         if hasattr(connector, '_update_balances'):

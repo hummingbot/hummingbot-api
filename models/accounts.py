@@ -1,5 +1,6 @@
+from typing import Any, Dict, Optional
+
 from pydantic import BaseModel, Field
-from typing import Dict, Any
 
 
 class LeverageRequest(BaseModel):
@@ -11,6 +12,10 @@ class LeverageRequest(BaseModel):
 class PositionModeRequest(BaseModel):
     """Request model for setting position mode on perpetual connectors"""
     position_mode: str = Field(description="Position mode (HEDGE or ONEWAY)")
+    trading_pair: Optional[str] = Field(
+        default=None,
+        description="Optional. Only for exchanges whose position mode is not account-wide: selects "
+                    "the product type on bitget (USDT by default) or the symbol on bybit.")
 
 
 class CredentialRequest(BaseModel):
