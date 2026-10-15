@@ -9,10 +9,30 @@ from hummingbot.client.config.config_helpers import (
     update_connector_hb_config,
 )
 from hummingbot.client.config.security import Security
+from pydantic import SecretStr
 
 from config import settings
 from utils.file_system import fs_util
 from utils.hummingbot_api_config_adapter import HummingbotAPIConfigAdapter
+
+
+def is_secret_field(field) -> bool:
+    """Whether a connector config field holds a credential.
+
+    Two places have to answer this and must answer it identically: the masking in
+    ``AccountsService.get_credentials`` and the blanking in
+    ``UnifiedConnectorService._public_config_values``. If they ever disagree, the
+    lenient one hands a secret to something that should not have it.
+
+    ``SecretStr`` covers almost every credential, but a connector is free to keep
+    something sensitive in a plain ``str`` and mark it ``is_secure`` instead, so both
+    count. ``json_schema_extra`` may be a callable rather than a dict, hence the
+    isinstance guard.
+    """
+    if field.annotation is SecretStr:
+        return True
+    extra = field.json_schema_extra
+    return isinstance(extra, dict) and bool(extra.get("is_secure"))
 
 
 class BackendAPISecurity(Security):
@@ -41,7 +61,23 @@ class BackendAPISecurity(Security):
     @classmethod
     def decrypt_connector_config(cls, file_path: Path):
         connector_name = connector_name_from_file(file_path)
-        cls._secure_configs[connector_name] = cls.load_connector_config_map_from_file(file_path)
+        config_map = cls.load_connector_config_map_from_file(file_path)
+        cls._secure_configs[connector_name] = config_map
+        # Publish it to the connector-settings registry, which is what anything building a
+        # connector without an account in hand reads — notably the shared keyless data
+        # connector behind public market-data lookups.
+        #
+        # update_connector_keys already does this when credentials are added, so without it
+        # here the same account behaved differently before and after a restart: a custom
+        # market added through the API resolved until the process bounced, then silently
+        # went back to the connector's class defaults, and public price lookups for it
+        # failed with "Market <PAIR> not found in markets list". Loading from disk now
+        # leaves the registry in the same state adding them does.
+        #
+        # This carries the account's decrypted secret into the registry, exactly as the
+        # add path already does. Nothing keyless is handed that value:
+        # _public_config_values() blanks every SecretStr before it reaches a data connector.
+        update_connector_hb_config(config_map)
 
     @classmethod
     def load_connector_config_map_from_file(cls, yml_path: Path) -> HummingbotAPIConfigAdapter:

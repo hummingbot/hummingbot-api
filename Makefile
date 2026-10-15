@@ -1,4 +1,4 @@
-.PHONY: setup run deploy stop install uninstall build install-pre-commit tailscale-status doctor reset emqx-auth emqx-auth-reset emqx-audit
+.PHONY: setup run deploy stop install uninstall build install-pre-commit tailscale-status doctor reset emqx-auth emqx-auth-reset emqx-audit check-foreign-stack
 
 SETUP_SENTINEL := .setup-complete
 
@@ -11,7 +11,7 @@ $(SETUP_SENTINEL):
 # Run locally (dev mode)
 # When TAILSCALE_ENABLED=true: installs Tailscale if needed, connects, configures tailscale serve,
 # then binds uvicorn to 127.0.0.1 only (tailscale serve exposes port 8000 on the tailnet)
-run: emqx-auth
+run: check-foreign-stack emqx-auth
 	docker compose up emqx postgres -d
 	@set -a; [ -f .env ] && . ./.env; set +a; \
 	if [ "$${TAILSCALE_ENABLED:-false}" = "true" ]; then \
@@ -45,7 +45,35 @@ run: emqx-auth
 #            `tailscale serve` on the existing node instead of joining twice
 #   sidecar  the API gets its own tailnet node, in userspace mode when a
 #            native daemon is already present
-deploy: $(SETUP_SENTINEL) emqx-auth
+# Refuse to adopt another checkout's stack (see the header of docker-compose.yml).
+#
+# `container_name:` is fixed for every service, and the Makefile, doctor.sh,
+# the README and Condor's own doctor all look the containers up by those
+# names, so two stacks cannot coexist on one host under the same project.
+# Compose does not treat that as an error: it matches the existing containers
+# by name, prints `Recreate`, and the second checkout quietly takes over the
+# first one's containers *and its postgres volume*. Observed while installing a
+# second copy for testing — the "clean" stack came up on the live database.
+#
+# Cheap to detect: the running container carries the directory it was deployed
+# from as a label. Name the other checkout and the escape hatch rather than
+# guessing which one the operator meant.
+check-foreign-stack:
+	@owner="$$(docker inspect hummingbot-api \
+	    --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}' \
+	    2>/dev/null || true)"; \
+	if [ -n "$$owner" ] && [ "$$owner" != "$(CURDIR)" ]; then \
+	  echo "[ERROR] The hummingbot-api containers on this host were deployed from:"; \
+	  echo "          $$owner"; \
+	  echo "        Deploying from here would take them over, along with that"; \
+	  echo "        stack's postgres volume. Stop there first:"; \
+	  echo "          cd $$owner && docker compose down"; \
+	  echo "        or give this checkout its own stack by adding a line to .env:"; \
+	  echo "          COMPOSE_PROJECT_NAME=hummingbot-api-$$(basename $(CURDIR))"; \
+	  exit 1; \
+	fi
+
+deploy: $(SETUP_SENTINEL) check-foreign-stack emqx-auth
 	@set -a; [ -f .env ] && . ./.env; set +a; \
 	. ./tailnet-state.sh; \
 	mode="$$(tailnet_mode)" || exit 1; \
