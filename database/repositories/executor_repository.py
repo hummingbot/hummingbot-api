@@ -37,7 +37,8 @@ class ExecutorRepository:
             config: Optional[str] = None,
             status: str = "RUNNING",
             controller_id: str = "main",
-            created_at: Optional[datetime] = None
+            created_at: Optional[datetime] = None,
+            checkpoint: Optional[str] = None,
     ) -> ExecutorRecord:
         """Create a new executor record.
 
@@ -53,7 +54,8 @@ class ExecutorRepository:
             trading_pair=trading_pair,
             controller_id=controller_id,
             config=config,
-            status=status
+            status=status,
+            checkpoint=checkpoint,
         )
         if created_at is not None:
             executor.created_at = created_at
@@ -73,7 +75,8 @@ class ExecutorRepository:
             cum_fees_quote: Optional[Decimal] = None,
             filled_amount_quote: Optional[Decimal] = None,
             final_state: Optional[str] = None,
-            error_log: Optional[str] = None
+            error_log: Optional[str] = None,
+            checkpoint: Optional[str] = None,
     ) -> Optional[ExecutorRecord]:
         """Update an executor record."""
         stmt = select(ExecutorRecord).where(ExecutorRecord.executor_id == executor_id)
@@ -98,6 +101,8 @@ class ExecutorRepository:
                 executor.final_state = final_state
             if error_log is not None:
                 executor.error_log = error_log
+            if checkpoint is not None:
+                executor.checkpoint = checkpoint
 
             await self.session.flush()
             await self.session.refresh(executor)
@@ -238,6 +243,31 @@ class ExecutorRepository:
 
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
+
+    async def get_running_for_resume(self) -> List[Dict[str, Any]]:
+        """RUNNING rows, copied out of the session so resume can await the exchange.
+
+        Reading the ORM object after the session closes raises DetachedInstanceError
+        and the restart would fall through to SYSTEM_CLEANUP.
+        """
+        stmt = select(ExecutorRecord).where(
+            ExecutorRecord.status.in_(["RUNNING", "NOT_STARTED"])
+        )
+        records = (await self.session.execute(stmt)).scalars().all()
+        return [
+            {
+                "executor_id": record.executor_id,
+                "executor_type": record.executor_type,
+                "account_name": record.account_name,
+                "connector_name": record.connector_name,
+                "trading_pair": record.trading_pair,
+                "controller_id": record.controller_id or "main",
+                "created_at": record.created_at,
+                "config": record.config,
+                "checkpoint": record.checkpoint,
+            }
+            for record in records
+        ]
 
     async def get_active_executors(
             self,
