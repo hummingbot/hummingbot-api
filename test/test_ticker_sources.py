@@ -161,6 +161,48 @@ async def test_okx_spot_volccy_is_quote_volume():
 
 
 @pytest.mark.asyncio
+async def test_kucoin_perpetual_prices_from_the_contract_list():
+    """KuCoin Futures has no registered bulk ticker id; the contract list carries the prices.
+
+    Payload shape from the live endpoint: numbers, not strings; volumeOf24h in the base asset.
+    """
+    connector = FakeConnector(
+        {"XBTUSDTM": "BTC-USDT"},
+        get_payload={"code": "200000", "data": [
+            {"symbol": "XBTUSDTM", "baseCurrency": "XBT", "quoteCurrency": "USDT",
+             "lastTradePrice": 86574.5, "markPrice": 86586.72,
+             "volumeOf24h": 7796.332, "turnoverOf24h": 655220752.1562, "status": "Open"},
+            {"symbol": "OLDUSDTM", "lastTradePrice": 1.0, "volumeOf24h": 0, "turnoverOf24h": 0,
+             "status": "Closed"},
+        ]},
+    )
+    tickers = await run_spec("kucoin_perpetual", connector)
+    assert connector.get_calls[0]["path_url"] == "/api/v1/contracts/active"
+    assert "limit_id" not in connector.get_calls[0]
+    assert set(tickers) == {"BTC-USDT"}  # the unmapped contract is dropped, not raised on
+    assert tickers["BTC-USDT"].price == Decimal("86574.5")  # no bid/ask on this endpoint
+    assert tickers["BTC-USDT"].base_volume == Decimal("7796.332")
+    assert tickers["BTC-USDT"].quote_volume == Decimal("655220752.1562")
+
+
+@pytest.mark.asyncio
+async def test_bitget_spot_reports_mid_and_both_volumes():
+    connector = FakeConnector(
+        {"BTCUSDT": "BTC-USDT"},
+        get_payload={"code": "00000", "data": [{
+            "symbol": "BTCUSDT", "lastPr": "86614.88", "bidPr": "86614.88", "askPr": "86614.90",
+            "baseVolume": "5227.510087", "quoteVolume": "438630581.018699",
+            "usdtVolume": "438630581.01869895",
+        }]},
+    )
+    tickers = await run_spec("bitget", connector)
+    assert connector.get_calls[0]["path_url"] == "/api/v2/spot/market/tickers"
+    assert tickers["BTC-USDT"].price == Decimal("86614.89")
+    assert tickers["BTC-USDT"].base_volume == Decimal("5227.510087")
+    assert tickers["BTC-USDT"].quote_volume == Decimal("438630581.018699")
+
+
+@pytest.mark.asyncio
 async def test_bybit_perpetual_passes_dict_path_and_no_limit_id():
     """bybit_perpetual's _api_request indexes the endpoint by market, so it needs the dict."""
     connector = FakeConnector(

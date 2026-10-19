@@ -264,6 +264,20 @@ TICKER_SPECS: Dict[str, TickerSpec] = {
         symbol="symbol", bid="buy", ask="sell", last="last",
         base_volume="vol", quote_volume="volValue",
     ),
+    # KuCoin Futures' allTickers endpoint is not a registered rate-limit id on the connector, so
+    # the contract list is used instead: it carries the last trade and both 24h volumes for every
+    # contract, and no bid/ask. volumeOf24h is in the BASE asset (7796 XBT against a 655M USDT
+    # turnoverOf24h at ~84k), not in contracts.
+    "kucoin_perpetual": TickerSpec(
+        path="/api/v1/contracts/active", rows=_rows_at("data"),
+        symbol="symbol", last="lastTradePrice",
+        base_volume="volumeOf24h", quote_volume="turnoverOf24h",
+    ),
+    "bitget": TickerSpec(
+        path="/api/v2/spot/market/tickers", rows=_rows_at("data"),
+        symbol="symbol", bid="bidPr", ask="askPr", last="lastPr",
+        base_volume="baseVolume", quote_volume="quoteVolume",
+    ),
     "bybit": TickerSpec(
         path="/v5/market/tickers", params={"category": "spot"}, rows=_rows_at("result", "list"),
         symbol="symbol", bid="bid1Price", ask="ask1Price", last="lastPrice",
