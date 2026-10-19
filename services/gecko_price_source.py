@@ -201,7 +201,10 @@ class GeckoPriceSource:
         prices: Dict[str, Decimal] = {}
         for result in results:
             if isinstance(result, Exception):
-                logger.debug(f"GeckoTerminal chunk failed for {gecko_network}: {result}")
+                # A warning, not a debug: a lost chunk is the difference between a priced
+                # holding and a rate-limited Gateway quote per token, and nothing else in the
+                # balance entry says so. Silent here, it cost an afternoon of log reading.
+                logger.warning(f"GeckoTerminal chunk failed for {gecko_network}: {result}")
                 continue
             # result is a DataFrame with columns token_address / price_usd.
             for address, price_usd in zip(result["token_address"], result["price_usd"]):
