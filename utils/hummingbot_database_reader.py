@@ -159,9 +159,12 @@ class HummingbotDatabase:
         trades['buy_value_cum'] = trades.groupby(grouper)['buy_value'].cumsum()
         trades['sell_value_cum'] = trades.groupby(grouper)['sell_value'].cumsum()
 
-        # Calculate average prices (avoid division by zero)
-        trades['buy_avg_price'] = trades['buy_value_cum'] / trades['buy_volume'].replace(0, pd.NA)
-        trades['sell_avg_price'] = trades['sell_value_cum'] / trades['sell_volume'].replace(0, pd.NA)
+        # Calculate average prices. Where nothing has been bought (or sold) yet the
+        # average is NaN, not pd.NA: pd.NA turns the column into object dtype, and the
+        # ratios below then divide on Python floats and raise ZeroDivisionError for a
+        # pair that opened with a sell.
+        trades['buy_avg_price'] = trades['buy_value_cum'] / trades['buy_volume'].where(trades['buy_volume'] != 0)
+        trades['sell_avg_price'] = trades['sell_value_cum'] / trades['sell_volume'].where(trades['sell_volume'] != 0)
 
         # Forward fill average prices within each group to handle NaN values
         trades['buy_avg_price'] = trades.groupby(grouper)['buy_avg_price'].ffill().fillna(0)
@@ -170,9 +173,11 @@ class HummingbotDatabase:
         # Calculate net position
         trades['net_position'] = trades['buy_volume'] - trades['sell_volume']
 
-        # Calculate realized PnL
+        # Calculate realized PnL. Nothing is realized until a pair has both bought and
+        # sold, so the ratio is 0 while the average buy price is.
+        buy_avg_nonzero = trades['buy_avg_price'].where(trades['buy_avg_price'] != 0)
         trades['realized_trade_pnl_pct'] = (
-            (trades['sell_avg_price'] - trades['buy_avg_price']) / trades['buy_avg_price']
+            (trades['sell_avg_price'] - trades['buy_avg_price']) / buy_avg_nonzero
         ).fillna(0)
 
         # Matched volume for realized PnL (minimum of buy and sell volumes)
