@@ -172,3 +172,22 @@ class TestAccountDistribution:
         assert result["account_count"] == 0
         assert result["distribution"] == []
         assert "error" in result
+
+
+class TestSharedWallet:
+    @staticmethod
+    def _uta_state(perp_units=100.0):
+        row = lambda units: {"token": "USDT", "units": units, "price": 1.0, "value": units, "available_units": units}
+        return {"master_account": {"bitget": [row(100.0)], "bitget_perpetual": [row(perp_units)]}}
+
+    def test_unified_account_counted_once(self, analytics):
+        state = self._uta_state()
+        assert analytics.get_portfolio_distribution(state)["total_portfolio_value"] == 100.0
+        result = analytics.get_account_distribution(state)
+        assert result["total_portfolio_value"] == 100.0
+        assert list(result["distribution"][0]["connectors"]) == ["bitget"]
+
+    def test_separate_perpetual_wallet_still_counted(self, analytics):
+        state = self._uta_state(perp_units=40.0)
+        assert analytics.get_portfolio_distribution(state)["total_portfolio_value"] == 140.0
+        assert analytics.get_account_distribution(state)["total_portfolio_value"] == 140.0

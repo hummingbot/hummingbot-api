@@ -5,6 +5,33 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
+def shared_wallet_connectors(account_data: Dict[str, List[Dict[str, Any]]]) -> set:
+    """
+    Connectors in one account whose balances are a copy of another connector's wallet.
+
+    Exchanges with a unified account (e.g. Bitget UTA) report the same wallet through both the spot connector
+    ("bitget") and the perpetual connector ("bitget_perpetual"). Summing both counts the money twice. A
+    "<exchange>_perpetual" connector is a duplicate only when its non-empty balances match the spot connector's
+    token for token and unit for unit; anything else is a separate wallet and is counted.
+    """
+    duplicates = set()
+    for connector_name, connector_data in account_data.items():
+        suffix = "_perpetual"
+        if not connector_name.endswith(suffix) or not connector_data:
+            continue
+        spot_data = account_data.get(connector_name[:-len(suffix)])
+        if not spot_data:
+            continue
+
+        def holdings(rows):
+            return {row.get("token"): row.get("units", 0) for row in rows if row.get("units", 0)}
+
+        perp_holdings = holdings(connector_data)
+        if perp_holdings and perp_holdings == holdings(spot_data):
+            duplicates.add(connector_name)
+    return duplicates
+
+
 class PortfolioAnalyticsService:
     """
     Pure portfolio-distribution math over account state data.
@@ -38,7 +65,10 @@ class PortfolioAnalyticsService:
 
             for acc_name in accounts_to_process:
                 if acc_name in accounts_state_snapshot:
+                    duplicates = shared_wallet_connectors(accounts_state_snapshot[acc_name])
                     for connector_name, connector_data in accounts_state_snapshot[acc_name].items():
+                        if connector_name in duplicates:
+                            continue
                         for token_info in connector_data:
                             token = token_info.get("token", "")
                             value = token_info.get("value", 0)
@@ -147,7 +177,10 @@ class PortfolioAnalyticsService:
                 account_value = 0
                 connector_values = {}
 
+                duplicates = shared_wallet_connectors(account_data)
                 for connector_name, connector_data in account_data.items():
+                    if connector_name in duplicates:
+                        continue
                     connector_value = 0
                     for token_info in connector_data:
                         value = token_info.get("value", 0)
