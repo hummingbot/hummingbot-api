@@ -152,12 +152,17 @@ async def get_portfolio_distribution(
     Returns:
         Dictionary with token distribution including percentages, values, and breakdown by accounts/connectors
     """
+    # The connector selection goes into the calculation, so that connectors sharing one wallet are folded
+    # among the selected connectors only and a selected wallet is never dropped
+    connector_names = filter_request.connector_names or None
+
     if not filter_request.account_names:
         # Get distribution for all accounts
-        distribution = accounts_service.get_portfolio_distribution()
+        distribution = accounts_service.get_portfolio_distribution(connector_names=connector_names)
     elif len(filter_request.account_names) == 1:
         # Single account - use existing method
-        distribution = accounts_service.get_portfolio_distribution(filter_request.account_names[0])
+        distribution = accounts_service.get_portfolio_distribution(
+            filter_request.account_names[0], connector_names=connector_names)
     else:
         # Multiple accounts - need to aggregate
         aggregated_distribution = {
@@ -168,7 +173,7 @@ async def get_portfolio_distribution(
         }
 
         for account_name in filter_request.account_names:
-            account_dist = accounts_service.get_portfolio_distribution(account_name)
+            account_dist = accounts_service.get_portfolio_distribution(account_name, connector_names=connector_names)
 
             # Skip if account doesn't exist or has error
             if account_dist.get("error") or account_dist.get("token_count", 0) == 0:

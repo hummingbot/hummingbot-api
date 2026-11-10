@@ -175,19 +175,69 @@ class TestAccountDistribution:
 
 
 class TestSharedWallet:
+    """A unified exchange account is one wallet reported by two connectors (issue #250)."""
+
+    UTA = {"master_account": {"bitget": "bitget_uta:abc", "bitget_perpetual": "bitget_uta:abc"}}
+
     @staticmethod
-    def _uta_state(perp_units=100.0):
-        row = lambda units: {"token": "USDT", "units": units, "price": 1.0, "value": units, "available_units": units}
+    def _state(perp_units=100.0):
+        def row(units):
+            return {"token": "USDT", "units": units, "price": 1.0, "value": units, "available_units": units}
         return {"master_account": {"bitget": [row(100.0)], "bitget_perpetual": [row(perp_units)]}}
 
     def test_unified_account_counted_once(self, analytics):
-        state = self._uta_state()
-        assert analytics.get_portfolio_distribution(state)["total_portfolio_value"] == 100.0
-        result = analytics.get_account_distribution(state)
+        state = self._state()
+        result = analytics.get_portfolio_distribution(state, account_groups=self.UTA)
+        assert result["total_portfolio_value"] == 100.0
+        assert list(result["distribution"][0]["accounts"]["master_account"]["connectors"]) == ["bitget"]
+        result = analytics.get_account_distribution(state, account_groups=self.UTA)
         assert result["total_portfolio_value"] == 100.0
         assert list(result["distribution"][0]["connectors"]) == ["bitget"]
 
-    def test_separate_perpetual_wallet_still_counted(self, analytics):
-        state = self._uta_state(perp_units=40.0)
-        assert analytics.get_portfolio_distribution(state)["total_portfolio_value"] == 140.0
-        assert analytics.get_account_distribution(state)["total_portfolio_value"] == 140.0
+    def test_unified_account_counted_once_when_one_view_is_stale(self, analytics):
+        # The two connectors refresh independently; the shared wallet is still one wallet
+        state = self._state(perp_units=90.0)
+        assert analytics.get_portfolio_distribution(state, account_groups=self.UTA)["total_portfolio_value"] == 100.0
+        assert analytics.get_account_distribution(state, account_groups=self.UTA)["total_portfolio_value"] == 100.0
+
+    @pytest.mark.parametrize("account_groups", [
+        None,
+        {},
+        {"master_account": {}},
+        {"master_account": {"bitget": None, "bitget_perpetual": None}},
+        {"master_account": {"bitget": "bitget_uta:abc"}},
+        {"master_account": {"bitget": "bitget_uta:abc", "bitget_perpetual": "bitget_uta:xyz"}},
+        {"other_account": {"bitget": "bitget_uta:abc", "bitget_perpetual": "bitget_uta:abc"}},
+    ])
+    def test_equal_balances_in_distinct_wallets_are_both_counted(self, analytics, account_groups):
+        # Two separate wallets that happen to hold 100 USDT each are worth 200, whatever their balances say
+        state = self._state()
+        result = analytics.get_portfolio_distribution(state, account_groups=account_groups)
+        assert result["total_portfolio_value"] == 200.0
+        result = analytics.get_account_distribution(state, account_groups=account_groups)
+        assert result["total_portfolio_value"] == 200.0
+        assert set(result["distribution"][0]["connectors"]) == {"bitget", "bitget_perpetual"}
+
+    def test_same_wallet_in_two_accounts_is_not_folded_across_accounts(self, analytics):
+        state = {"a": {"bitget": self._state()["master_account"]["bitget"]},
+                 "b": {"bitget_perpetual": self._state()["master_account"]["bitget_perpetual"]}}
+        groups = {"a": {"bitget": "bitget_uta:abc"}, "b": {"bitget_perpetual": "bitget_uta:abc"}}
+        result = analytics.get_account_distribution(state, account_groups=groups)
+        assert {d["account"]: d["total_value"] for d in result["distribution"]} == {"a": 100.0, "b": 100.0}
+
+    def test_selected_perpetual_connector_of_a_shared_wallet_is_kept(self, analytics):
+        # The connector filter is applied before shared wallets are folded
+        result = analytics.get_portfolio_distribution(
+            self._state(), connector_names=["bitget_perpetual"], account_groups=self.UTA)
+        assert result["total_portfolio_value"] == 100.0
+        assert list(result["distribution"][0]["accounts"]["master_account"]["connectors"]) == ["bitget_perpetual"]
+
+    def test_both_connectors_of_a_shared_wallet_selected_counts_once(self, analytics):
+        result = analytics.get_portfolio_distribution(
+            self._state(), connector_names=["bitget_perpetual", "bitget"], account_groups=self.UTA)
+        assert result["total_portfolio_value"] == 100.0
+
+    def test_connector_filter_without_shared_wallets(self, analytics, accounts_state):
+        result = analytics.get_portfolio_distribution(accounts_state, connector_names=["kraken"])
+        assert result["total_portfolio_value"] == 5000.0
+        assert [d["token"] for d in result["distribution"]] == ["BTC"]
