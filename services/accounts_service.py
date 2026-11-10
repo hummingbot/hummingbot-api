@@ -1052,6 +1052,85 @@ class AccountsService:
             logger.error(f"Failed to initiate cancellation for order {client_order_id}: {e}")
             raise HTTPException(status_code=500, detail=f"Failed to initiate order cancellation: {str(e)}")
     
+    async def cancel_order_by_exchange_id(
+        self,
+        account_name: str,
+        connector_name: str,
+        exchange_order_id: str,
+        trading_pair: Optional[str] = None,
+    ) -> Dict[str, str]:
+        """Cancel an order addressed by the venue's own order id.
+
+        ``cancel_order`` can only reach orders in ``connector.in_flight_orders``,
+        an in-memory map owned by the running process. When a bot is stopped,
+        crashes or is archived while orders are still resting, those orders are
+        no longer in the map -- but they are still live at the venue, and nothing
+        in the API could cancel them. This method is that missing path.
+
+        The in-flight map is still preferred when it happens to hold the order,
+        so callers get identical behaviour for tracked orders.
+
+        Args:
+            account_name: Name of the account
+            connector_name: Name of the connector
+            exchange_order_id: The venue-side order id (for XRPL, the offer sequence)
+            trading_pair: Optional trading pair, when the caller knows it
+
+        Returns:
+            dict with ``order_id``, ``via`` (``tracker`` or ``venue``) and ``status``:
+            ``initiated`` when the connector only scheduled the cancel, ``submitted``
+            when the venue accepted the cancellation transaction. Neither means the
+            order is confirmed gone -- check the venue for that.
+
+        Raises:
+            HTTPException: 404 if the connector cannot be reached, 501 if the
+                connector has no way to cancel by venue id, 500 if the cancel fails
+        """
+        connector = await self.get_connector_instance(account_name, connector_name)
+
+        # Prefer the tracker: a tracked order has a client id and an existing path.
+        for order in connector.in_flight_orders.values():
+            if order.exchange_order_id == exchange_order_id:
+                result = connector.cancel(trading_pair="NA", client_order_id=order.client_order_id)
+                logger.info(
+                    f"Cancelled tracked order {order.client_order_id} "
+                    f"(exchange id {exchange_order_id}) on {connector_name}"
+                )
+                # connector.cancel schedules the work and returns at once, so this is
+                # an initiation, not venue confirmation -- the caller is told which.
+                return {"order_id": result, "via": "tracker", "status": "initiated"}
+
+        canceller = getattr(connector, "cancel_by_exchange_order_id", None)
+        if canceller is None:
+            raise HTTPException(
+                status_code=501,
+                detail=f"Connector '{connector_name}' cannot cancel by exchange order id",
+            )
+
+        try:
+            await canceller(trading_pair or "NA", exchange_order_id)
+        except NotImplementedError:
+            raise HTTPException(
+                status_code=501,
+                detail=f"Connector '{connector_name}' cannot cancel by exchange order id",
+            )
+        except Exception as e:
+            logger.error(f"Failed to cancel exchange order {exchange_order_id}: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to cancel order by exchange id: {str(e)}",
+            )
+
+        logger.info(
+            f"Cancelled untracked order by exchange id {exchange_order_id} on {connector_name} "
+            f"(Account: {account_name})"
+        )
+        return {
+            "order_id": exchange_order_id,
+            "via": "venue",
+            "status": "submitted",
+        }
+
     async def set_leverage(self, account_name: str, connector_name: str,
                           trading_pair: str, leverage: int) -> Dict[str, str]:
         """
