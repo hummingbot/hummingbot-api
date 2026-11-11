@@ -203,7 +203,7 @@ class TestSuccessStillAnswersNormally:
         """Removes only its own exited bot container, not a daemon-wide prune."""
         (instances_root / "bot-1").mkdir()
         owned = _Container(name="bot-1")
-        unrelated = _Container(name="metabrain-mongodb")
+        unrelated = _Container(name="other-project-mongodb")
         service = _service(exited=[owned, unrelated])
 
         response = await clean_exited_containers(service)

@@ -82,7 +82,7 @@ def test_an_unrelated_exited_container_is_left_in_place(instances_root):
 def test_only_the_owned_container_among_several_is_removed(instances_root):
     (instances_root / "pmm-1").mkdir()
     owned = _ExitedContainer("pmm-1")
-    unrelated = _ExitedContainer("metabrain-mongodb")
+    unrelated = _ExitedContainer("other-project-mongodb")
     service = _service(exited=[owned, unrelated])
 
     result = service.clean_exited_containers()
