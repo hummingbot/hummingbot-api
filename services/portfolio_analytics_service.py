@@ -1,11 +1,11 @@
 import logging
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 # Create module-specific logger
 logger = logging.getLogger(__name__)
 
 
-def shared_wallet_connectors(connector_names: Iterable[str],
+def shared_wallet_connectors(connector_balances: Mapping[str, Any],
                              account_groups: Optional[Dict[str, Optional[str]]] = None) -> Dict[str, str]:
     """
     Connectors of one account that read a wallet another connector has already reported.
@@ -16,27 +16,32 @@ def shared_wallet_connectors(connector_names: Iterable[str],
     exchange-side account id (ConnectorBase.account_group_id, derived from the credentials' account and its
     mode). Balances are never compared: two separate wallets holding the same amounts stay separate.
 
+    Within a group the first connector with a non-empty balance list is kept, so a connector whose refresh
+    failed (stored as []) never hides the wallet that another connector of the group did report.
+
     Args:
-        connector_names: The connectors being summed, in order. Pass the already filtered selection, so that a
-            connector that was not selected can never stand in for a selected one.
+        connector_balances: {connector_name: [token_info, ...]} for the connectors being summed, in order. Pass
+            the already filtered selection, so that a connector that was not selected can never stand in for a
+            selected one.
         account_groups: {connector_name: account id or None}. None or a missing connector means that
             connector's balance stands on its own.
 
     Returns:
-        {duplicate connector name: name of the earlier connector holding the same wallet}
+        {duplicate connector name: name of the connector of the same wallet that is counted}
     """
     if not account_groups:
         return {}
-    primary_by_group: Dict[str, str] = {}
-    duplicates: Dict[str, str] = {}
-    for connector_name in connector_names:
+    members_by_group: Dict[str, List[str]] = {}
+    for connector_name in connector_balances:
         group_id = account_groups.get(connector_name)
-        if group_id is None:
-            continue
-        if group_id in primary_by_group:
-            duplicates[connector_name] = primary_by_group[group_id]
-        else:
-            primary_by_group[group_id] = connector_name
+        if group_id is not None:
+            members_by_group.setdefault(group_id, []).append(connector_name)
+    duplicates: Dict[str, str] = {}
+    for members in members_by_group.values():
+        primary = next((name for name in members if connector_balances[name]), members[0])
+        for connector_name in members:
+            if connector_name != primary:
+                duplicates[connector_name] = primary
     return duplicates
 
 

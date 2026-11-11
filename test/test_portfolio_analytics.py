@@ -200,6 +200,19 @@ class TestSharedWallet:
         assert analytics.get_portfolio_distribution(state, account_groups=self.UTA)["total_portfolio_value"] == 100.0
         assert analytics.get_account_distribution(state, account_groups=self.UTA)["total_portfolio_value"] == 100.0
 
+    @pytest.mark.parametrize("empty_connector", ["bitget", "bitget_perpetual"])
+    def test_failed_refresh_of_one_connector_does_not_hide_the_shared_wallet(self, analytics, empty_connector):
+        # A connector whose refresh failed is stored as []; the other connector's view of the wallet is counted
+        state = self._state()
+        state["master_account"][empty_connector] = []
+        kept = "bitget_perpetual" if empty_connector == "bitget" else "bitget"
+        result = analytics.get_portfolio_distribution(state, account_groups=self.UTA)
+        assert result["total_portfolio_value"] == 100.0
+        assert list(result["distribution"][0]["accounts"]["master_account"]["connectors"]) == [kept]
+        result = analytics.get_account_distribution(state, account_groups=self.UTA)
+        assert result["total_portfolio_value"] == 100.0
+        assert kept in result["distribution"][0]["connectors"]
+
     @pytest.mark.parametrize("account_groups", [
         None,
         {},
