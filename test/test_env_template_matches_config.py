@@ -27,7 +27,7 @@ SETUP_SH = REPO_ROOT / "setup.sh"
 
 # Groups added by READ-117: documented, but every line commented out, so a freshly generated
 # .env keeps producing exactly the settings config.py already applies.
-COMMENTED_ONLY_PREFIXES = ("PERFORMANCE_", "BACKTESTING_", "MARKET_DATA_", "CORS_", "AWS_")
+COMMENTED_ONLY_PREFIXES = ("PERFORMANCE_", "IDEMPOTENCY_", "BACKTESTING_", "MARKET_DATA_", "CORS_", "AWS_")
 
 # A variable assignment in the template: "NAME=value" (active) or "#NAME=value" (documented).
 # Prose comments start with "# " and are therefore not matched.

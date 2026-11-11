@@ -1,13 +1,18 @@
+import hashlib
+import json
 import logging
 import math
 from datetime import datetime
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, TradeType
 from starlette import status
+from starlette.responses import JSONResponse
 
-from deps import get_accounts_service, get_connector_service, get_trading_history_service
+from database import AsyncDatabaseManager
+from database.repositories import IdempotencyRepository
+from deps import get_accounts_service, get_connector_service, get_database_manager, get_trading_history_service
 from models import (
     ActiveOrderFilterRequest,
     FundingPaymentFilterRequest,
@@ -29,26 +34,26 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Trading"], prefix="/trading")
 
+# The route name a claim is stored under (database/models.py:RequestIdempotency.route). Just a
+# label for the row; nothing parses it back.
+_IDEMPOTENCY_ROUTE = "POST /trading/orders"
+# Not a promise the placement finishes by then -- just a sane backoff for a client that gets a
+# 409 because this key's original request is still in flight.
+_IDEMPOTENCY_RETRY_AFTER_SECONDS = "5"
 
-# Trade Execution
-@router.post("/orders", response_model=TradeResponse, status_code=status.HTTP_201_CREATED)
-async def place_trade(
-    trade_request: TradeRequest,
-    accounts_service: AccountsService = Depends(get_accounts_service),
-):
+
+def _idempotency_request_hash(trade_request: TradeRequest) -> str:
+    """A hash over the exact request body, so a key reused for a different request is caught.
+
+    `model_dump(mode="json")` enumerates a TradeRequest's fixed field set in a fixed order, so
+    two calls with identical field values always hash the same.
     """
-    Place a buy or sell order using a specific account and connector.
+    canonical = json.dumps(trade_request.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
 
-    Args:
-        trade_request: Trading request with account, connector, trading pair, type, amount, etc.
-        accounts_service: Injected accounts service
 
-    Returns:
-        TradeResponse with order ID and trading details
-
-    Raises:
-        HTTPException: 400 for invalid parameters, 404 for account/connector not found, 500 for trade execution errors
-    """
+async def _place_trade(trade_request: TradeRequest, accounts_service: AccountsService) -> TradeResponse:
+    """The pure placement call: the connector call plus its response shape, no idempotency concern."""
     try:
         # Convert string names to enum instances
         trade_type_enum = TradeType[trade_request.trade_type]
@@ -81,6 +86,81 @@ async def place_trade(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Unexpected error placing trade: {str(e)}")
+
+
+# Trade Execution
+@router.post("/orders", response_model=TradeResponse, status_code=status.HTTP_201_CREATED)
+async def place_trade(
+    trade_request: TradeRequest,
+    accounts_service: AccountsService = Depends(get_accounts_service),
+    db_manager: AsyncDatabaseManager = Depends(get_database_manager),
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
+):
+    """
+    Place a buy or sell order using a specific account and connector.
+
+    Pass an `Idempotency-Key` header to make a retried request safe: a repeat with the same key
+    and the same body replays the original response (with an `Idempotency-Replayed: true`
+    response header) instead of placing a second order. The header is optional -- without it,
+    this route behaves exactly as if it did not exist.
+
+    Args:
+        trade_request: Trading request with account, connector, trading pair, type, amount, etc.
+        accounts_service: Injected accounts service
+        db_manager: Injected database manager, used only when an Idempotency-Key is given
+        idempotency_key: Optional `Idempotency-Key` request header
+
+    Returns:
+        TradeResponse with order ID and trading details
+
+    Raises:
+        HTTPException: 400 for invalid parameters, 404 for account/connector not found, 409 if
+            this key's original request is still being placed, 422 if this key was already used
+            for a different request body, 500 for trade execution errors
+    """
+    if idempotency_key is None:
+        return await _place_trade(trade_request, accounts_service)
+
+    request_hash = _idempotency_request_hash(trade_request)
+    async with db_manager.get_session_context() as session:
+        owned, existing = await IdempotencyRepository(session).claim(
+            idempotency_key, _IDEMPOTENCY_ROUTE, request_hash
+        )
+
+    if not owned:
+        if existing.request_hash != request_hash:
+            raise HTTPException(
+                status_code=422,
+                detail="Idempotency-Key was already used for a request with a different body",
+            )
+        if existing.state == "IN_FLIGHT":
+            raise HTTPException(
+                status_code=409,
+                detail="A request with this Idempotency-Key is still being placed; retry",
+                headers={"Retry-After": _IDEMPOTENCY_RETRY_AFTER_SECONDS},
+            )
+        # COMPLETED or FAILED: replay the stored response verbatim rather than placing again.
+        return JSONResponse(
+            content=json.loads(existing.response_body),
+            status_code=existing.response_status,
+            headers={"Idempotency-Replayed": "true"},
+        )
+
+    try:
+        trade_response = await _place_trade(trade_request, accounts_service)
+    except HTTPException as exc:
+        async with db_manager.get_session_context() as session:
+            await IdempotencyRepository(session).fail(
+                idempotency_key, exc.status_code, json.dumps({"detail": exc.detail})
+            )
+        raise
+
+    # Stored and returned from the same serialized text, so a later replay of this exact
+    # response is byte-identical to this one.
+    success_body = trade_response.model_dump_json()
+    async with db_manager.get_session_context() as session:
+        await IdempotencyRepository(session).complete(idempotency_key, status.HTTP_201_CREATED, success_body)
+    return JSONResponse(content=json.loads(success_body), status_code=status.HTTP_201_CREATED)
 
 
 @router.post("/{account_name}/{connector_name}/orders/{client_order_id}/cancel")

@@ -763,6 +763,12 @@ TAILSCALE_HOSTNAME=$TAILSCALE_HOSTNAME
 # days. 0 keeps everything forever -- raise it to cap database growth.
 #PERFORMANCE_RETENTION_DAYS=0
 
+# Idempotency-Key claims for POST /trading/orders
+# An IN_FLIGHT claim older than this is swept to FAILED, in seconds.
+#IDEMPOTENCY_IN_FLIGHT_TIMEOUT_SECONDS=300
+# Delete idempotency claims (any state) older than this many days.
+#IDEMPOTENCY_RETENTION_DAYS=7
+
 # Backtesting
 # How many backtests may run at once; further submissions queue. Runs are
 # isolated in separate processes, so this can be raised up to the cores you are
