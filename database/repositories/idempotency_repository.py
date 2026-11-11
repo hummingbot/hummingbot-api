@@ -23,26 +23,38 @@ class IdempotencyRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
 
+    _MAX_CLAIM_ATTEMPTS = 3
+
     async def claim(self, key: str, route: str, request_hash: str) -> Tuple[bool, Optional[RequestIdempotency]]:
         """Try to own `key`.
 
         Returns `(True, the new row)` when this call wins the claim, or `(False, the existing
         row)` when another request already owns it -- the caller decides from `existing`
         whether to replay, reject (different body) or ask the caller to retry (still in flight).
+
+        The conflicting row can vanish between the insert's conflict and the follow-up
+        `get_by_key` if `prune` deletes it in that window. Retrying the insert resolves this:
+        the key is either free again (this call wins the claim) or has since been reclaimed by
+        another request (this call reads its row instead).
         """
-        stmt = (
-            pg_insert(RequestIdempotency)
-            .values(idempotency_key=key, route=route, request_hash=request_hash, state="IN_FLIGHT")
-            .on_conflict_do_nothing(index_elements=["idempotency_key"])
-            .returning(RequestIdempotency.id)
-        )
-        result = await self.session.execute(stmt)
-        row_id = result.scalar_one_or_none()
-        if row_id is not None:
-            await self.session.flush()
-            claimed = await self.session.get(RequestIdempotency, row_id)
-            return True, claimed
-        return False, await self.get_by_key(key)
+        for attempt in range(self._MAX_CLAIM_ATTEMPTS):
+            stmt = (
+                pg_insert(RequestIdempotency)
+                .values(idempotency_key=key, route=route, request_hash=request_hash, state="IN_FLIGHT")
+                .on_conflict_do_nothing(index_elements=["idempotency_key"])
+                .returning(RequestIdempotency.id)
+            )
+            result = await self.session.execute(stmt)
+            row_id = result.scalar_one_or_none()
+            if row_id is not None:
+                await self.session.flush()
+                claimed = await self.session.get(RequestIdempotency, row_id)
+                return True, claimed
+            existing = await self.get_by_key(key)
+            if existing is not None:
+                return False, existing
+            logger.warning("idempotency claim for %r conflicted but the row was pruned; retrying (attempt %d)", key, attempt + 1)
+        raise RuntimeError(f"idempotency claim for {key!r} kept conflicting with a row that was pruned each time")
 
     async def get_by_key(self, key: str) -> Optional[RequestIdempotency]:
         """The row for `key`, or None if it was never claimed (or has since been pruned)."""

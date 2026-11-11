@@ -297,6 +297,65 @@ class TestSweepAndPrune:
 
 
 # ---------------------------------------------------------------------------------------
+# claim() retries when prune() deletes the conflicting row between the insert and the
+# follow-up get_by_key -- without this, existing is None and the caller's
+# existing.request_hash raises instead of answering the retry.
+# ---------------------------------------------------------------------------------------
+
+class TestClaimRetriesPastAVanishingRow:
+    @pytest.fixture
+    def db_manager(self, engine):
+        return _DbManager(engine)
+
+    async def test_claim_retries_and_reads_the_row_once_it_reappears(self, db_manager, engine, monkeypatch):
+        key = "key-raced-by-prune"
+        with Session(engine) as session:
+            session.add(RequestIdempotency(
+                idempotency_key=key, route=ROUTE, request_hash="hash-pre", state="IN_FLIGHT",
+            ))
+            session.commit()
+
+        real_get_by_key = IdempotencyRepository.get_by_key
+        calls = {"n": 0}
+
+        async def flaky_get_by_key(self, key_arg):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return None  # simulates prune() deleting the row in this window
+            return await real_get_by_key(self, key_arg)
+
+        monkeypatch.setattr(IdempotencyRepository, "get_by_key", flaky_get_by_key)
+
+        async with db_manager.get_session_context() as session:
+            owned, existing = await IdempotencyRepository(session).claim(key, ROUTE, "hash-new")
+
+        assert not owned
+        assert existing is not None
+        assert existing.request_hash == "hash-pre"
+        assert calls["n"] == 2
+
+    async def test_claim_raises_instead_of_crashing_on_existing_none_when_the_row_never_reappears(
+        self, db_manager, monkeypatch
+    ):
+        async def always_none(self, key_arg):
+            return None
+
+        monkeypatch.setattr(IdempotencyRepository, "get_by_key", always_none)
+
+        async with db_manager.get_session_context() as session:
+            repo = IdempotencyRepository(session)
+            # Pre-claim the key directly so the insert keeps conflicting on every retry.
+            await session.execute(
+                RequestIdempotency.__table__.insert().values(
+                    idempotency_key="key-always-vanishing", route=ROUTE,
+                    request_hash="hash-pre", state="IN_FLIGHT",
+                )
+            )
+            with pytest.raises(RuntimeError):
+                await repo.claim("key-always-vanishing", ROUTE, "hash-new")
+
+
+# ---------------------------------------------------------------------------------------
 # A real Postgres: two concurrent requests for the same key must place exactly one order.
 # ---------------------------------------------------------------------------------------
 
