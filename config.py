@@ -84,6 +84,12 @@ class MarketDataSettings(BaseSettings):
         description="How long a ticker-only connector stays in the background refresh cycle "
                     "after its last request, in seconds"
     )
+    external_price_max_age: int = Field(
+        default=300,
+        description="Max age of an externally pushed price (e.g. Gateway DEX quotes) before "
+                    "it is dropped from the price pool, in seconds. Longer than ticker_max_age "
+                    "because an on-chain quote only refreshes when someone asks for balances"
+    )
     hyperliquid_hip3_interval: int = Field(
         default=120,
         description="How often to refresh Hyperliquid HIP-3 (builder-deployed perp dex) tickers, "

@@ -818,6 +818,9 @@ TAILSCALE_HOSTNAME=$TAILSCALE_HOSTNAME
 # How long a ticker-only connector stays in the background refresh cycle after
 # its last request, in seconds.
 #MARKET_DATA_TICKER_SUBSCRIPTION_TTL=600
+# Max age of an externally pushed price (e.g. Gateway DEX quotes) before it is
+# dropped from the price pool, in seconds.
+#MARKET_DATA_EXTERNAL_PRICE_MAX_AGE=300
 # How often to refresh Hyperliquid HIP-3 (builder-deployed perp dex) tickers, in
 # seconds. Set to 0 to exclude HIP-3 markets.
 #MARKET_DATA_HYPERLIQUID_HIP3_INTERVAL=120
