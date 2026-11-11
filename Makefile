@@ -1,4 +1,4 @@
-.PHONY: setup run deploy stop install uninstall build install-pre-commit tailscale-status doctor reset emqx-auth emqx-auth-reset emqx-audit
+.PHONY: setup run deploy stop install uninstall build install-pre-commit tailscale-status doctor reset emqx-auth emqx-auth-reset emqx-audit test
 
 SETUP_SENTINEL := .setup-complete
 
@@ -224,6 +224,11 @@ uninstall:
 install-pre-commit:
 	conda run -n hummingbot-api pip install pre-commit
 	conda run -n hummingbot-api pre-commit install
+
+# Run the test suite (same invocation .github/workflows/ci.yml runs)
+# Excludes @pytest.mark.integration tests, which need a live Gateway/API.
+test:
+	conda run --no-capture-output -n hummingbot-api python -m pytest -q -m "not integration"
 
 # Build Docker image
 build:
