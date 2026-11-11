@@ -28,7 +28,7 @@ name: hummingbot-api
 
 services:
   - name: api
-    command: bash -c 'make emqx-auth && exec docker compose up api emqx'
+    command: bash -c 'make emqx-auth && exec docker compose up hummingbot-api emqx'
     healthcheck:
       url: http://127.0.0.1:8000/
       expect: 200
