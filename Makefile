@@ -100,7 +100,13 @@ EMQX_AUTH_FILE := .emqx/auth-bootstrap.csv
 # has the account — run `make emqx-auth-reset` to drop the volume and re-seed.
 emqx-auth:
 	@set -a; [ -f .env ] && . ./.env; set +a; \
-	user="$${BROKER_USERNAME:-admin}"; pass="$${BROKER_PASSWORD:-password}"; \
+	if [ -z "$$BROKER_USERNAME" ] || [ -z "$$BROKER_PASSWORD" ]; then \
+		echo "[ERROR] BROKER_USERNAME/BROKER_PASSWORD are not set in .env" \
+			"— run 'make setup' (setup.sh) to generate a strong broker credential;" \
+			"refusing to seed the broker with a well-known default." >&2; \
+		exit 1; \
+	fi; \
+	user="$$BROKER_USERNAME"; pass="$$BROKER_PASSWORD"; \
 	bad=0; \
 	case "$$user$$pass" in *,*) bad=1 ;; esac; \
 	[ "$$(printf '%s' "$$user$$pass" | wc -l)" -eq 0 ] || bad=1; \
