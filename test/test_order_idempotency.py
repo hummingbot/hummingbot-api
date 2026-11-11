@@ -397,7 +397,7 @@ def postgres_dsn():
     name = f"feat002-idempotency-{secrets.token_hex(4)}"
     try:
         subprocess.run(
-            ["docker", "run", "--rm", "-d", "--name", name, "-p", f"{port}:5432",
+            ["docker", "run", "--rm", "-d", "--name", name, "-p", f"127.0.0.1:{port}:5432",
              "-e", "POSTGRES_PASSWORD=test", "-e", "POSTGRES_DB=test", "postgres:16"],
             check=True, capture_output=True, text=True, timeout=60,
         )
