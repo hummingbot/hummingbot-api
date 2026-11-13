@@ -7,7 +7,13 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException
 from hummingbot.client.config.config_crypt import ETHKeyFileSecretManger
-from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, TradeType
+from hummingbot.core.data_type.common import (
+    OrderType,
+    PositionAction,
+    PositionMode,
+    TradeType,
+)
+from hummingbot.core.data_type.in_flight_order import OrderState
 
 from config import settings
 from database import AccountRepository, AsyncDatabaseManager
@@ -871,6 +877,83 @@ class AccountsService:
         """
         return self.portfolio_analytics_service.get_account_distribution(self.accounts_state)
 
+    # How long ``place_trade`` waits for the venue to accept or refuse an order
+    # before answering. The submission is asynchronous, so this is the window in
+    # which a refusal can still turn a "submitted" into an error.
+    SUBMISSION_TIMEOUT_SEC = 15.0
+    SUBMISSION_POLL_SEC = 0.25
+
+    @staticmethod
+    def _tracked_order(connector, client_order_id: str):
+        """The in-flight order for ``client_order_id``, wherever the tracker keeps it.
+
+        ``in_flight_orders`` only holds orders that are still live: the tracker
+        drops an order the moment it reaches a terminal state, so a *refused*
+        order is precisely the one missing from it. Reading only that map turns
+        every refusal into "not tracked" -- which is why the first version of
+        this check still answered 201. ``all_orders`` keeps them.
+        """
+        tracker = getattr(connector, "_order_tracker", None)
+        for source in (
+            getattr(tracker, "all_orders", None),
+            getattr(connector, "in_flight_orders", None),
+        ):
+            if source is None:
+                continue
+            try:
+                order = source.get(client_order_id)
+            except Exception:
+                continue
+            if order is not None:
+                return order
+        return None
+
+    async def _await_submission(
+        self, connector, client_order_id: str, timeout: Optional[float] = None
+    ) -> Optional[str]:
+        """Wait for an order's submission to resolve; return why it failed, if it did.
+
+        ``connector.buy``/``sell`` return a **client** order id immediately --
+        the venue call happens in the connector's own task, so it lands on the
+        in-flight order after the method has already returned. Answering 201 off
+        the back of that id reports a submission nothing has confirmed yet: a
+        Derive order refused for a risk-universe mismatch came back as
+        ``status: submitted`` with an id the venue had never seen, and the only
+        trace was a warning in the container log.
+
+        Resolves to a failure reason when the venue refused, ``None`` when it
+        was accepted -- or when it is still unconfirmed at the timeout, which
+        stays a success because the order may well be live.
+        """
+        limit = self.SUBMISSION_TIMEOUT_SEC if timeout is None else timeout
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + limit
+        while True:
+            order = self._tracked_order(connector, client_order_id)
+            # Absence is not an answer. A connector registers an order with its
+            # tracker asynchronously, and a refused one lands there *after* the
+            # refusal -- returning early on the first miss is exactly what let a
+            # refusal through as a success.
+            if order is not None:
+                state = order.current_state
+                if state == OrderState.FAILED:
+                    # InFlightOrder does not keep the venue's text (no
+                    # ``last_failure_reason`` on this version), so read it when
+                    # a connector does expose one and otherwise say plainly that
+                    # the venue refused. The connector has already logged the
+                    # detail at its own level.
+                    reason = getattr(order, "last_failure_reason", None) or getattr(
+                        order, "error_message", None
+                    )
+                    return reason or "the venue rejected the order"
+                if state != OrderState.PENDING_CREATE:
+                    return None
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                # Never tracked: the caller's id is all there is to go on.
+                return None
+            await asyncio.sleep(min(self.SUBMISSION_POLL_SEC, remaining))
+
     async def place_trade(self, account_name: str, connector_name: str, trading_pair: str,
                          trade_type: TradeType, amount: Decimal, order_type: OrderType = OrderType.LIMIT,
                          price: Optional[Decimal] = None, position_action: PositionAction = PositionAction.OPEN) -> str:
@@ -978,6 +1061,20 @@ class AccountsService:
                     order_type=order_type,
                     price=price or Decimal("1"),
                     position_action=position_action
+                )
+
+            failure = await self._await_submission(connector, order_id)
+            if failure:
+                logger.error(
+                    f"{connector_name} refused the {trade_type.name} order for "
+                    f"{quantized_amount} {trading_pair} (Account: {account_name}): {failure}"
+                )
+                raise HTTPException(
+                    status_code=502,
+                    detail=(
+                        f"{connector_name} refused the {trade_type.name} order for "
+                        f"{trading_pair}: {failure}"
+                    ),
                 )
 
             logger.info(f"Placed {trade_type} order for {amount} {trading_pair} on {connector_name} (Account: {account_name}). Order ID: {order_id}")
