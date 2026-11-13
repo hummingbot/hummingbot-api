@@ -12,12 +12,11 @@ minimal noise and predictable hedge behavior.
 from decimal import Decimal
 from typing import List
 
-from pydantic import Field
-
 from hummingbot.core.data_type.common import MarketDict, PositionAction, PositionMode, TradeType
 from hummingbot.strategy_v2.controllers import ControllerBase, ControllerConfigBase
 from hummingbot.strategy_v2.executors.order_executor.data_types import ExecutionStrategy, OrderExecutorConfig
 from hummingbot.strategy_v2.models.executor_actions import CreateExecutorAction, ExecutorAction
+from pydantic import Field
 
 
 class HedgeAssetConfig(ControllerConfigBase):
@@ -84,9 +83,13 @@ class HedgeAssetController(ControllerBase):
         """
         Compute current spot balance, hedge position size, current hedge ratio, last hedge time, current hedge gap quote
         """
-        current_price = self.market_data_provider.get_price_by_type(self.config.hedge_connector_name, self.config.hedge_trading_pair)
+        current_price = self.market_data_provider.get_price_by_type(
+            self.config.hedge_connector_name, self.config.hedge_trading_pair
+        )
         spot_balance = self.market_data_provider.get_balance(self.config.spot_connector_name, self.config.asset_to_hedge)
-        perp_available_balance = self.market_data_provider.get_available_balance(self.config.hedge_connector_name, self.perp_collateral_asset)
+        perp_available_balance = self.market_data_provider.get_available_balance(
+            self.config.hedge_connector_name, self.perp_collateral_asset
+        )
         hedge_position_size = self.hedge_position_size
         hedge_position_gap = spot_balance * self.config.hedge_ratio - hedge_position_size
         hedge_position_gap_quote = hedge_position_gap * current_price
@@ -159,7 +162,9 @@ class HedgeAssetController(ControllerBase):
         lines.append(f"  = Target Hedge:    {theoretical_hedge:>10.4f} {self.config.asset_to_hedge}")
         lines.append(f"  - Current Hedge:   {hedge_position:>10.4f} {self.config.asset_to_hedge}")
         lines.append(f"  {'─' * 61}")
-        lines.append(f"  = Gap:             {gap:>10.4f} {self.config.asset_to_hedge}  ({gap_quote:>8.2f} {self.perp_collateral_asset})")
+        lines.append(
+            f"  = Gap:             {gap:>10.4f} {self.config.asset_to_hedge}  ({gap_quote:>8.2f} {self.perp_collateral_asset})"
+        )
         lines.append("")
         lines.append(f"  Perp Balance:      {perp_balance:>10.2f} {self.perp_collateral_asset}")
         lines.append("")

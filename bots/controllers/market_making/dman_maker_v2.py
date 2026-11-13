@@ -82,7 +82,10 @@ class DManMakerV2(MarketMakingControllerBase):
     def executors_to_refresh(self) -> List[ExecutorAction]:
         executors_to_refresh = self.filter_executors(
             executors=self.executors_info,
-            filter_func=lambda x: not x.is_trading and x.is_active and (self.order_level_refresh_condition(x) or self.first_level_refresh_condition(x)))
+            filter_func=lambda x: (
+                not x.is_trading and x.is_active
+                and (self.order_level_refresh_condition(x) or self.first_level_refresh_condition(x))
+            ))
         return [StopExecutorAction(
             controller_id=self.config.id,
             executor_id=executor.id) for executor in executors_to_refresh]

@@ -4,7 +4,8 @@ Pydantic models for the connectors router.
 These models define the request/response schemas for connector-related endpoints.
 """
 
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Optional
+
 from pydantic import BaseModel, Field
 
 

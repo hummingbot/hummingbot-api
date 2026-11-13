@@ -3,8 +3,6 @@ from decimal import Decimal
 from typing import Dict, List, Optional, Set
 
 import pandas as pd
-from pydantic import Field, field_validator
-
 from hummingbot.client.ui.interface_utils import format_df_for_printout
 from hummingbot.core.data_type.common import PriceType, TradeType
 from hummingbot.core.gateway.gateway_http_client import GatewayHttpClient
@@ -12,6 +10,7 @@ from hummingbot.strategy_v2.controllers.controller_base import ControllerBase, C
 from hummingbot.strategy_v2.executors.data_types import ConnectorPair
 from hummingbot.strategy_v2.executors.xemm_executor.data_types import XEMMExecutorConfig
 from hummingbot.strategy_v2.models.executor_actions import CreateExecutorAction, ExecutorAction
+from pydantic import Field, field_validator
 
 
 class XEMMMultipleLevelsConfig(ControllerConfigBase):
@@ -31,12 +30,14 @@ class XEMMMultipleLevelsConfig(ControllerConfigBase):
     buy_levels_targets_amount: List[List[Decimal]] = Field(
         default="0.003,10-0.006,20-0.009,30",
         json_schema_extra={
-            "prompt": "Enter the buy levels targets with the following structure: (target_profitability1,amount1-target_profitability2,amount2): ",
+            "prompt": "Enter the buy levels targets with the following structure: "
+                      "(target_profitability1,amount1-target_profitability2,amount2): ",
             "prompt_on_new": True})
     sell_levels_targets_amount: List[List[Decimal]] = Field(
         default="0.003,10-0.006,20-0.009,30",
         json_schema_extra={
-            "prompt": "Enter the sell levels targets with the following structure: (target_profitability1,amount1-target_profitability2,amount2): ",
+            "prompt": "Enter the sell levels targets with the following structure: "
+                      "(target_profitability1,amount1-target_profitability2,amount2): ",
             "prompt_on_new": True})
     min_profitability: Decimal = Field(
         default=0.003,
@@ -145,7 +146,9 @@ class XEMMMultipleLevels(ControllerBase):
 
     def determine_executor_actions(self) -> List[ExecutorAction]:
         executor_actions = []
-        mid_price = self.market_data_provider.get_price_by_type(self.config.maker_connector, self.config.maker_trading_pair, PriceType.MidPrice)
+        mid_price = self.market_data_provider.get_price_by_type(
+            self.config.maker_connector, self.config.maker_trading_pair, PriceType.MidPrice
+        )
         active_buy_executors = self.filter_executors(
             executors=self.executors_info,
             filter_func=lambda e: not e.is_done and e.config.maker_side == TradeType.BUY

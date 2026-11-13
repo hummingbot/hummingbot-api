@@ -1,9 +1,6 @@
 from decimal import Decimal
 from typing import List, Optional, Tuple, Union
 
-from pydantic import Field, field_validator
-from pydantic_core.core_schema import ValidationInfo
-
 from hummingbot.core.data_type.common import MarketDict, OrderType, PositionMode, PriceType, TradeType
 from hummingbot.data_feed.candles_feed.data_types import CandlesConfig
 from hummingbot.strategy_v2.controllers.controller_base import ControllerBase, ControllerConfigBase
@@ -12,6 +9,8 @@ from hummingbot.strategy_v2.executors.order_executor.data_types import Execution
 from hummingbot.strategy_v2.executors.position_executor.data_types import PositionExecutorConfig, TripleBarrierConfig
 from hummingbot.strategy_v2.models.executor_actions import CreateExecutorAction, ExecutorAction, StopExecutorAction
 from hummingbot.strategy_v2.models.executors import CloseType
+from pydantic import Field, field_validator
+from pydantic_core.core_schema import ValidationInfo
 
 
 class PMMAdjustedConfig(ControllerConfigBase):
@@ -43,7 +42,8 @@ class PMMAdjustedConfig(ControllerConfigBase):
         default=Decimal("0.05"),
         json_schema_extra={
             "prompt_on_new": True,
-            "prompt": "Enter the maximum quote exposure percentage around mid price (e.g., 0.05 for 5% of total quote allocation):",
+            "prompt": "Enter the maximum quote exposure percentage around mid price "
+                      "(e.g., 0.05 for 5% of total quote allocation):",
         }
     )
     target_base_pct: Decimal = Field(
@@ -88,7 +88,8 @@ class PMMAdjustedConfig(ControllerConfigBase):
         validate_default=True,
         json_schema_extra={
             "prompt_on_new": True, "is_updatable": True,
-            "prompt": "Enter a comma-separated list of buy amounts as percentages (e.g., '50, 50'), or leave blank to distribute equally:",
+            "prompt": "Enter a comma-separated list of buy amounts as percentages (e.g., '50, 50'), "
+                      "or leave blank to distribute equally:",
         }
     )
     sell_amounts_pct: Union[List[Decimal], None] = Field(
@@ -96,7 +97,8 @@ class PMMAdjustedConfig(ControllerConfigBase):
         validate_default=True,
         json_schema_extra={
             "prompt_on_new": True, "is_updatable": True,
-            "prompt": "Enter a comma-separated list of sell amounts as percentages (e.g., '50, 50'), or leave blank to distribute equally:",
+            "prompt": "Enter a comma-separated list of sell amounts as percentages (e.g., '50, 50'), "
+                      "or leave blank to distribute equally:",
         }
     )
     executor_refresh_time: int = Field(
@@ -220,13 +222,18 @@ class PMMAdjustedConfig(ControllerConfigBase):
             time_limit_order_type=OrderType.MARKET  # Defaulting to MARKET as per requirement
         )
 
-    def update_parameters(self, trade_type: TradeType, new_spreads: Union[List[float], str], new_amounts_pct: Optional[Union[List[int], str]] = None):
+    def update_parameters(
+        self, trade_type: TradeType, new_spreads: Union[List[float], str],
+        new_amounts_pct: Optional[Union[List[int], str]] = None
+    ):
         spreads_field = 'buy_spreads' if trade_type == TradeType.BUY else 'sell_spreads'
         amounts_pct_field = 'buy_amounts_pct' if trade_type == TradeType.BUY else 'sell_amounts_pct'
 
         setattr(self, spreads_field, self.parse_spreads(new_spreads))
         if new_amounts_pct is not None:
-            setattr(self, amounts_pct_field, self.parse_and_validate_amounts(new_amounts_pct, self.__dict__, self.__fields__[amounts_pct_field]))
+            setattr(self, amounts_pct_field, self.parse_and_validate_amounts(
+                new_amounts_pct, self.__dict__, self.__fields__[amounts_pct_field]
+            ))
         else:
             setattr(self, amounts_pct_field, [1 for _ in getattr(self, spreads_field)])
 
@@ -360,7 +367,10 @@ class PMMAdjusted(ControllerBase):
     def get_levels_to_execute(self) -> List[str]:
         working_levels = self.filter_executors(
             executors=self.executors_info,
-            filter_func=lambda x: x.is_active or (x.close_type == CloseType.STOP_LOSS and self.market_data_provider.time() - x.close_timestamp < self.config.cooldown_time)
+            filter_func=lambda x: x.is_active or (
+                x.close_type == CloseType.STOP_LOSS
+                and self.market_data_provider.time() - x.close_timestamp < self.config.cooldown_time
+            )
         )
         working_levels_ids = [executor.custom_info["level_id"] for executor in working_levels]
         return self.get_not_active_levels_ids(working_levels_ids)
@@ -377,7 +387,10 @@ class PMMAdjusted(ControllerBase):
     def executors_to_refresh(self) -> List[ExecutorAction]:
         executors_to_refresh = self.filter_executors(
             executors=self.executors_info,
-            filter_func=lambda x: not x.is_trading and x.is_active and self.market_data_provider.time() - x.timestamp > self.config.executor_refresh_time)
+            filter_func=lambda x: (
+                not x.is_trading and x.is_active
+                and self.market_data_provider.time() - x.timestamp > self.config.executor_refresh_time
+            ))
         return [StopExecutorAction(
             controller_id=self.config.id,
             keep_position=True,
@@ -390,7 +403,10 @@ class PMMAdjusted(ControllerBase):
         """
         executors_to_early_stop = self.filter_executors(
             executors=self.executors_info,
-            filter_func=lambda x: x.is_active and x.is_trading and self.market_data_provider.time() - x.custom_info["open_order_last_update"] > self.config.cooldown_time)
+            filter_func=lambda x: (
+                x.is_active and x.is_trading
+                and self.market_data_provider.time() - x.custom_info["open_order_last_update"] > self.config.cooldown_time
+            ))
         return [StopExecutorAction(
             controller_id=self.config.id,
             keep_position=True,
@@ -411,7 +427,10 @@ class PMMAdjusted(ControllerBase):
             position_amount = position_held.amount
             current_base_pct = position_held.amount_quote / self.config.total_amount_quote
             deviation = (target_position - position_held.amount_quote) / target_position
-            unrealized_pnl_pct = position_held.unrealized_pnl_quote / position_held.amount_quote if position_held.amount_quote != 0 else Decimal("0")
+            unrealized_pnl_pct = (
+                position_held.unrealized_pnl_quote / position_held.amount_quote
+                if position_held.amount_quote != 0 else Decimal("0")
+            )
         else:
             position_amount = 0
             current_base_pct = 0
@@ -433,8 +452,13 @@ class PMMAdjusted(ControllerBase):
             last_candle = candles.iloc[-1]
             return Decimal(last_candle['close'])
         else:
-            self.logger().warning(f"No candles data available for {self.config.candles_connector_name} - {self.config.candles_trading_pair} at {self.config.candles_interval}. Using last known price.")
-            return Decimal(self.market_data_provider.get_price_by_type(self.config.connector_name, self.config.trading_pair, PriceType.MidPrice))
+            self.logger().warning(
+                f"No candles data available for {self.config.candles_connector_name} - "
+                f"{self.config.candles_trading_pair} at {self.config.candles_interval}. Using last known price."
+            )
+            return Decimal(self.market_data_provider.get_price_by_type(
+                self.config.connector_name, self.config.trading_pair, PriceType.MidPrice
+            ))
 
     def get_executor_config(self, level_id: str, price: Decimal, amount: Decimal):
         """
