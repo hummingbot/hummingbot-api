@@ -112,12 +112,28 @@ class AsyncDatabaseManager:
                         await conn.execute(text(statement))
                     logger.info(f"Migration: added {column} to {table}")
             except Exception as e:
-                # Column-already-exists is expected on repeat startups
-                err_msg = str(e).lower()
-                if "already exists" in err_msg or "duplicate column" in err_msg:
+                if self._is_duplicate_column_error(e):
+                    # Column-already-exists is expected on repeat startups
                     logger.debug(f"Migration check for {table}.{column}: {e}")
                 else:
-                    logger.warning(f"Unexpected migration error for {table}.{column}: {e}")
+                    message = f"Migration failed for {table}.{column}: {e}"
+                    logger.error(message)
+                    raise RuntimeError(message) from e
+
+    @staticmethod
+    def _is_duplicate_column_error(e: Exception) -> bool:
+        """True for Postgres' column-already-exists, however the driver wraps it.
+
+        SQLAlchemy exposes the driver's own exception via `.orig`; match on that first
+        since the string test below also matches the statement text, so an ALTER that
+        mentions a type or index name containing "already exists" would otherwise be
+        misclassified as benign.
+        """
+        orig = getattr(e, "orig", None)
+        if orig is not None:
+            return orig.__class__.__name__ == "DuplicateColumnError"
+        err_msg = str(e).lower()
+        return "already exists" in err_msg or "duplicate column" in err_msg
 
     async def _drop_hummingbot_tables(self, conn):
         """Drop Hummingbot's native database tables since we use custom ones."""

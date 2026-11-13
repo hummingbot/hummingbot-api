@@ -1,4 +1,4 @@
-.PHONY: setup run deploy stop install uninstall build install-pre-commit tailscale-status doctor reset emqx-auth emqx-auth-reset emqx-audit
+.PHONY: setup run deploy stop install uninstall build install-pre-commit tailscale-status doctor reset emqx-auth emqx-auth-reset emqx-audit test
 
 SETUP_SENTINEL := .setup-complete
 
@@ -100,7 +100,13 @@ EMQX_AUTH_FILE := .emqx/auth-bootstrap.csv
 # has the account — run `make emqx-auth-reset` to drop the volume and re-seed.
 emqx-auth:
 	@set -a; [ -f .env ] && . ./.env; set +a; \
-	user="$${BROKER_USERNAME:-admin}"; pass="$${BROKER_PASSWORD:-password}"; \
+	if [ -z "$$BROKER_USERNAME" ] || [ -z "$$BROKER_PASSWORD" ]; then \
+		echo "[ERROR] BROKER_USERNAME/BROKER_PASSWORD are not set in .env" \
+			"— run 'make setup' (setup.sh) to generate a strong broker credential;" \
+			"refusing to seed the broker with a well-known default." >&2; \
+		exit 1; \
+	fi; \
+	user="$$BROKER_USERNAME"; pass="$$BROKER_PASSWORD"; \
 	bad=0; \
 	case "$$user$$pass" in *,*) bad=1 ;; esac; \
 	[ "$$(printf '%s' "$$user$$pass" | wc -l)" -eq 0 ] || bad=1; \
@@ -218,6 +224,11 @@ uninstall:
 install-pre-commit:
 	conda run -n hummingbot-api pip install pre-commit
 	conda run -n hummingbot-api pre-commit install
+
+# Run the test suite (same invocation .github/workflows/ci.yml runs)
+# Excludes @pytest.mark.integration tests, which need a live Gateway/API.
+test:
+	conda run --no-capture-output -n hummingbot-api python -m pytest -q -m "not integration"
 
 # Build Docker image
 build:

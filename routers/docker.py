@@ -18,6 +18,25 @@ _STATUS_BY_ERROR = {
 }
 
 
+def _require_api_managed_container(container_name: str) -> str:
+    """Refuse a container this API did not create, by the only marker that actually
+    exists: its instance directory. Container names carry no prefix, so this is the
+    one check shared by remove/stop/start -- a traversing name is refused here too,
+    before any of them reach the daemon.
+    """
+    try:
+        instance_dir = DockerService.resolve_instance_dir(container_name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not os.path.isdir(instance_dir):
+        raise HTTPException(
+            status_code=400,
+            detail=f"This endpoint only removes bot containers managed by this API. Container "
+                   f"'{container_name}' has no instance directory at '{instance_dir}'."
+        )
+    return instance_dir
+
+
 def _or_http_error(result):
     """Turn a DockerService failure into a status code instead of a 200 with an error body.
 
@@ -110,13 +129,16 @@ async def exited_containers(name_filter: str = None, docker_service: DockerServi
 @router.post("/clean-exited-containers")
 async def clean_exited_containers(docker_service: DockerService = Depends(get_docker_service)):
     """
-    Remove all exited Docker containers to free up space.
+    Remove this API's own exited bot containers to free up space.
+
+    NOTE: Only removes containers that own a bots/instances/<name> directory. An
+    unrelated exited container on the shared Docker daemon is left in place.
 
     Args:
         docker_service: Docker service dependency
 
     Returns:
-        {"success": true, "message": ...} once the exited containers are pruned
+        {"success": true, "message": ...} once this API's exited bot containers are removed
 
     Raises:
         HTTPException: 502 if the Docker daemon refused or could not be reached
@@ -153,18 +175,7 @@ async def remove_container(
         HTTPException: 400 if the container is not a bot managed by this API
         HTTPException: 500 if archiving fails
     """
-    # Validate that this container belongs to a bot this API created, by the only marker that
-    # actually exists: its instance directory. Container names carry no prefix.
-    try:
-        instance_dir = DockerService.resolve_instance_dir(container_name)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    if not os.path.isdir(instance_dir):
-        raise HTTPException(
-            status_code=400,
-            detail=f"This endpoint only removes bot containers managed by this API. Container "
-                   f"'{container_name}' has no instance directory at '{instance_dir}'."
-        )
+    instance_dir = _require_api_managed_container(container_name)
 
     # Remove the container
     # Deliberately not mapped to a status code the way stop/start are: this route also
@@ -188,7 +199,10 @@ async def remove_container(
 @router.post("/stop-container/{container_name}")
 async def stop_container(container_name: str, docker_service: DockerService = Depends(get_docker_service)):
     """
-    Stop a running Docker container.
+    Stop a running Docker container created by this API.
+
+    NOTE: This endpoint only works with containers this API manages -- see
+    remove_container's note on how ownership is determined.
 
     Args:
         container_name: Name of the container to stop
@@ -198,16 +212,21 @@ async def stop_container(container_name: str, docker_service: DockerService = De
         {"success": true, "message": ...} once the container is stopped
 
     Raises:
+        HTTPException: 400 if the container is not a bot managed by this API
         HTTPException: 404 if no container by that name exists
         HTTPException: 502 if the Docker daemon refused or could not be reached
     """
+    _require_api_managed_container(container_name)
     return _or_http_error(docker_service.stop_container(container_name))
 
 
 @router.post("/start-container/{container_name}")
 async def start_container(container_name: str, docker_service: DockerService = Depends(get_docker_service)):
     """
-    Start a stopped Docker container.
+    Start a stopped Docker container created by this API.
+
+    NOTE: This endpoint only works with containers this API manages -- see
+    remove_container's note on how ownership is determined.
 
     Args:
         container_name: Name of the container to start
@@ -217,9 +236,11 @@ async def start_container(container_name: str, docker_service: DockerService = D
         {"success": true, "message": ...} once the container is started
 
     Raises:
+        HTTPException: 400 if the container is not a bot managed by this API
         HTTPException: 404 if no container by that name exists
         HTTPException: 502 if the Docker daemon refused or could not be reached
     """
+    _require_api_managed_container(container_name)
     return _or_http_error(docker_service.start_container(container_name))
 
 

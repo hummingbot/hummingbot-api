@@ -111,7 +111,9 @@ class QuantumGridAllocator(ControllerBase):
         self.initialize_rate_sources()
 
     def initialize_rate_sources(self):
-        fee_pair = ConnectorPair(connector_name=self.config.connector_name, trading_pair=f"{self.config.fee_asset}-{self.config.quote_asset}")
+        fee_pair = ConnectorPair(
+            connector_name=self.config.connector_name, trading_pair=f"{self.config.fee_asset}-{self.config.quote_asset}"
+        )
         self.market_data_provider.initialize_rate_sources([fee_pair])
 
     async def update_processed_data(self):
@@ -260,7 +262,8 @@ class QuantumGridAllocator(ControllerBase):
                         f"{asset:<8} {config.side.name:<6} | "
                         f"${total_amount:<9.2f} ${position_size:<9.2f} ${volume:<9.2f} | "
                         f"${pnl:>+9.2f} ${realized_pnl_quote:>+9.2f} ${fees:>9.2f} | "
-                        f"{config.start_price:<10.4f} {current_price:<10.4f} {config.end_price:<10.4f} {config.limit_price:<10.4f}"
+                        f"{config.start_price:<10.4f} {current_price:<10.4f} {config.end_price:<10.4f} "
+                        f"{config.limit_price:<10.4f}"
                     )
 
         status_lines.append("-" * 100 + "\n")
@@ -291,7 +294,10 @@ class QuantumGridAllocator(ControllerBase):
 
             # Calculate dynamic grid value percentage based on deviation
             abs_deviation = abs(deviation)
-            grid_value_pct = self.config.max_grid_value_pct if abs_deviation > self.config.max_deviation else self.config.base_grid_value_pct
+            grid_value_pct = (
+                self.config.max_grid_value_pct if abs_deviation > self.config.max_deviation
+                else self.config.base_grid_value_pct
+            )
 
             self.logger().info(
                 f"{trading_pair} Grid Sizing - "

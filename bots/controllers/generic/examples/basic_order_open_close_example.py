@@ -39,7 +39,9 @@ class BasicOrderOpenClose(ControllerBase):
                 return position
 
     def determine_executor_actions(self) -> list[ExecutorAction]:
-        mid_price = self.market_data_provider.get_price_by_type(self.config.connector_name, self.config.trading_pair, PriceType.MidPrice)
+        mid_price = self.market_data_provider.get_price_by_type(
+            self.config.connector_name, self.config.trading_pair, PriceType.MidPrice
+        )
         if not self.open_order_placed:
             config = OrderExecutorConfig(
                 timestamp=self.market_data_provider.time(),
@@ -57,7 +59,8 @@ class BasicOrderOpenClose(ControllerBase):
                 controller_id=self.config.id,
                 executor_config=config)]
         else:
-            if self.market_data_provider.time() - self.last_timestamp > self.config.close_order_delay and not self.closed_order_placed:
+            time_elapsed = self.market_data_provider.time() - self.last_timestamp
+            if time_elapsed > self.config.close_order_delay and not self.closed_order_placed:
                 current_position = self.get_position(self.config.connector_name, self.config.trading_pair)
                 if current_position is None:
                     self.logger().info("The original position is not found, can close the position")

@@ -763,6 +763,12 @@ TAILSCALE_HOSTNAME=$TAILSCALE_HOSTNAME
 # days. 0 keeps everything forever -- raise it to cap database growth.
 #PERFORMANCE_RETENTION_DAYS=0
 
+# Idempotency-Key claims for POST /trading/orders
+# An IN_FLIGHT claim older than this is swept to FAILED, in seconds.
+#IDEMPOTENCY_IN_FLIGHT_TIMEOUT_SECONDS=300
+# Delete idempotency claims (any state) older than this many days.
+#IDEMPOTENCY_RETENTION_DAYS=7
+
 # Backtesting
 # How many backtests may run at once; further submissions queue. Runs are
 # isolated in separate processes, so this can be raised up to the cores you are
@@ -812,6 +818,9 @@ TAILSCALE_HOSTNAME=$TAILSCALE_HOSTNAME
 # How long a ticker-only connector stays in the background refresh cycle after
 # its last request, in seconds.
 #MARKET_DATA_TICKER_SUBSCRIPTION_TTL=600
+# Max age of an externally pushed price (e.g. Gateway DEX quotes) before it is
+# dropped from the price pool, in seconds.
+#MARKET_DATA_EXTERNAL_PRICE_MAX_AGE=300
 # How often to refresh Hyperliquid HIP-3 (builder-deployed perp dex) tickers, in
 # seconds. Set to 0 to exclude HIP-3 markets.
 #MARKET_DATA_HYPERLIQUID_HIP3_INTERVAL=120

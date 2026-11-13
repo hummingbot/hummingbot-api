@@ -194,8 +194,8 @@ TAILSCALE_HOSTNAME=hummingbot-api   # MagicDNS hostname on your tailnet
 
 These are the settings most deployments touch, not the full list: `config.py` is the authoritative
 list of every setting, its default and what it does. The `.env` that `setup.sh` generates also carries
-the optional `PERFORMANCE_`, `BACKTESTING_`, `MARKET_DATA_`, `CORS_` and `AWS_` groups as commented-out
-lines showing their defaults, so you can see and override them without leaving the file.
+the optional `PERFORMANCE_`, `IDEMPOTENCY_`, `BACKTESTING_`, `MARKET_DATA_`, `CORS_` and `AWS_` groups
+as commented-out lines showing their defaults, so you can see and override them without leaving the file.
 
 Edit `.env` and restart with `make deploy` to apply changes.
 
@@ -281,6 +281,20 @@ curl -u YOUR_USERNAME:YOUR_PASSWORD http://hummingbot-api:8000/
 - **Strategies**: Create and manage trading strategies
 
 Full API documentation at http://localhost:8000/docs
+
+### Idempotent order placement
+
+`POST /trading/orders` accepts an optional `Idempotency-Key` header. Pass one and a retried
+request (socket timeout, load-balancer retry, double-click) is safe: a repeat with the same key
+and the same body replays the original response instead of placing a second order, marked with
+an `Idempotency-Replayed: true` response header. Without the header, nothing changes — every
+existing client keeps working exactly as before.
+
+- Same key, same body, original still placing it → `409` with `Retry-After`. Retry; this is the
+  trade-off that avoids a duplicate order, not a failure.
+- Same key, different body → `422`. The key was reused for a different request.
+- Claims are swept and pruned automatically (`IDEMPOTENCY_IN_FLIGHT_TIMEOUT_SECONDS`,
+  `IDEMPOTENCY_RETENTION_DAYS` — see [Configuration](#configuration)).
 
 ## Development
 

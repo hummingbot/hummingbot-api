@@ -1,12 +1,11 @@
 from typing import List
 
-from pydantic import Field
-
 from hummingbot.client.ui.interface_utils import format_df_for_printout
 from hummingbot.core.data_type.common import MarketDict
 from hummingbot.data_feed.liquidations_feed.liquidations_factory import LiquidationsConfig, LiquidationsFactory
 from hummingbot.strategy_v2.controllers import ControllerBase, ControllerConfigBase
 from hummingbot.strategy_v2.models.executor_actions import ExecutorAction
+from pydantic import Field
 
 
 class LiquidationsMonitorControllerConfig(ControllerConfigBase):
@@ -49,7 +48,9 @@ class LiquidationsMonitorController(ControllerBase):
                 # Get individual trading pair dataframes
                 liquidations_data["individual_dfs"] = {}
                 for trading_pair in self.config.liquidations_trading_pairs:
-                    liquidations_data["individual_dfs"][trading_pair] = self.binance_liquidations_feed.liquidations_df(trading_pair)
+                    liquidations_data["individual_dfs"][trading_pair] = (
+                        self.binance_liquidations_feed.liquidations_df(trading_pair)
+                    )
             except Exception as e:
                 self.logger().error(f"Error getting liquidations data: {e}")
                 liquidations_data["error"] = str(e)

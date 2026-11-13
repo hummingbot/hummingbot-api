@@ -2,9 +2,6 @@ from collections import defaultdict
 from decimal import Decimal
 from typing import Dict, List, Optional, Tuple, Union
 
-from pydantic import Field, field_validator
-from pydantic_core.core_schema import ValidationInfo
-
 from hummingbot.core.data_type.common import (
     MarketDict,
     OrderType,
@@ -20,6 +17,8 @@ from hummingbot.strategy_v2.executors.order_executor.data_types import Execution
 from hummingbot.strategy_v2.executors.position_executor.data_types import PositionExecutorConfig, TripleBarrierConfig
 from hummingbot.strategy_v2.models.executor_actions import CreateExecutorAction, ExecutorAction, StopExecutorAction
 from hummingbot.strategy_v2.utils.common import parse_comma_separated_list, parse_enum_value
+from pydantic import Field, field_validator
+from pydantic_core.core_schema import ValidationInfo
 
 
 class PMMisterConfig(ControllerConfigBase):
@@ -182,7 +181,9 @@ class PMMisterConfig(ControllerConfigBase):
     def triple_barrier_config(self) -> TripleBarrierConfig:
         # Ensure we're passing OrderType enum values, not strings
         open_order_type = self.open_order_type if isinstance(self.open_order_type, OrderType) else OrderType.LIMIT_MAKER
-        take_profit_order_type = self.take_profit_order_type if isinstance(self.take_profit_order_type, OrderType) else OrderType.LIMIT_MAKER
+        take_profit_order_type = (
+            self.take_profit_order_type if isinstance(self.take_profit_order_type, OrderType) else OrderType.LIMIT_MAKER
+        )
 
         return TripleBarrierConfig(
             take_profit=self.take_profit,
@@ -1195,7 +1196,8 @@ class PMMister(ControllerBase):
             f"{self.config.connector_name}:{self.config.trading_pair} @ {current_price:.2f}  "
             f"Alloc: {self.config.portfolio_allocation:.1%}  "
             f"Spread×{self.processed_data.get('spread_multiplier', Decimal('1')):.3f}  "
-            f"Dist: {self.config.price_distance_tolerance:.4%} Ref: {self.config.refresh_tolerance:.4%} (×{self.config.tolerance_scaling})  "
+            f"Dist: {self.config.price_distance_tolerance:.4%} "
+            f"Ref: {self.config.refresh_tolerance:.4%} (×{self.config.tolerance_scaling})  "
             f"Pos Protect: {'ON' if self.config.position_profit_protection else 'OFF'}"
         )
         status.append(f"│ {header_line:<{inner_width}} │")
@@ -1204,7 +1206,10 @@ class PMMister(ControllerBase):
         status.append(f"├{'─' * inner_width}┤")
         status.append(f"│ {'🔄 REAL-TIME CONDITIONS DASHBOARD':<{inner_width}} │")
         status.append(f"├{'─' * col1_width}┬{'─' * col2_width}┬{'─' * col3_width}┬{'─' * col4_width}┬{'─' * col5_width}┤")
-        status.append(f"│ {'COOLDOWNS':<{col1_width}} │ {'PRICE DISTANCES':<{col2_width}} │ {'EFFECTIVIZATION':<{col3_width}} │ {'REFRESH TRACKING':<{col4_width}} │ {'EXECUTION':<{col5_width}} │")
+        status.append(
+            f"│ {'COOLDOWNS':<{col1_width}} │ {'PRICE DISTANCES':<{col2_width}} │ {'EFFECTIVIZATION':<{col3_width}} │ "
+            f"{'REFRESH TRACKING':<{col4_width}} │ {'EXECUTION':<{col5_width}} │"
+        )
         status.append(f"├{'─' * col1_width}┼{'─' * col2_width}┼{'─' * col3_width}┼{'─' * col4_width}┼{'─' * col5_width}┤")
 
         buy_cooldown = cooldown_status.get('buy', {})
@@ -1229,7 +1234,9 @@ class PMMister(ControllerBase):
                 distance = (current_price - analysis["max_price"]) / current_price
                 current_sell_distance = f"({distance:.3%})"
 
-        violation_marker = " ⚠️" if (current_buy_distance and "(0.0" in current_buy_distance) or (current_sell_distance and "(0.0" in current_sell_distance) else ""
+        has_buy_violation = current_buy_distance and "(0.0" in current_buy_distance
+        has_sell_violation = current_sell_distance and "(0.0" in current_sell_distance
+        violation_marker = " ⚠️" if has_buy_violation or has_sell_violation else ""
 
         dist_l0 = self.config.get_price_distance_level_tolerance(0)
         dist_l1 = self.config.get_price_distance_level_tolerance(1) if len(self.config.buy_spreads) > 1 else None
@@ -1262,8 +1269,12 @@ class PMMister(ControllerBase):
             f"Threshold: {self.config.executor_refresh_time}s"
         ]
 
-        can_execute_buy = len([lc for lc in level_conditions.values() if lc.get('trade_type') == 'BUY' and lc.get('can_execute')])
-        can_execute_sell = len([lc for lc in level_conditions.values() if lc.get('trade_type') == 'SELL' and lc.get('can_execute')])
+        can_execute_buy = len([
+            lc for lc in level_conditions.values() if lc.get('trade_type') == 'BUY' and lc.get('can_execute')
+        ])
+        can_execute_sell = len([
+            lc for lc in level_conditions.values() if lc.get('trade_type') == 'SELL' and lc.get('can_execute')
+        ])
         total_buy_levels = len(self.config.buy_spreads)
         total_sell_levels = len(self.config.sell_spreads)
 
@@ -1274,8 +1285,14 @@ class PMMister(ControllerBase):
             ""
         ]
 
-        for cool_line, price_line, effect_line, refresh_line, exec_line in zip_longest(cooldown_info, price_info, effect_info, refresh_info, execution_info, fillvalue=""):
-            status.append(f"│ {cool_line:<{col1_width}} │ {price_line:<{col2_width}} │ {effect_line:<{col3_width}} │ {refresh_line:<{col4_width}} │ {exec_line:<{col5_width}} │")
+        status_columns = zip_longest(
+            cooldown_info, price_info, effect_info, refresh_info, execution_info, fillvalue=""
+        )
+        for cool_line, price_line, effect_line, refresh_line, exec_line in status_columns:
+            status.append(
+                f"│ {cool_line:<{col1_width}} │ {price_line:<{col2_width}} │ {effect_line:<{col3_width}} │ "
+                f"{refresh_line:<{col4_width}} │ {exec_line:<{col5_width}} │"
+            )
 
         # LEVEL-BY-LEVEL ANALYSIS
         status.append(f"├{'─' * inner_width}┤")
@@ -1323,8 +1340,14 @@ class PMMister(ControllerBase):
 
         tp_active = self.config.global_tp_enabled and base_pct >= self._get_tp_activation_threshold()
         sl_active = self.config.global_sl_enabled and base_pct >= self._get_sl_activation_threshold()
-        tp_status = "ACTIVE" if tp_active else ("OFF" if not self.config.global_tp_enabled else f"from {self.config.global_tp_activation_from}")
-        sl_status = "ACTIVE" if sl_active else ("OFF" if not self.config.global_sl_enabled else f"from {self.config.global_sl_activation_from}")
+        tp_status = (
+            "ACTIVE" if tp_active
+            else ("OFF" if not self.config.global_tp_enabled else f"from {self.config.global_tp_activation_from}")
+        )
+        sl_status = (
+            "ACTIVE" if sl_active
+            else ("OFF" if not self.config.global_sl_enabled else f"from {self.config.global_sl_activation_from}")
+        )
 
         # Fee and PnL data
         position_fees = self.processed_data.get('position_cum_fees', Decimal('0'))
@@ -1348,7 +1371,9 @@ class PMMister(ControllerBase):
             status.append(f"│ {pos_line:<{half_width}} │ {pnl_line:<{half_width}} │")
 
         status.append(f"├{'─' * inner_width}┤")
-        status.extend(self._format_position_visualization(base_pct, target_pct, min_pct, max_pct, skew_pct, pnl, bar_width, inner_width))
+        status.extend(self._format_position_visualization(
+            base_pct, target_pct, min_pct, max_pct, skew_pct, pnl, bar_width, inner_width
+        ))
 
         status.append(f"╘{'═' * inner_width}╛")
 
@@ -1554,7 +1579,10 @@ class PMMister(ControllerBase):
 
         pnl_sign = "+" if pnl > 0 else ""
         pnl_status = f"{pnl_sign}{pnl:.2%}"
-        lines.append(f"│ Position PnL: [{pnl_bar}] {pnl_status} (S={-self.config.global_stop_loss:.2%} T={self.config.global_take_profit:.2%}) │")
+        lines.append(
+            f"│ Position PnL: [{pnl_bar}] {pnl_status} "
+            f"(S={-self.config.global_stop_loss:.2%} T={self.config.global_take_profit:.2%}) │"
+        )
 
         return lines
 

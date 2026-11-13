@@ -1,14 +1,13 @@
 from typing import List
 
 import pandas_ta as ta  # noqa: F401
-from pydantic import Field, field_validator
-from pydantic_core.core_schema import ValidationInfo
-
 from hummingbot.data_feed.candles_feed.data_types import CandlesConfig
 from hummingbot.strategy_v2.controllers.directional_trading_controller_base import (
     DirectionalTradingControllerBase,
     DirectionalTradingControllerConfigBase,
 )
+from pydantic import Field, field_validator
+from pydantic_core.core_schema import ValidationInfo
 
 
 class MACDBBV1ControllerConfig(DirectionalTradingControllerConfigBase):

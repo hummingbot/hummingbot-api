@@ -2,15 +2,14 @@ from decimal import Decimal
 from typing import List
 
 import pandas_ta as ta  # noqa: F401
-from pydantic import Field, field_validator
-from pydantic_core.core_schema import ValidationInfo
-
 from hummingbot.data_feed.candles_feed.data_types import CandlesConfig
 from hummingbot.strategy_v2.controllers.market_making_controller_base import (
     MarketMakingControllerBase,
     MarketMakingControllerConfigBase,
 )
 from hummingbot.strategy_v2.executors.position_executor.data_types import PositionExecutorConfig
+from pydantic import Field, field_validator
+from pydantic_core.core_schema import ValidationInfo
 
 
 class PMMDynamicControllerConfig(MarketMakingControllerConfigBase):

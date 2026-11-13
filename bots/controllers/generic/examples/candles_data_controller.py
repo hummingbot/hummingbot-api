@@ -2,12 +2,11 @@ from typing import List
 
 import pandas as pd
 import pandas_ta as ta  # noqa: F401
-from pydantic import Field, field_validator
-
 from hummingbot.core.data_type.common import MarketDict
 from hummingbot.data_feed.candles_feed.data_types import CandlesConfig
 from hummingbot.strategy_v2.controllers import ControllerBase, ControllerConfigBase
 from hummingbot.strategy_v2.models.executor_actions import ExecutorAction
+from pydantic import Field, field_validator
 
 
 class CandlesDataControllerConfig(ControllerConfigBase):
@@ -151,7 +150,11 @@ class CandlesDataController(ControllerBase):
                     candles_df["timestamp"] = pd.to_datetime(candles_df["timestamp"], unit="s")
 
                     # Display candles info
-                    lines.extend([f"\n[{i + 1}] {candle_config.connector.upper()} | {candle_config.trading_pair} | {candle_config.interval}"])
+                    header = (
+                        f"\n[{i + 1}] {candle_config.connector.upper()} | "
+                        f"{candle_config.trading_pair} | {candle_config.interval}"
+                    )
+                    lines.extend([header])
                     lines.extend(["-" * 80])
 
                     # Show last 5 rows with basic columns (OHLC + volume)
@@ -188,7 +191,11 @@ class CandlesDataController(ControllerBase):
 
                     lines.extend([f"    {current_price}"])
                 else:
-                    lines.extend([f"\n[{i + 1}] {candle_config.connector.upper()} | {candle_config.trading_pair} | {candle_config.interval}"])
+                    header = (
+                        f"\n[{i + 1}] {candle_config.connector.upper()} | "
+                        f"{candle_config.trading_pair} | {candle_config.interval}"
+                    )
+                    lines.extend([header])
                     lines.extend(["    No data available yet..."])
         else:
             lines.extend(["\n⏳ Waiting for candles data to be ready..."])

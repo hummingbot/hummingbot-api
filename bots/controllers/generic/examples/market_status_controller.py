@@ -1,17 +1,18 @@
 from typing import List
 
 import pandas as pd
-from pydantic import Field
-
 from hummingbot.core.data_type.common import MarketDict, PriceType
 from hummingbot.strategy_v2.controllers import ControllerBase, ControllerConfigBase
 from hummingbot.strategy_v2.models.executor_actions import ExecutorAction
+from pydantic import Field
 
 
 class MarketStatusControllerConfig(ControllerConfigBase):
     controller_name: str = "examples.market_status_controller"
     exchanges: list = Field(default=["binance_paper_trade", "kucoin_paper_trade", "gate_io_paper_trade"])
-    trading_pairs: list = Field(default=["ETH-USDT", "BTC-USDT", "POL-USDT", "AVAX-USDT", "WLD-USDT", "DOGE-USDT", "SHIB-USDT", "XRP-USDT", "SOL-USDT"])
+    trading_pairs: list = Field(default=[
+        "ETH-USDT", "BTC-USDT", "POL-USDT", "AVAX-USDT", "WLD-USDT", "DOGE-USDT", "SHIB-USDT", "XRP-USDT", "SOL-USDT"
+    ])
 
     def update_markets(self, markets: MarketDict) -> MarketDict:
         # Add all combinations of exchanges and trading pairs
@@ -99,8 +100,12 @@ class MarketStatusController(ControllerBase):
                         try:
                             price_plus_1 = mid_price * 1.01
                             price_minus_1 = mid_price * 0.99
-                            volume_plus_1 = self.market_data_provider.get_volume_for_price(exchange, trading_pair, float(price_plus_1), True)
-                            volume_minus_1 = self.market_data_provider.get_volume_for_price(exchange, trading_pair, float(price_minus_1), False)
+                            volume_plus_1 = self.market_data_provider.get_volume_for_price(
+                                exchange, trading_pair, float(price_plus_1), True
+                            )
+                            volume_minus_1 = self.market_data_provider.get_volume_for_price(
+                                exchange, trading_pair, float(price_minus_1), False
+                            )
                         except Exception:
                             volume_plus_1 = "N/A"
                             volume_minus_1 = "N/A"

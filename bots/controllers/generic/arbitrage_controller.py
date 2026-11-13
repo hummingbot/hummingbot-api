@@ -2,7 +2,6 @@ from decimal import Decimal
 from typing import List, Optional
 
 import pandas as pd
-
 from hummingbot.client.ui.interface_utils import format_df_for_printout
 from hummingbot.core.data_type.common import MarketDict
 from hummingbot.core.gateway.gateway_http_client import GatewayHttpClient
@@ -24,7 +23,8 @@ class ArbitrageControllerConfig(ControllerConfigBase):
     quote_conversion_asset: str = "USDT"
 
     def update_markets(self, markets: MarketDict) -> MarketDict:
-        return [markets.add_or_update(cp.connector_name, cp.trading_pair) for cp in [self.exchange_pair_1, self.exchange_pair_2]][-1]
+        exchange_pairs = [self.exchange_pair_1, self.exchange_pair_2]
+        return [markets.add_or_update(cp.connector_name, cp.trading_pair) for cp in exchange_pairs][-1]
 
 
 class ArbitrageController(ControllerBase):
@@ -167,7 +167,8 @@ class ArbitrageController(ControllerBase):
                 controller_id=self.config.id)
         except Exception as e:
             self.logger().error(
-                f"Error creating executor to buy on {buying_exchange_pair.connector_name} and sell on {selling_exchange_pair.connector_name}, {e}")
+                f"Error creating executor to buy on {buying_exchange_pair.connector_name} "
+                f"and sell on {selling_exchange_pair.connector_name}, {e}")
 
     def update_arbitrage_stats(self):
         closed_executors = [e for e in self.executors_info if e.status == RunnableStatus.TERMINATED]

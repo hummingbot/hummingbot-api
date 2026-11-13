@@ -1,10 +1,9 @@
 from typing import List
 
-from pydantic import Field
-
 from hummingbot.core.data_type.common import MarketDict, PriceType
 from hummingbot.strategy_v2.controllers import ControllerBase, ControllerConfigBase
 from hummingbot.strategy_v2.models.executor_actions import ExecutorAction
+from pydantic import Field
 
 
 class PriceMonitorControllerConfig(ControllerConfigBase):
@@ -36,9 +35,15 @@ class PriceMonitorController(ControllerBase):
 
             for connector_name in self.config.exchanges:
                 try:
-                    best_ask = self.market_data_provider.get_price_by_type(connector_name, self.config.trading_pair, PriceType.BestAsk)
-                    best_bid = self.market_data_provider.get_price_by_type(connector_name, self.config.trading_pair, PriceType.BestBid)
-                    mid_price = self.market_data_provider.get_price_by_type(connector_name, self.config.trading_pair, PriceType.MidPrice)
+                    best_ask = self.market_data_provider.get_price_by_type(
+                        connector_name, self.config.trading_pair, PriceType.BestAsk
+                    )
+                    best_bid = self.market_data_provider.get_price_by_type(
+                        connector_name, self.config.trading_pair, PriceType.BestBid
+                    )
+                    mid_price = self.market_data_provider.get_price_by_type(
+                        connector_name, self.config.trading_pair, PriceType.MidPrice
+                    )
 
                     price_info = {
                         "best_ask": best_ask,
@@ -94,9 +99,15 @@ class PriceMonitorController(ControllerBase):
             # Get current prices for display
             for connector_name in self.config.exchanges:
                 try:
-                    best_ask = self.market_data_provider.get_price_by_type(connector_name, self.config.trading_pair, PriceType.BestAsk)
-                    best_bid = self.market_data_provider.get_price_by_type(connector_name, self.config.trading_pair, PriceType.BestBid)
-                    mid_price = self.market_data_provider.get_price_by_type(connector_name, self.config.trading_pair, PriceType.MidPrice)
+                    best_ask = self.market_data_provider.get_price_by_type(
+                        connector_name, self.config.trading_pair, PriceType.BestAsk
+                    )
+                    best_bid = self.market_data_provider.get_price_by_type(
+                        connector_name, self.config.trading_pair, PriceType.BestBid
+                    )
+                    mid_price = self.market_data_provider.get_price_by_type(
+                        connector_name, self.config.trading_pair, PriceType.MidPrice
+                    )
 
                     lines.extend([f"\n{connector_name.upper()}:"])
                     lines.extend([f"  Best Ask: {best_ask}"])

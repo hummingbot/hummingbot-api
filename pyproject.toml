@@ -19,6 +19,9 @@ combine_as_imports = true
 testpaths = ["test"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "integration: requires a live Gateway/API service; excluded from the default CI run",
+]
 
 [tool.pre-commit]
 repos = [

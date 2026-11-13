@@ -25,18 +25,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from decimal import Decimal, DivisionByZero, InvalidOperation
-from typing import (
-    Any,
-    Awaitable,
-    Callable,
-    Dict,
-    Iterable,
-    List,
-    Mapping,
-    Optional,
-    Tuple,
-    Union,
-)
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Mapping, Optional, Tuple, Union
 
 from config import settings
 

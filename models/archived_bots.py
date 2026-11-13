@@ -4,10 +4,11 @@ Pydantic models for the archived bots router.
 These models define the request/response schemas for archived bot analysis endpoints.
 """
 
-from typing import Dict, List, Optional, Any
 from datetime import datetime
-from pydantic import BaseModel, Field
 from enum import Enum
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel, Field
 
 
 class OrderStatus(str, Enum):
