@@ -898,19 +898,49 @@ class AccountsService:
 
             return portfolio
 
-    def get_portfolio_distribution(self, account_name: Optional[str] = None) -> Dict[str, Any]:
+    def get_account_groups(self) -> Dict[str, Dict[str, str]]:
+        """
+        The exchange-side account each trading connector reads, for connectors that say so.
+
+        A unified exchange account (e.g. Bitget UTA) is one wallet reported in full by both its spot and its
+        perpetual connector. Such connectors expose the same account_group_id, derived from the account their
+        credentials belong to; every other connector has none and is left out.
+
+        Returns:
+            {account_name: {connector_name: account_group_id}}
+        """
+        account_groups: Dict[str, Dict[str, str]] = {}
+        for account_name, connectors in self._connector_service.get_all_trading_connectors().items():
+            for connector_name, connector in connectors.items():
+                try:
+                    group_id = getattr(connector, "account_group_id", None)
+                except Exception:
+                    # A connector that cannot name its account is counted on its own
+                    logger.warning(f"Could not read the account group of {connector_name} in {account_name}",
+                                   exc_info=True)
+                    continue
+                if isinstance(group_id, str) and group_id:
+                    account_groups.setdefault(account_name, {})[connector_name] = group_id
+        return account_groups
+
+    def get_portfolio_distribution(self,
+                                   account_name: Optional[str] = None,
+                                   connector_names: Optional[List[str]] = None) -> Dict[str, Any]:
         """
         Get portfolio distribution by tokens with percentages.
         Delegates the pure math to PortfolioAnalyticsService (snapshots the live state internally).
         """
-        return self.portfolio_analytics_service.get_portfolio_distribution(self.accounts_state, account_name)
+        return self.portfolio_analytics_service.get_portfolio_distribution(
+            self.accounts_state, account_name, connector_names=connector_names,
+            account_groups=self.get_account_groups())
 
     def get_account_distribution(self) -> Dict[str, Any]:
         """
         Get portfolio distribution by accounts with percentages.
         Delegates the pure math to PortfolioAnalyticsService (snapshots the live state internally).
         """
-        return self.portfolio_analytics_service.get_account_distribution(self.accounts_state)
+        return self.portfolio_analytics_service.get_account_distribution(
+            self.accounts_state, account_groups=self.get_account_groups())
 
     async def place_trade(self, account_name: str, connector_name: str, trading_pair: str,
                           trade_type: TradeType, amount: Decimal, order_type: OrderType = OrderType.LIMIT,

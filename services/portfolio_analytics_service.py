@@ -1,8 +1,48 @@
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 # Create module-specific logger
 logger = logging.getLogger(__name__)
+
+
+def shared_wallet_connectors(connector_balances: Mapping[str, Any],
+                             account_groups: Optional[Dict[str, Optional[str]]] = None) -> Dict[str, str]:
+    """
+    Connectors of one account that read a wallet another connector has already reported.
+
+    Exchanges with a unified account (e.g. Bitget UTA) report the same wallet through both the spot connector
+    ("bitget") and the perpetual connector ("bitget_perpetual"), each in full. Summing both counts the money
+    twice. Two connectors share a wallet only when the connectors themselves say so, by reporting the same
+    exchange-side account id (ConnectorBase.account_group_id, derived from the credentials' account and its
+    mode). Balances are never compared: two separate wallets holding the same amounts stay separate.
+
+    Within a group the first connector with a non-empty balance list is kept, so a connector whose refresh
+    failed (stored as []) never hides the wallet that another connector of the group did report.
+
+    Args:
+        connector_balances: {connector_name: [token_info, ...]} for the connectors being summed, in order. Pass
+            the already filtered selection, so that a connector that was not selected can never stand in for a
+            selected one.
+        account_groups: {connector_name: account id or None}. None or a missing connector means that
+            connector's balance stands on its own.
+
+    Returns:
+        {duplicate connector name: name of the connector of the same wallet that is counted}
+    """
+    if not account_groups:
+        return {}
+    members_by_group: Dict[str, List[str]] = {}
+    for connector_name in connector_balances:
+        group_id = account_groups.get(connector_name)
+        if group_id is not None:
+            members_by_group.setdefault(group_id, []).append(connector_name)
+    duplicates: Dict[str, str] = {}
+    for members in members_by_group.values():
+        primary = next((name for name in members if connector_balances[name]), members[0])
+        for connector_name in members:
+            if connector_name != primary:
+                duplicates[connector_name] = primary
+    return duplicates
 
 
 class PortfolioAnalyticsService:
@@ -17,13 +57,21 @@ class PortfolioAnalyticsService:
 
     def get_portfolio_distribution(self,
                                    accounts_state: Dict[str, Dict[str, List[Dict[str, Any]]]],
-                                   account_name: Optional[str] = None) -> Dict[str, Any]:
+                                   account_name: Optional[str] = None,
+                                   connector_names: Optional[List[str]] = None,
+                                   account_groups: Optional[Dict[str, Dict[str, Optional[str]]]] = None
+                                   ) -> Dict[str, Any]:
         """
         Get portfolio distribution by tokens with percentages.
 
         Args:
             accounts_state: Account state data shaped as {account_name: {connector_name: [token_info, ...]}}
             account_name: Optional account name to filter by (None aggregates all accounts)
+            connector_names: Optional connectors to keep (None keeps all). Applied before shared wallets are
+                folded, so a selected connector is always counted even when it shares its wallet with one
+                that was not selected.
+            account_groups: Optional {account_name: {connector_name: account id}} naming the exchange-side
+                account each connector reads; connectors of one account with the same id are counted once.
         """
         try:
             # Snapshot the live dict so concurrent mutations cannot affect the iteration
@@ -38,7 +86,15 @@ class PortfolioAnalyticsService:
 
             for acc_name in accounts_to_process:
                 if acc_name in accounts_state_snapshot:
-                    for connector_name, connector_data in accounts_state_snapshot[acc_name].items():
+                    selected = {
+                        connector_name: connector_data
+                        for connector_name, connector_data in accounts_state_snapshot[acc_name].items()
+                        if not connector_names or connector_name in connector_names
+                    }
+                    duplicates = shared_wallet_connectors(selected, (account_groups or {}).get(acc_name))
+                    for connector_name, connector_data in selected.items():
+                        if connector_name in duplicates:
+                            continue
                         for token_info in connector_data:
                             token = token_info.get("token", "")
                             value = token_info.get("value", 0)
@@ -129,12 +185,17 @@ class PortfolioAnalyticsService:
                 "error": str(e)
             }
 
-    def get_account_distribution(self, accounts_state: Dict[str, Dict[str, List[Dict[str, Any]]]]) -> Dict[str, Any]:
+    def get_account_distribution(self,
+                                 accounts_state: Dict[str, Dict[str, List[Dict[str, Any]]]],
+                                 account_groups: Optional[Dict[str, Dict[str, Optional[str]]]] = None
+                                 ) -> Dict[str, Any]:
         """
         Get portfolio distribution by accounts with percentages.
 
         Args:
             accounts_state: Account state data shaped as {account_name: {connector_name: [token_info, ...]}}
+            account_groups: Optional {account_name: {connector_name: account id}} naming the exchange-side
+                account each connector reads; connectors of one account with the same id are counted once.
         """
         try:
             # Snapshot the live dict so concurrent mutations cannot affect the iteration
@@ -147,7 +208,10 @@ class PortfolioAnalyticsService:
                 account_value = 0
                 connector_values = {}
 
+                duplicates = shared_wallet_connectors(account_data, (account_groups or {}).get(acc_name))
                 for connector_name, connector_data in account_data.items():
+                    if connector_name in duplicates:
+                        continue
                     connector_value = 0
                     for token_info in connector_data:
                         value = token_info.get("value", 0)

@@ -156,3 +156,72 @@ class TestGatewayWalletState:
         await accounts_service.update_account_state()
 
         assert accounts_service.accounts_state["trader_account"]["solana-mainnet-beta"] == wallet_balances
+
+
+class TestSharedWalletIdentity:
+    """A unified exchange account is recognised by the connectors' account identity (issue #250)."""
+
+    @staticmethod
+    def _service(connectors):
+        from services.accounts_service import AccountsService
+        from services.portfolio_analytics_service import PortfolioAnalyticsService
+
+        service = AccountsService.__new__(AccountsService)
+        service._connector_service = MagicMock()
+        service._connector_service.get_all_trading_connectors.return_value = {"master_account": connectors}
+        service.portfolio_analytics_service = PortfolioAnalyticsService()
+        row = {"token": "USDT", "units": 100.0, "price": 1.0, "value": 100.0, "available_units": 100.0}
+        service.accounts_state = {"master_account": {name: [dict(row)] for name in connectors}}
+        return service
+
+    @staticmethod
+    def _connector(account_group_id):
+        # spec'd, so that a connector without the attribute behaves like one (no auto-created mock attribute)
+        connector = MagicMock(spec=["account_group_id"] if account_group_id is not ... else [])
+        if account_group_id is not ...:
+            connector.account_group_id = account_group_id
+        return connector
+
+    def test_connectors_of_one_unified_account_share_a_group(self):
+        service = self._service({
+            "bitget": self._connector("bitget_uta:abc"),
+            "bitget_perpetual": self._connector("bitget_uta:abc"),
+            "binance": self._connector(None),
+            "kraken": self._connector(...),
+        })
+
+        assert service.get_account_groups() == {
+            "master_account": {"bitget": "bitget_uta:abc", "bitget_perpetual": "bitget_uta:abc"}
+        }
+        assert service.get_account_distribution()["total_portfolio_value"] == 300.0
+        assert service.get_portfolio_distribution()["total_portfolio_value"] == 300.0
+
+    def test_separate_wallets_with_equal_balances_are_both_counted(self):
+        # Same balances, but the connectors do not report one account: a Classic account, two API keys of
+        # different accounts, or a connector that predates account_group_id
+        for spot, perp in [(None, None), ("bitget_uta:abc", "bitget_uta:xyz"), (..., ...), (MagicMock(), MagicMock())]:
+            service = self._service({"bitget": self._connector(spot), "bitget_perpetual": self._connector(perp)})
+
+            groups = service.get_account_groups().get("master_account", {})
+            assert groups in ({}, {"bitget": "bitget_uta:abc", "bitget_perpetual": "bitget_uta:xyz"})
+            assert service.get_account_distribution()["total_portfolio_value"] == 200.0
+            assert service.get_portfolio_distribution()["total_portfolio_value"] == 200.0
+
+    @pytest.mark.asyncio
+    async def test_distribution_route_keeps_a_selected_connector_of_a_shared_wallet(self):
+        from models.trading import PortfolioDistributionFilterRequest
+        from routers.portfolio import get_portfolio_distribution
+
+        service = self._service({
+            "bitget": self._connector("bitget_uta:abc"),
+            "bitget_perpetual": self._connector("bitget_uta:abc"),
+        })
+
+        for selected, expected in [(["bitget_perpetual"], 100.0), (["bitget"], 100.0),
+                                   (["bitget", "bitget_perpetual"], 100.0), (None, 100.0)]:
+            request = PortfolioDistributionFilterRequest(connector_names=selected)
+            result = await get_portfolio_distribution(request, service)
+
+            assert result["total_portfolio_value"] == expected
+            connectors = result["distribution"][0]["accounts"]["master_account"]["connectors"]
+            assert list(connectors) == [selected[0] if selected else "bitget"]
