@@ -69,6 +69,12 @@ class AsyncDatabaseManager:
                 "executors", "error_log",
                 "ALTER TABLE executors ADD COLUMN error_log TEXT"
             ),
+            # Live order ownership, so a restart can resume instead of SYSTEM_CLEANUP.
+            # create_all does not add a column to an existing table.
+            (
+                "executors", "checkpoint",
+                "ALTER TABLE executors ADD COLUMN checkpoint TEXT"
+            ),
             # Add cum_fees_quote to position_holds table for tracking fees
             (
                 "position_holds", "cum_fees_quote",
