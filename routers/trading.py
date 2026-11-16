@@ -161,6 +161,8 @@ async def place_trade(
     async with db_manager.get_session_context() as session:
         await IdempotencyRepository(session).complete(idempotency_key, status.HTTP_201_CREATED, success_body)
     return JSONResponse(content=json.loads(success_body), status_code=status.HTTP_201_CREATED)
+
+
 @router.post("/{account_name}/{connector_name}/orders/by-exchange-id/{exchange_order_id}/cancel")
 async def cancel_order_by_exchange_id(
     account_name: str,

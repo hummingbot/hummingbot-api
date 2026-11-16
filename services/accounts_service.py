@@ -1098,7 +1098,7 @@ class AccountsService:
         except Exception as e:
             logger.error(f"Failed to initiate cancellation for order {client_order_id}: {e}")
             raise HTTPException(status_code=500, detail=f"Failed to initiate order cancellation: {str(e)}")
-    
+
     async def cancel_order_by_exchange_id(
         self,
         account_name: str,
