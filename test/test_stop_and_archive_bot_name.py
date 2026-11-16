@@ -18,10 +18,7 @@ import pytest
 from fastapi import BackgroundTasks
 
 import services.bots_orchestrator as orchestrator_module
-from routers.bot_orchestration import (
-    _refresh_accounts_after_archive,
-    stop_and_archive_bot as stop_and_archive_endpoint,
-)
+from routers.bot_orchestration import _refresh_accounts_after_archive, stop_and_archive_bot as stop_and_archive_endpoint
 from services.bots_orchestrator import BotsOrchestrator
 
 BOT_NAME = "hummingbot-pmm-1"

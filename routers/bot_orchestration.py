@@ -4,12 +4,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 
-from deps import (
-    get_accounts_service,
-    get_bot_archiver,
-    get_bots_orchestrator,
-    get_docker_service,
-)
+from deps import get_accounts_service, get_bot_archiver, get_bots_orchestrator, get_docker_service
 from models import StartBotAction, StopBotAction, V2ControllerDeployment, V2ScriptDeployment
 from services.accounts_service import AccountsService
 from services.bots_orchestrator import BotsOrchestrator
