@@ -457,7 +457,7 @@ class MQTTManager:
         message = {
             "header": {
                 "timestamp": int(time.time() * 1000),  # Milliseconds
-                "reply_to": f"hummingbot-api-response-{int(time.time() * 1000)}",  # Unique response topic
+                "reply_to": f"hummingbot-api/response/{int(time.time() * 1000)}",  # Matches the subscribed response topic
                 "msg_id": int(time.time() * 1000),
                 "node_id": "hummingbot-api",
                 "agent": "hummingbot-api",
