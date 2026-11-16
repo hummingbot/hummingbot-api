@@ -18,7 +18,7 @@ import pytest
 from fastapi import BackgroundTasks
 
 import services.bots_orchestrator as orchestrator_module
-from routers.bot_orchestration import stop_and_archive_bot as stop_and_archive_endpoint
+from routers.bot_orchestration import _refresh_accounts_after_archive, stop_and_archive_bot as stop_and_archive_endpoint
 from services.bots_orchestrator import BotsOrchestrator
 
 BOT_NAME = "hummingbot-pmm-1"
@@ -174,17 +174,23 @@ async def test_endpoint_schedules_the_background_task_with_the_path_name():
     docker_manager = object()
     bot_archiver = object()
 
+    accounts_service = SimpleNamespace()
+
     response = await stop_and_archive_endpoint(
         bot_name=BOT_NAME,
         background_tasks=background_tasks,
         bots_manager=bots_manager,
         docker_manager=docker_manager,
         bot_archiver=bot_archiver,
+        accounts_service=accounts_service,
     )
 
     assert response["status"] == "success"
     assert response["details"]["bot_name"] == BOT_NAME
-    assert len(background_tasks.tasks) == 1
+    # Two tasks: the archive, then the balance refresh that depends on it.
+    # Starlette awaits background tasks in order, so the refresh cannot run
+    # before the archive it is refreshing for.
+    assert len(background_tasks.tasks) == 2
     task = background_tasks.tasks[0]
     assert task.func == "sentinel"
     assert task.kwargs["bot_name"] == BOT_NAME
@@ -192,6 +198,10 @@ async def test_endpoint_schedules_the_background_task_with_the_path_name():
     assert task.kwargs["bot_archiver"] is bot_archiver
     # The three aliases are gone: the name is passed exactly once.
     assert [k for k in task.kwargs if "name" in k] == ["bot_name"]
+
+    refresh = background_tasks.tasks[1]
+    assert refresh.func is _refresh_accounts_after_archive
+    assert refresh.args == (accounts_service,)
 
 
 async def test_endpoint_reports_not_found_for_an_inactive_bot():
@@ -211,3 +221,31 @@ async def test_endpoint_reports_not_found_for_an_inactive_bot():
     assert response["details"]["bot_name"] == BOT_NAME
     assert response["details"]["active_bots"] == ["other-bot"]
     assert background_tasks.tasks == []
+
+
+async def test_the_archive_is_scheduled_before_the_refresh():
+    """Order is the whole contract: the refresh must follow the archive."""
+    background_tasks = BackgroundTasks()
+    bots_manager = SimpleNamespace(active_bots={BOT_NAME: {}}, stop_and_archive_bot="sentinel")
+
+    await stop_and_archive_endpoint(
+        bot_name=BOT_NAME,
+        background_tasks=background_tasks,
+        bots_manager=bots_manager,
+        docker_manager=object(),
+        bot_archiver=object(),
+        accounts_service=SimpleNamespace(),
+    )
+
+    names = [t.func if isinstance(t.func, str) else t.func.__name__ for t in background_tasks.tasks]
+    assert names == ["sentinel", "_refresh_accounts_after_archive"]
+
+
+async def test_a_failed_balance_refresh_does_not_fail_the_archive():
+    """A completed archive must not become an error because the venue is down."""
+
+    class _Down:
+        async def update_account_state(self, **kwargs):
+            raise RuntimeError("venue down")
+
+    await _refresh_accounts_after_archive(_Down())  # must not raise

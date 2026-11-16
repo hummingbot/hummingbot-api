@@ -4,8 +4,9 @@ from datetime import datetime
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 
-from deps import get_bot_archiver, get_bots_orchestrator, get_docker_service
+from deps import get_accounts_service, get_bot_archiver, get_bots_orchestrator, get_docker_service
 from models import StartBotAction, StopBotAction, V2ControllerDeployment, V2ScriptDeployment
+from services.accounts_service import AccountsService
 from services.bots_orchestrator import BotsOrchestrator
 from services.docker_service import DockerService
 from utils.bot_archiver import BotArchiver
@@ -394,6 +395,27 @@ async def delete_bot_run(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+async def _refresh_accounts_after_archive(accounts_service: AccountsService) -> None:
+    """Re-read balances once a bot has been archived.
+
+    ``/portfolio/state`` serves an in-memory snapshot refreshed by a background
+    loop every ``account_update_interval`` minutes (default 5). Archiving frees
+    the margin the bot was holding but touched nothing in that snapshot, so for
+    up to a loop interval the portfolio still reported those funds as committed
+    — and ``refresh`` defaults to false, so that is what a dashboard shows.
+    Measured on a live box: immediately after an archive the cached row read
+    available_units 50.4663 while the exchange said 50.6743.
+
+    Best-effort: a balance refresh failing must not turn a completed archive
+    into an error, and this runs as its own background task *after* the archive
+    task, which Starlette awaits in order.
+    """
+    try:
+        await accounts_service.update_account_state(skip_gateway=True)
+    except Exception as e:
+        logging.warning(f"Archived a bot but could not refresh account state: {e}")
+
+
 @router.post("/stop-and-archive-bot/{bot_name}")
 async def stop_and_archive_bot(
     bot_name: str,
@@ -403,7 +425,8 @@ async def stop_and_archive_bot(
     s3_bucket: str = None,
     bots_manager: BotsOrchestrator = Depends(get_bots_orchestrator),
     docker_manager: DockerService = Depends(get_docker_service),
-    bot_archiver: BotArchiver = Depends(get_bot_archiver)
+    bot_archiver: BotArchiver = Depends(get_bot_archiver),
+    accounts_service: AccountsService = Depends(get_accounts_service),
 ):
     """
     Gracefully stop a bot and archive its data in the background.
@@ -435,7 +458,8 @@ async def stop_and_archive_bot(
                 }
             }
 
-        # Add the background task
+        # Add the background tasks. Starlette runs them in order, awaiting each,
+        # so the refresh below always follows the archive it is refreshing for.
         background_tasks.add_task(
             bots_manager.stop_and_archive_bot,
             bot_name=bot_name,
@@ -443,8 +467,9 @@ async def stop_and_archive_bot(
             archive_locally=archive_locally,
             s3_bucket=s3_bucket,
             docker_manager=docker_manager,
-            bot_archiver=bot_archiver
+            bot_archiver=bot_archiver,
         )
+        background_tasks.add_task(_refresh_accounts_after_archive, accounts_service)
 
         return {
             "status": "success",
