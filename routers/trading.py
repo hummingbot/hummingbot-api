@@ -161,6 +161,50 @@ async def place_trade(
     async with db_manager.get_session_context() as session:
         await IdempotencyRepository(session).complete(idempotency_key, status.HTTP_201_CREATED, success_body)
     return JSONResponse(content=json.loads(success_body), status_code=status.HTTP_201_CREATED)
+@router.post("/{account_name}/{connector_name}/orders/by-exchange-id/{exchange_order_id}/cancel")
+async def cancel_order_by_exchange_id(
+    account_name: str,
+    connector_name: str,
+    exchange_order_id: str,
+    trading_pair: Optional[str] = None,
+    accounts_service: AccountsService = Depends(get_accounts_service),
+):
+    """Cancel an order by the venue's own order id, tracked or not.
+
+    Use this when an order is still live at the venue but no longer tracked by
+    the process that placed it -- a bot that was stopped, crashed or archived
+    while the order was resting. For XRPL, the exchange order id starts with the
+    offer sequence (``<sequence>-<pair>``).
+
+    Raises:
+        HTTPException: 404 if account/connector not found, 501 if the connector
+            cannot cancel by venue id, 500 for cancellation errors
+    """
+    try:
+        result = await accounts_service.cancel_order_by_exchange_id(
+            account_name=account_name,
+            connector_name=connector_name,
+            exchange_order_id=exchange_order_id,
+            trading_pair=trading_pair,
+        )
+        # A tracked order goes through connector.cancel, which only schedules the
+        # work; an untracked one is submitted to the venue directly. Say which, so a
+        # caller cannot read "cancelled" as confirmation from the venue.
+        if result["status"] == "initiated":
+            message = f"Order '{result['order_id']}' cancellation initiated"
+        else:
+            message = f"Order '{result['order_id']}' cancellation submitted to the venue"
+        return {
+            "success": True,
+            "message": message,
+            "order_id": result["order_id"],
+            "via": result["via"],
+            "status": result["status"],
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Unexpected error cancelling order: {str(e)}")
 
 
 @router.post("/{account_name}/{connector_name}/orders/{client_order_id}/cancel")
