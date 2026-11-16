@@ -8,12 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException
 from hummingbot.client.config.config_crypt import ETHKeyFileSecretManger
-from hummingbot.core.data_type.common import (
-    OrderType,
-    PositionAction,
-    PositionMode,
-    TradeType,
-)
+from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, TradeType
 from hummingbot.core.data_type.in_flight_order import OrderState
 
 from config import settings
@@ -1121,7 +1116,10 @@ class AccountsService:
                     ),
                 )
 
-            logger.info(f"Placed {trade_type} order for {amount} {trading_pair} on {connector_name} (Account: {account_name}). Order ID: {order_id}")
+            logger.info(
+                f"Placed {trade_type} order for {amount} {trading_pair} on {connector_name} "
+                f"(Account: {account_name}). Order ID: {order_id}"
+            )
             return order_id
 
         except HTTPException:
