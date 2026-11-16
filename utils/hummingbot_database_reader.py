@@ -159,9 +159,12 @@ class HummingbotDatabase:
         trades['buy_value_cum'] = trades.groupby(grouper)['buy_value'].cumsum()
         trades['sell_value_cum'] = trades.groupby(grouper)['sell_value'].cumsum()
 
-        # Calculate average prices (avoid division by zero)
-        trades['buy_avg_price'] = trades['buy_value_cum'] / trades['buy_volume'].replace(0, pd.NA)
-        trades['sell_avg_price'] = trades['sell_value_cum'] / trades['sell_volume'].replace(0, pd.NA)
+        # Calculate average prices. Where nothing has been bought (or sold) yet the
+        # average is NaN, not pd.NA: pd.NA turns the column into object dtype, and the
+        # ratios below then divide on Python floats and raise ZeroDivisionError for a
+        # pair that opened with a sell.
+        trades['buy_avg_price'] = trades['buy_value_cum'] / trades['buy_volume'].where(trades['buy_volume'] != 0)
+        trades['sell_avg_price'] = trades['sell_value_cum'] / trades['sell_volume'].where(trades['sell_volume'] != 0)
 
         # Forward fill average prices within each group to handle NaN values
         trades['buy_avg_price'] = trades.groupby(grouper)['buy_avg_price'].ffill().fillna(0)
@@ -170,9 +173,11 @@ class HummingbotDatabase:
         # Calculate net position
         trades['net_position'] = trades['buy_volume'] - trades['sell_volume']
 
-        # Calculate realized PnL
+        # Calculate realized PnL. Nothing is realized until a pair has both bought and
+        # sold, so the ratio is 0 while the average buy price is.
+        buy_avg_nonzero = trades['buy_avg_price'].where(trades['buy_avg_price'] != 0)
         trades['realized_trade_pnl_pct'] = (
-            (trades['sell_avg_price'] - trades['buy_avg_price']) / trades['buy_avg_price']
+            (trades['sell_avg_price'] - trades['buy_avg_price']) / buy_avg_nonzero
         ).fillna(0)
 
         # Matched volume for realized PnL (minimum of buy and sell volumes)
@@ -217,14 +222,16 @@ class HummingbotDatabase:
             trades.loc[short_mask, 'sell_avg_price']
         )
 
-        # Fees are already in trade_fee_in_quote column
+        # Fees are already in trade_fee_in_quote column. A fill's own fee is fees_quote;
+        # the PnL a pair has made after that fill has paid every fee up to it.
         trades['fees_quote'] = trades['trade_fee_in_quote']
+        trades['cum_fees_quote'] = trades.groupby(grouper)['fees_quote'].cumsum()
 
         # Calculate net PnL
         trades['net_pnl_quote'] = (
             trades['realized_trade_pnl_quote'] +
             trades['unrealized_trade_pnl_quote'] -
-            trades['fees_quote']
+            trades['cum_fees_quote']
         )
 
         # Calculate cumulative volume in quote currency
@@ -237,10 +244,49 @@ class HummingbotDatabase:
             'buy_avg_price', 'buy_volume', 'sell_avg_price', 'sell_volume',
             'net_position', 'realized_trade_pnl_pct', 'realized_trade_pnl_quote',
             'unrealized_trade_pnl_pct', 'unrealized_trade_pnl_quote',
-            'fees_quote', 'net_pnl_quote', 'volume_quote', 'cum_volume_quote'
+            'fees_quote', 'cum_fees_quote', 'net_pnl_quote', 'volume_quote', 'cum_volume_quote'
         ]
 
         return trades[result_columns].sort_values('timestamp')
+
+    @staticmethod
+    def summarize_trade_based_performance(performance: pd.DataFrame) -> Dict[str, Any]:
+        """Totals for a bot, from the frame calculate_trade_based_performance returns.
+
+        Each row carries the running figures for its own pair and connector, so a
+        bot's total is the sum of every pair's last row, not the last row of the
+        frame, which belongs to whichever pair filled last. Each pair's open position
+        is valued at its last fill price, and fees are the cumulative fees paid.
+
+        `final_net_position` is the last fill's pair only, as before: units of
+        different assets do not add, and `by_pair` carries every pair's.
+        """
+        final_rows = performance.groupby(['trading_pair', 'connector_name'], sort=False).tail(1)
+        by_pair = [
+            {
+                "trading_pair": row['trading_pair'],
+                "connector_name": row['connector_name'],
+                "net_pnl_quote": float(row['net_pnl_quote']),
+                "realized_pnl_quote": float(row['realized_trade_pnl_quote']),
+                "unrealized_pnl_quote": float(row['unrealized_trade_pnl_quote']),
+                "fees_quote": float(row['cum_fees_quote']),
+                "volume_quote": float(row['cum_volume_quote']),
+                "net_position": float(row['net_position']),
+            }
+            for _, row in final_rows.iterrows()
+        ]
+        return {
+            "total_trades": len(performance),
+            "final_net_pnl_quote": float(final_rows['net_pnl_quote'].sum()),
+            "final_realized_pnl_quote": float(final_rows['realized_trade_pnl_quote'].sum()),
+            "final_unrealized_pnl_quote": float(final_rows['unrealized_trade_pnl_quote'].sum()),
+            "total_fees_quote": float(performance['fees_quote'].sum()),
+            "total_volume_quote": float(final_rows['cum_volume_quote'].sum()),
+            "final_net_position": float(performance['net_position'].iloc[-1]),
+            "trading_pairs": performance['trading_pair'].unique().tolist(),
+            "connector_names": performance['connector_name'].unique().tolist(),
+            "by_pair": by_pair,
+        }
 
 
 class PerformanceDataSource:

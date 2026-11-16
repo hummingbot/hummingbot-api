@@ -139,6 +139,10 @@ async def get_database_performance(db_path: str):
     """
     Get trade-based performance analysis for a bot database.
 
+    The summary totals every trading pair: each pair's last row is summed, with the
+    fees paid so far, and `by_pair` lists the pairs one by one. A pair's open
+    position is valued at its last fill price.
+
     Args:
         db_path: Full path to the database file
 
@@ -162,20 +166,7 @@ async def get_database_performance(db_path: str):
         # Convert to records for JSON response
         performance_records = performance_data.fillna(0).to_dict('records')
 
-        # Calculate summary statistics
-        final_row = performance_data.iloc[-1] if len(performance_data) > 0 else {}
-        summary = {
-            "total_trades": len(performance_data),
-            "final_net_pnl_quote": float(final_row.get('net_pnl_quote', 0)),
-            "final_realized_pnl_quote": float(final_row.get('realized_trade_pnl_quote', 0)),
-            "final_unrealized_pnl_quote": float(final_row.get('unrealized_trade_pnl_quote', 0)),
-            "total_fees_quote": float(performance_data['fees_quote'].sum()),
-            "total_volume_quote": float(
-                performance_data['cum_volume_quote'].iloc[-1] if len(performance_data) > 0 else 0),
-            "final_net_position": float(final_row.get('net_position', 0)),
-            "trading_pairs": performance_data['trading_pair'].unique().tolist(),
-            "connector_names": performance_data['connector_name'].unique().tolist()
-        }
+        summary = HummingbotDatabase.summarize_trade_based_performance(performance_data)
 
         return {
             "db_path": db_path,
