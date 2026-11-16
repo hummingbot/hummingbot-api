@@ -400,6 +400,27 @@ async def delete_bot_run(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+async def _refresh_accounts_after_archive(accounts_service: AccountsService) -> None:
+    """Re-read balances once a bot has been archived.
+
+    ``/portfolio/state`` serves an in-memory snapshot refreshed by a background
+    loop every ``account_update_interval`` minutes (default 5). Archiving frees
+    the margin the bot was holding but touched nothing in that snapshot, so for
+    up to a loop interval the portfolio still reported those funds as committed
+    — and ``refresh`` defaults to false, so that is what a dashboard shows.
+    Measured on a live box: immediately after an archive the cached row read
+    available_units 50.4663 while the exchange said 50.6743.
+
+    Best-effort: a balance refresh failing must not turn a completed archive
+    into an error, and this runs as its own background task *after* the archive
+    task, which Starlette awaits in order.
+    """
+    try:
+        await accounts_service.update_account_state(skip_gateway=True)
+    except Exception as e:
+        logging.warning(f"Archived a bot but could not refresh account state: {e}")
+
+
 @router.post("/stop-and-archive-bot/{bot_name}")
 async def stop_and_archive_bot(
     bot_name: str,
@@ -442,39 +463,18 @@ async def stop_and_archive_bot(
                 }
             }
 
-        async def _archive_then_refresh_accounts():
-            """Archive the bot, then re-read the balances it was holding.
-
-            ``/portfolio/state`` serves an in-memory snapshot refreshed by a
-            background loop every ``account_update_interval`` minutes (default
-            5). Archiving frees the bot's margin but touched nothing in that
-            snapshot, so for up to a loop interval the portfolio still reported
-            the archived bot's funds as committed — and ``refresh`` defaults to
-            false, so that is the figure a dashboard shows. Measured on a live
-            box: immediately after an archive the cached row reported
-            available_units 50.4663 while the exchange said 50.6743, and only
-            the next loop caught up.
-
-            Best-effort: a balance refresh failing must not turn a completed
-            archive into an error.
-            """
-            await bots_manager.stop_and_archive_bot(
-                bot_name=bot_name,
-                skip_order_cancellation=skip_order_cancellation,
-                archive_locally=archive_locally,
-                s3_bucket=s3_bucket,
-                docker_manager=docker_manager,
-                bot_archiver=bot_archiver,
-            )
-            try:
-                await accounts_service.update_account_state(skip_gateway=True)
-            except Exception as e:
-                logging.warning(
-                    f"Archived {bot_name} but could not refresh account state: {e}"
-                )
-
-        # Add the background task
-        background_tasks.add_task(_archive_then_refresh_accounts)
+        # Add the background tasks. Starlette runs them in order, awaiting each,
+        # so the refresh below always follows the archive it is refreshing for.
+        background_tasks.add_task(
+            bots_manager.stop_and_archive_bot,
+            bot_name=bot_name,
+            skip_order_cancellation=skip_order_cancellation,
+            archive_locally=archive_locally,
+            s3_bucket=s3_bucket,
+            docker_manager=docker_manager,
+            bot_archiver=bot_archiver,
+        )
+        background_tasks.add_task(_refresh_accounts_after_archive, accounts_service)
 
         return {
             "status": "success",
