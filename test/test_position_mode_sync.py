@@ -36,23 +36,30 @@ class FakeBitgetAccount:
         self.pos_mode = pos_mode
         self.accept_switch = accept_switch
         self.switch_requests = []
-        self.reads = []
+        self.switch_categories = []
+        self.account_info_reads = 0
         self.orders = []
 
     async def get(self, path_url, params=None, is_auth_required=False, **kwargs):
+        if path_url == CONSTANTS.ACCOUNTS_INFO_ENDPOINT:
+            # Answers the UTA pre-check: a Unified Trading Account, so the V3 account-level
+            # settings call below is the one that reports (and the V3 set-hold-mode is the one
+            # that switches) the position mode.
+            return {"code": CONSTANTS.RET_CODE_OK, "data": {}}
         assert path_url == CONSTANTS.ACCOUNT_INFO_ENDPOINT
-        self.reads.append(params["productType"])
-        return {"code": CONSTANTS.RET_CODE_OK, "data": {"posMode": self.pos_mode}}
+        self.account_info_reads += 1
+        return {"code": CONSTANTS.RET_CODE_OK, "data": {"holdMode": self.pos_mode}}
 
     async def post(self, path_url, data=None, is_auth_required=False, **kwargs):
         if path_url == CONSTANTS.PLACE_ORDER_ENDPOINT:
             self.orders.append(data)
             return {"code": CONSTANTS.RET_CODE_OK, "data": {"orderId": "1"}}
         assert path_url == CONSTANTS.SET_POSITION_MODE_ENDPOINT
-        self.switch_requests.append(data["posMode"])
+        self.switch_categories.append(data["category"])
+        self.switch_requests.append(data["holdMode"])
         if not self.accept_switch:
             return {"code": "40920", "msg": "position exists"}
-        self.pos_mode = data["posMode"]
+        self.pos_mode = data["holdMode"]
         return {"code": CONSTANTS.RET_CODE_OK, "data": {}}
 
 
@@ -95,7 +102,7 @@ async def test_hedge_account_is_adopted_with_no_pair_registered():
     await sync_position_mode(connector)
 
     assert connector.position_mode == PositionMode.HEDGE
-    assert account.reads == ["USDT-FUTURES"]
+    assert account.account_info_reads == 1
     assert account.switch_requests == []
     assert _no_pair_left_behind(connector)
 
@@ -116,7 +123,8 @@ async def test_direct_order_on_a_fresh_connector_goes_out_in_the_accounts_hedge_
             break
         await asyncio.sleep(0.01)
 
-    assert account.orders[0]["tradeSide"] == "open"
+    # V3 hedge mode orders carry posSide (long/short), not the V2 tradeSide (open/close).
+    assert account.orders[0]["posSide"] == "long"
     assert _no_pair_left_behind(connector)
 
 
@@ -176,7 +184,7 @@ async def test_a_given_pair_selects_the_product_type_and_is_not_registered():
     await _service(connector).set_position_mode(
         "master", "bitget_perpetual", PositionMode.HEDGE, trading_pair="BTC-USDC")
 
-    assert account.reads == ["USDC-FUTURES"]
+    assert account.switch_categories == ["USDC-FUTURES"]
     assert account.switch_requests == ["hedge_mode"]
     assert _no_pair_left_behind(connector)
 
