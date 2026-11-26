@@ -1327,7 +1327,7 @@ requires-dist = [
     { name = "fastapi" },
     { name = "geckoterminal-py", specifier = ">=0.3.1" },
     { name = "greenlet" },
-    { name = "hummingbot" },
+    { name = "hummingbot", specifier = "==20261118" },
     { name = "logfire", extras = ["fastapi", "system-metrics"] },
     { name = "msgpack", specifier = ">=1.0.5" },
     { name = "numba", specifier = ">=0.61.2" },
