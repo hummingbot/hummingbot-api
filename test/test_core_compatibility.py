@@ -1,6 +1,6 @@
 """A core older than this API must stop the boot, not quietly zero the books.
 
-``environment.yml`` installs hummingbot unpinned because the fields this API reads are
+``pyproject.toml`` installs hummingbot unpinned because the fields this API reads are
 not in a release yet, so a machine can very reasonably end up with an older core. The
 read path in ``_persist_executor_completed`` wraps every figure in one broad
 ``except Exception`` that logs at DEBUG and substitutes ``Decimal("0")`` — so on an old

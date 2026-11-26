@@ -58,7 +58,7 @@ Use your API username and password for all requests. **Do not open port 8000 on 
 | `make deploy` | Start all services (API, PostgreSQL, EMQX) |
 | `make stop` | Stop all services |
 | `make run` | Run API locally in dev mode |
-| `make install` | Install conda environment for development |
+| `make install` | Install the uv-managed virtual environment for development |
 | `make build` | Build Docker image |
 | `make tailscale-status` | Show Tailscale connection + serve (proxy) status |
 | `make doctor` | Verify dependencies, `.env`, containers, port exposure and API access |
@@ -299,8 +299,7 @@ existing client keeps working exactly as before.
 ## Development
 
 ```bash
-make install              # Create conda environment
-conda activate hummingbot-api
+make install              # Create the uv-managed virtual environment
 make run                  # Run with hot-reload
 ```
 

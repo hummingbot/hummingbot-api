@@ -106,7 +106,7 @@ async def lifespan(app: FastAPI):
     Lifespan context manager for the FastAPI application.
     Handles startup and shutdown events.
     """
-    # The installed core is unpinned (see environment.yml), so check it carries the
+    # The installed core is unpinned (see pyproject.toml), so check it carries the
     # fields this API reads before anything reads them — the read path substitutes
     # zeros for a missing attribute and logs at DEBUG, which turns a wrong install
     # into silently zeroed accounting rather than a failure.

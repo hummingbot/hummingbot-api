@@ -12,28 +12,21 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        shell: bash -l {0}
-    env:
-      CONDA_PKGS_DIRS: ~/conda_pkgs_dir
     steps:
       - name: Checkout code
         uses: actions/checkout@v4.1.1
 
-      - name: Cache conda packages
-        uses: actions/cache@v4
+      # Pinned to the version uv.lock was written with (matches the Dockerfile); bump deliberately.
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
         with:
-          path: ~/conda_pkgs_dir
-          key: conda-pkgs-${{ runner.os }}-${{ hashFiles('environment.yml') }}
+          version: "0.9.28"
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
 
-      - name: Set up Miniconda
-        uses: conda-incubator/setup-miniconda@v3
-        with:
-          miniforge-version: latest
-          environment-file: environment.yml
-          activate-environment: hummingbot-api
-          use-mamba: true
+      - name: Install dependencies
+        run: uv sync --locked --dev
 
       - name: Run test suite
         run: make test
@@ -43,28 +36,20 @@ jobs:
     # ARCH-127 reconciles the toolchain and clears the 296 existing flake8
     # violations; flip this to blocking as part of that item.
     continue-on-error: true
-    defaults:
-      run:
-        shell: bash -l {0}
-    env:
-      CONDA_PKGS_DIRS: ~/conda_pkgs_dir
     steps:
       - name: Checkout code
         uses: actions/checkout@v4.1.1
 
-      - name: Cache conda packages
-        uses: actions/cache@v4
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
         with:
-          path: ~/conda_pkgs_dir
-          key: conda-pkgs-${{ runner.os }}-${{ hashFiles('environment.yml') }}
+          version: "0.9.28"
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
 
-      - name: Set up Miniconda
-        uses: conda-incubator/setup-miniconda@v3
-        with:
-          miniforge-version: latest
-          environment-file: environment.yml
-          activate-environment: hummingbot-api
-          use-mamba: true
+      - name: Install dependencies
+        run: uv sync --locked --dev
 
       - name: Run pre-commit
-        run: pre-commit run --all-files
+        run: uv run pre-commit run --all-files

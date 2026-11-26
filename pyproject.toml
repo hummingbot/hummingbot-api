@@ -1,6 +1,46 @@
-[build-system]
-requires = ["setuptools>=42", "wheel"]
-build-backend = "setuptools.build_meta"
+[project]
+name = "hummingbot-api"
+version = "1.0.1"
+description = "A REST API for managing Hummingbot trading bots across multiple exchanges, with AI assistant integration via MCP."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "boto3",
+    "python-dotenv",
+    "pandas>=2.3.2",
+    "numba>=0.61.2",
+    "numpy>=2.2.6",
+    "pandas-ta>=0.4.71b0",
+    "TA-Lib>=0.6.4",
+    "tqdm>=4.67.1",
+    "psutil>=5.9.0",
+    "docker",
+    "hummingbot==20261118",
+    "geckoterminal-py>=0.3.1",
+    "msgpack>=1.0.5",
+    "logfire[fastapi,system-metrics]",
+    "aiomqtt>=2.0.0",
+    "sqlalchemy>=2.0.0",
+    "asyncpg",
+    "psycopg2-binary",
+    "greenlet",
+    "pydantic-settings",
+]
+
+[dependency-groups]
+dev = [
+    "flake8",
+    "isort",
+    "pytest",
+    "pytest-asyncio",
+    "pre-commit",
+]
+
+[tool.uv]
+# No setup.py/Cython build of its own -- uv only needs to manage the dependency venv.
+package = false
 
 [tool.black]
 line-length = 130

@@ -27,9 +27,9 @@ run: emqx-auth
 		tailscale serve status 2>/dev/null | grep -q ":8000" || \
 			sudo tailscale serve --bg --tcp=8000 tcp://127.0.0.1:8000; \
 		echo "[INFO] Binding uvicorn to 127.0.0.1 (tailscale serve exposes port 8000 on tailnet)"; \
-		conda run --no-capture-output -n hummingbot-api uvicorn main:app --reload --host 127.0.0.1 --port 8000; \
+		uv run uvicorn main:app --reload --host 127.0.0.1 --port 8000; \
 	else \
-		conda run --no-capture-output -n hummingbot-api uvicorn main:app --reload; \
+		uv run uvicorn main:app --reload; \
 	fi
 
 # Deploy with Docker
@@ -203,32 +203,27 @@ tailscale-status:
 stop:
 	docker compose down
 
-# Install conda environment
+# Install the uv-managed virtual environment
 install:
-	@if ! command -v conda >/dev/null 2>&1; then \
-		echo "Error: Conda is not found in PATH. Please install Conda or add it to your PATH."; \
+	@if ! command -v uv >/dev/null 2>&1; then \
+		echo "Error: uv is not found in PATH. Please install uv: https://docs.astral.sh/uv/getting-started/installation/"; \
 		exit 1; \
 	fi
-	@if conda env list | grep -q '^hummingbot-api '; then \
-		echo "Environment already exists."; \
-	else \
-		conda env create -f environment.yml; \
-	fi
+	@uv sync --dev
 	$(MAKE) install-pre-commit
 	$(MAKE) setup
 
 uninstall:
-	conda env remove -n hummingbot-api -y
+	rm -rf .venv
 	rm -f $(SETUP_SENTINEL)
 
 install-pre-commit:
-	conda run -n hummingbot-api pip install pre-commit
-	conda run -n hummingbot-api pre-commit install
+	uv run pre-commit install
 
 # Run the test suite (same invocation .github/workflows/ci.yml runs)
 # Excludes @pytest.mark.integration tests, which need a live Gateway/API.
 test:
-	conda run --no-capture-output -n hummingbot-api python -m pytest -q -m "not integration"
+	uv run pytest -q -m "not integration"
 
 # Build Docker image
 build:

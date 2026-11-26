@@ -1,6 +1,6 @@
 """Refuse to start against a hummingbot core that predates what this API reads.
 
-``environment.yml`` installs ``hummingbot`` unpinned from PyPI, because the changes this
+``pyproject.toml`` installs ``hummingbot`` unpinned from PyPI, because the changes this
 version depends on are not in a release yet. That makes the install order load-bearing:
 build the image before the core ships and the API comes up against a core without the
 fields it reads.
@@ -52,6 +52,6 @@ def require_core_surface() -> None:
             "The installed hummingbot core is older than this API requires. Missing:\n"
             + "\n".join(missing)
             + f"\n\nInstalled hummingbot: {getattr(hummingbot, '__version__', 'unknown')}. "
-            "Install a core that carries these fields (see environment.yml) and rebuild. "
+            "Install a core that carries these fields (see pyproject.toml) and rebuild. "
             "Starting anyway would record every executor's pnl, fees and volume as zero."
         )
