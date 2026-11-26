@@ -223,7 +223,7 @@ install-pre-commit:
 # Run the test suite (same invocation .github/workflows/ci.yml runs)
 # Excludes @pytest.mark.integration tests, which need a live Gateway/API.
 test:
-	conda run --no-capture-output -n hummingbot-api python -m pytest -q -m "not integration"
+	uv run pytest -q -m "not integration"
 
 # Build Docker image
 build:
