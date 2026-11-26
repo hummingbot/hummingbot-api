@@ -215,7 +215,8 @@ class TestGatewayIntegration:
         url = os.environ.get("API_URL", "http://localhost:8000")
         parsed = urlparse(url)
         try:
-            with socket.create_connection((parsed.hostname, parsed.port), timeout=1):
+            port = parsed.port or (443 if parsed.scheme == "https" else 80)
+            with socket.create_connection((parsed.hostname, port), timeout=1):
                 pass
         except OSError:
             pytest.skip(f"Hummingbot API not reachable at {url}")
