@@ -14,8 +14,8 @@ Rows whose chain still resolves to "UNKNOWN" are left untouched and reported, so
 unmapped chain surfaces instead of being papered over.
 
 Usage:
-    conda run --no-capture-output -n hummingbot-api python -m scripts.backfill_gas_tokens --dry-run
-    conda run --no-capture-output -n hummingbot-api python -m scripts.backfill_gas_tokens
+    uv run python -m scripts.backfill_gas_tokens --dry-run
+    uv run python -m scripts.backfill_gas_tokens
 """
 import argparse
 import asyncio

@@ -8,9 +8,9 @@
 # when a check actually fails, so CI (or `make deploy && make doctor`) can act
 # on the result. Warnings alone exit 0 -- they are advice, not breakage.
 #
-# Deliberately plain bash with no conda/Python dependency: the Docker deploy
-# path never creates the conda env, and a doctor that cannot run on the most
-# common install is not much of a doctor. Mirrors the report layout of
+# Deliberately plain bash with no uv/Python dependency: the Docker deploy
+# path never creates the uv-managed venv, and a doctor that cannot run on the
+# most common install is not much of a doctor. Mirrors the report layout of
 # Condor's `make doctor` so the two read as one tool.
 
 set -uo pipefail
