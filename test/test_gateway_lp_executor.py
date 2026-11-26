@@ -10,7 +10,9 @@ Run with: pytest test/test_gateway_lp_executor.py -v
 """
 import inspect
 import os
+import socket
 from unittest.mock import MagicMock, patch
+from urllib.parse import urlparse
 
 import pytest
 
@@ -210,7 +212,14 @@ class TestGatewayIntegration:
 
     @pytest.fixture
     def api_url(self):
-        return os.environ.get("API_URL", "http://localhost:8000")
+        url = os.environ.get("API_URL", "http://localhost:8000")
+        parsed = urlparse(url)
+        try:
+            with socket.create_connection((parsed.hostname, parsed.port), timeout=1):
+                pass
+        except OSError:
+            pytest.skip(f"Hummingbot API not reachable at {url}")
+        return url
 
     @pytest.fixture
     def api_auth(self):
