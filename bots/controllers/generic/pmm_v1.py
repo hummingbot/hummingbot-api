@@ -13,8 +13,6 @@ from decimal import Decimal
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
-from pydantic import Field, field_validator
-
 from hummingbot.core.data_type.common import MarketDict, PriceType, TradeType
 from hummingbot.strategy_v2.controllers.controller_base import ControllerBase, ControllerConfigBase
 from hummingbot.strategy_v2.executors.data_types import ConnectorPair
@@ -22,6 +20,7 @@ from hummingbot.strategy_v2.executors.order_executor.data_types import Execution
 from hummingbot.strategy_v2.models.base import RunnableStatus
 from hummingbot.strategy_v2.models.executor_actions import CreateExecutorAction, ExecutorAction, StopExecutorAction
 from hummingbot.strategy_v2.models.executors import CloseType
+from pydantic import Field, field_validator
 
 
 class PMMV1Config(ControllerConfigBase):
@@ -207,7 +206,10 @@ class PMMV1(ControllerBase):
         self._level_next_create_timestamps[level_id] = current_time + self.config.filled_order_delay
 
         # Log the filled order delay
-        self.logger().debug(f"Order on level {level_id} filled. Next order for this level can be created after {self.config.filled_order_delay}s delay.")
+        self.logger().debug(
+            f"Order on level {level_id} filled. Next order for this level can be created "
+            f"after {self.config.filled_order_delay}s delay."
+        )
 
     def _get_reference_price(self) -> Decimal:
         """Get reference price (mid price)."""
@@ -594,7 +596,10 @@ class PMMV1(ControllerBase):
         if buys_within_tolerance and sells_within_tolerance:
             if executors_past_refresh:
                 executor_level_ids = [e.custom_info.get("level_id", "unknown") for e in executors_past_refresh]
-                self.logger().debug(f"Orders {executor_level_ids} will not be canceled because they are within the order tolerance ({self.config.order_refresh_tolerance_pct:.2%}).")
+                self.logger().debug(
+                    f"Orders {executor_level_ids} will not be canceled because they are within "
+                    f"the order tolerance ({self.config.order_refresh_tolerance_pct:.2%})."
+                )
             return []
 
         # Log which orders are being refreshed due to tolerance
@@ -606,7 +611,10 @@ class PMMV1(ControllerBase):
             if not sells_within_tolerance:
                 tolerance_reason.append("sell orders outside tolerance")
             reason = " and ".join(tolerance_reason)
-            self.logger().debug(f"Refreshing orders {executor_level_ids} due to {reason} (tolerance: {self.config.order_refresh_tolerance_pct:.2%}).")
+            self.logger().debug(
+                f"Refreshing orders {executor_level_ids} due to {reason} "
+                f"(tolerance: {self.config.order_refresh_tolerance_pct:.2%})."
+            )
 
         # Otherwise, refresh all executors
         return [

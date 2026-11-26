@@ -13,6 +13,7 @@ class CandleData(BaseModel):
     close: float = Field(description="Closing price")
     volume: float = Field(description="Trading volume")
 
+
 class CandlesConfigRequest(BaseModel):
     """
     The CandlesConfig class is a data class that stores the configuration of a Candle object.
@@ -26,6 +27,7 @@ class CandlesConfigRequest(BaseModel):
     trading_pair: str
     interval: str = "1m"
     max_records: int = 500
+
 
 class CandlesResponse(BaseModel):
     """Response for candles data"""

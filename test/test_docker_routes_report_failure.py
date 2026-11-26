@@ -31,6 +31,11 @@ from routers.docker import (
 )
 from services.docker_service import DockerService
 
+# stop/start now carry the same `bots/instances/<name>` ownership guard
+# `remove-container` does ([[SEC-129]]), so any test that reaches the router for
+# "ghost" or "bot-1" needs that directory to exist first -- see `instances_root`.
+
+
 # What docker-py actually raises, socket URL and API version included.
 NOT_FOUND = NotFound(
     '404 Client Error for http+docker://localhost/v1.55/containers/ghost/json: '
@@ -43,10 +48,10 @@ DAEMON_ERROR = APIError(
 
 
 class _Containers:
-    def __init__(self, error=None, container=None):
+    def __init__(self, error=None, container=None, exited=None):
         self.error = error
         self.container = container
-        self.pruned = 0
+        self.exited = exited or []
 
     def get(self, name):
         if isinstance(self.error, DockerException):
@@ -56,19 +61,16 @@ class _Containers:
     def list(self, **kwargs):
         if isinstance(self.error, DockerException):
             raise self.error
-        return []
-
-    def prune(self):
-        if isinstance(self.error, DockerException):
-            raise self.error
-        self.pruned += 1
+        return self.exited
 
 
 class _Container:
-    def __init__(self, error=None):
+    def __init__(self, error=None, name=None):
         self.error = error
+        self.name = name
         self.stopped = 0
         self.started = 0
+        self.removed = 0
 
     def stop(self):
         if self.error:
@@ -80,18 +82,33 @@ class _Container:
             raise self.error
         self.started += 1
 
+    def remove(self):
+        if self.error:
+            raise self.error
+        self.removed += 1
 
-def _service(error=None, container=None):
+
+def _service(error=None, container=None, exited=None):
     service = DockerService.__new__(DockerService)
     service.client = type("_Client", (), {})()
-    service.client.containers = _Containers(error=error, container=container)
+    service.client.containers = _Containers(error=error, container=container, exited=exited)
     service.client.images = _Containers(error=error)
     return service
 
 
+@pytest.fixture
+def instances_root(tmp_path, monkeypatch):
+    """Run inside a scratch cwd so 'bots/instances' is a real, empty directory we control."""
+    root = tmp_path / "bots" / "instances"
+    root.mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+    return root
+
+
 class TestAMissingContainerIs404:
     @pytest.mark.asyncio
-    async def test_stopping_one_raises_404(self):
+    async def test_stopping_one_raises_404(self, instances_root):
+        (instances_root / "ghost").mkdir()
         with pytest.raises(HTTPException) as raised:
             await stop_container("ghost", _service(error=NOT_FOUND))
 
@@ -99,15 +116,17 @@ class TestAMissingContainerIs404:
         assert raised.value.detail == "No such container: ghost"
 
     @pytest.mark.asyncio
-    async def test_starting_one_raises_404(self):
+    async def test_starting_one_raises_404(self, instances_root):
+        (instances_root / "ghost").mkdir()
         with pytest.raises(HTTPException) as raised:
             await start_container("ghost", _service(error=NOT_FOUND))
 
         assert raised.value.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_the_detail_never_carries_the_daemon_socket_or_api_version(self):
+    async def test_the_detail_never_carries_the_daemon_socket_or_api_version(self, instances_root):
         """The reported body leaked both. Neither is an answer to what was asked."""
+        (instances_root / "ghost").mkdir()
         with pytest.raises(HTTPException) as raised:
             await stop_container("ghost", _service(error=NOT_FOUND))
 
@@ -118,7 +137,8 @@ class TestAMissingContainerIs404:
 
 class TestADaemonFailureIs502:
     @pytest.mark.asyncio
-    async def test_a_stop_the_daemon_refuses_raises_502(self):
+    async def test_a_stop_the_daemon_refuses_raises_502(self, instances_root):
+        (instances_root / "bot-1").mkdir()
         service = _service(container=_Container(error=DAEMON_ERROR))
 
         with pytest.raises(HTTPException) as raised:
@@ -152,8 +172,9 @@ class TestADaemonFailureIs502:
 
 class TestSuccessStillAnswersNormally:
     @pytest.mark.asyncio
-    async def test_a_stop_that_works_reports_it(self):
+    async def test_a_stop_that_works_reports_it(self, instances_root):
         """It used to return null, which is indistinguishable from a failure body."""
+        (instances_root / "bot-1").mkdir()
         container = _Container()
         service = _service(container=container)
 
@@ -163,7 +184,8 @@ class TestSuccessStillAnswersNormally:
         assert container.stopped == 1
 
     @pytest.mark.asyncio
-    async def test_a_start_that_works_reports_it(self):
+    async def test_a_start_that_works_reports_it(self, instances_root):
+        (instances_root / "bot-1").mkdir()
         container = _Container()
         service = _service(container=container)
 
@@ -177,13 +199,18 @@ class TestSuccessStillAnswersNormally:
         assert await active_containers(None, _service()) == []
 
     @pytest.mark.asyncio
-    async def test_pruning_that_works_reports_it(self):
-        service = _service()
+    async def test_pruning_that_works_reports_it(self, instances_root):
+        """Removes only its own exited bot container, not a daemon-wide prune."""
+        (instances_root / "bot-1").mkdir()
+        owned = _Container(name="bot-1")
+        unrelated = _Container(name="other-project-mongodb")
+        service = _service(exited=[owned, unrelated])
 
         response = await clean_exited_containers(service)
 
         assert response["success"] is True
-        assert service.client.containers.pruned == 1
+        assert owned.removed == 1
+        assert unrelated.removed == 0
 
 
 class TestTheServiceKeepsItsInBandContract:

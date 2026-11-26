@@ -11,6 +11,7 @@ from .models import (
     GatewaySwap,
     Order,
     PositionSnapshot,
+    RequestIdempotency,
     TokenState,
     Trade,
 )
@@ -23,17 +24,18 @@ from .repositories import (
     FundingRepository,
     GatewayCLMMRepository,
     GatewaySwapRepository,
+    IdempotencyRepository,
     OrderRepository,
     TradeRepository,
 )
 
 __all__ = [
     "AccountState", "TokenState", "Order", "Trade", "PositionSnapshot", "FundingPayment", "BotRun",
-    "GatewaySwap", "GatewayCLMMPosition", "GatewayCLMMEvent",
+    "GatewaySwap", "GatewayCLMMPosition", "GatewayCLMMEvent", "RequestIdempotency",
     "ControllerPerformanceSnapshot", "ExecutorPerformanceSnapshot",
     "Base", "AsyncDatabaseManager",
     "AccountRepository", "BotRunRepository", "ControllerPerformanceRepository",
     "ExecutorPerformanceRepository", "ExecutorRepository",
-    "OrderRepository", "TradeRepository", "FundingRepository",
+    "OrderRepository", "TradeRepository", "FundingRepository", "IdempotencyRepository",
     "GatewaySwapRepository", "GatewayCLMMRepository"
 ]

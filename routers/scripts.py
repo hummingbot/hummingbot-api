@@ -1,11 +1,11 @@
 import json
-import yaml
 from typing import Dict, List
 
+import yaml
 from fastapi import APIRouter, HTTPException
 from starlette import status
 
-from models import Script, ScriptConfig
+from models import Script
 from utils.file_system import fs_util
 
 router = APIRouter(tags=["Scripts"], prefix="/scripts")
@@ -15,7 +15,7 @@ router = APIRouter(tags=["Scripts"], prefix="/scripts")
 async def list_scripts():
     """
     List all available scripts.
-    
+
     Returns:
         List of script names (without .py extension)
     """
@@ -27,14 +27,14 @@ async def list_scripts():
 async def list_script_configs():
     """
     List all script configurations with metadata.
-    
+
     Returns:
         List of script configuration objects with name, script_file_name, and other metadata
     """
     try:
         config_files = [f for f in fs_util.list_files('conf/scripts') if f.endswith('.yml')]
         configs = []
-        
+
         for config_file in config_files:
             config_name = config_file.replace('.yml', '')
             try:
@@ -53,7 +53,7 @@ async def list_script_configs():
                     "script_file_name": "error",
                     "error": str(e)
                 })
-        
+
         return configs
     except FileNotFoundError:
         return []
@@ -63,13 +63,13 @@ async def list_script_configs():
 async def get_script_config(config_name: str):
     """
     Get script configuration by config name.
-    
+
     Args:
         config_name: Name of the configuration file to retrieve
-        
+
     Returns:
         Dictionary with script configuration
-        
+
     Raises:
         HTTPException: 404 if configuration not found
     """
@@ -84,14 +84,14 @@ async def get_script_config(config_name: str):
 async def create_or_update_script_config(config_name: str, config: Dict):
     """
     Create or update script configuration.
-    
+
     Args:
         config_name: Name of the configuration file
         config: Configuration dictionary to save
-        
+
     Returns:
         Success message when configuration is saved
-        
+
     Raises:
         HTTPException: 400 if save error occurs
     """
@@ -107,13 +107,13 @@ async def create_or_update_script_config(config_name: str, config: Dict):
 async def delete_script_config(config_name: str):
     """
     Delete script configuration.
-    
+
     Args:
         config_name: Name of the configuration file to delete
-        
+
     Returns:
         Success message when configuration is deleted
-        
+
     Raises:
         HTTPException: 404 if configuration not found
     """
@@ -128,13 +128,13 @@ async def delete_script_config(config_name: str):
 async def get_script(script_name: str):
     """
     Get script content by name.
-    
+
     Args:
         script_name: Name of the script to retrieve
-        
+
     Returns:
         Dictionary with script name and content
-        
+
     Raises:
         HTTPException: 404 if script not found
     """
@@ -152,14 +152,14 @@ async def get_script(script_name: str):
 async def create_or_update_script(script_name: str, script: Script):
     """
     Create or update a script.
-    
+
     Args:
         script_name: Name of the script (from URL path)
         script: Script object with content
-        
+
     Returns:
         Success message when script is saved
-        
+
     Raises:
         HTTPException: 400 if save error occurs
     """
@@ -174,13 +174,13 @@ async def create_or_update_script(script_name: str, script: Script):
 async def delete_script(script_name: str):
     """
     Delete a script.
-    
+
     Args:
         script_name: Name of the script to delete
-        
+
     Returns:
         Success message when script is deleted
-        
+
     Raises:
         HTTPException: 404 if script not found
     """
@@ -195,13 +195,13 @@ async def delete_script(script_name: str):
 async def get_script_config_template(script_name: str):
     """
     Get script configuration template with default values.
-    
+
     Args:
         script_name: Name of the script to get template for
-        
+
     Returns:
         Dictionary with configuration template and default values
-        
+
     Raises:
         HTTPException: 404 if script configuration class not found
     """

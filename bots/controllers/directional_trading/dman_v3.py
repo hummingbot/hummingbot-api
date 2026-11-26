@@ -69,7 +69,8 @@ class DManV3ControllerConfig(DirectionalTradingControllerConfigBase):
     activation_bounds: Optional[List[Decimal]] = Field(
         default=None,
         json_schema_extra={
-            "prompt": "Enter the activation bounds for the orders (e.g., 0.01 activates the next order when the price is closer than 1%): ",
+            "prompt": "Enter the activation bounds for the orders (e.g., 0.01 activates the next order "
+                      "when the price is closer than 1%): ",
             "prompt_on_new": True,
         }
     )
@@ -121,7 +122,9 @@ class DManV3ControllerConfig(DirectionalTradingControllerConfigBase):
             return validation_info.data.get("trading_pair")
         return v
 
-    def get_spreads_and_amounts_in_quote(self, trade_type: TradeType, total_amount_quote: Decimal) -> Tuple[List[Decimal], List[Decimal]]:
+    def get_spreads_and_amounts_in_quote(
+        self, trade_type: TradeType, total_amount_quote: Decimal
+    ) -> Tuple[List[Decimal], List[Decimal]]:
         amounts_pct = self.dca_amounts_pct
         if amounts_pct is None:
             # Equally distribute if amounts_pct is not set
@@ -156,8 +159,9 @@ class DManV3Controller(DirectionalTradingControllerBase):
         df.ta.bbands(length=self.config.bb_length, lower_std=self.config.bb_std, upper_std=self.config.bb_std, append=True)
 
         # Generate signal
-        long_condition = df[f"BBP_{self.config.bb_length}_{self.config.bb_std}_{self.config.bb_std}"] < self.config.bb_long_threshold
-        short_condition = df[f"BBP_{self.config.bb_length}_{self.config.bb_std}_{self.config.bb_std}"] > self.config.bb_short_threshold
+        bbp_column = f"BBP_{self.config.bb_length}_{self.config.bb_std}_{self.config.bb_std}"
+        long_condition = df[bbp_column] < self.config.bb_long_threshold
+        short_condition = df[bbp_column] > self.config.bb_short_threshold
 
         # Generate signal
         df["signal"] = 0

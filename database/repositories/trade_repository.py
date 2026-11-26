@@ -42,16 +42,16 @@ class TradeRepository:
         return result.scalar_one_or_none()
 
     async def get_trades_with_orders(self, account_name: Optional[str] = None,
-                                   connector_name: Optional[str] = None,
-                                   trading_pair: Optional[str] = None,
-                                   trade_type: Optional[str] = None,
-                                   start_time: Optional[int] = None,
-                                   end_time: Optional[int] = None,
-                                   limit: int = 100, offset: int = 0) -> List[tuple]:
+                                     connector_name: Optional[str] = None,
+                                     trading_pair: Optional[str] = None,
+                                     trade_type: Optional[str] = None,
+                                     start_time: Optional[int] = None,
+                                     end_time: Optional[int] = None,
+                                     limit: int = 100, offset: int = 0) -> List[tuple]:
         """Get trades with their associated order information."""
         # Join trades with orders to get complete information
         query = select(Trade, Order).join(Order, Trade.order_id == Order.id)
-        
+
         # Apply filters
         if account_name:
             query = query.where(Order.account_name == account_name)
@@ -67,11 +67,11 @@ class TradeRepository:
         if end_time:
             end_dt = datetime.fromtimestamp(end_time / 1000)
             query = query.where(Trade.timestamp <= end_dt)
-        
+
         # Apply ordering and pagination
         query = query.order_by(Trade.timestamp.desc())
         query = query.limit(limit).offset(offset)
-        
+
         result = await self.session.execute(query)
         return result.all()  # Returns tuples of (Trade, Order)
 

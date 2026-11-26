@@ -18,40 +18,40 @@ class FundingRepository:
         await self.session.flush()  # Get the ID
         return funding
 
-    async def get_funding_payments(self, account_name: str, connector_name: str = None, 
-                                 trading_pair: str = None, limit: int = 100) -> List[FundingPayment]:
+    async def get_funding_payments(self, account_name: str, connector_name: str = None,
+                                   trading_pair: str = None, limit: int = 100) -> List[FundingPayment]:
         """Get funding payments with optional filters."""
         query = select(FundingPayment).where(FundingPayment.account_name == account_name)
-        
+
         if connector_name:
             query = query.where(FundingPayment.connector_name == connector_name)
         if trading_pair:
             query = query.where(FundingPayment.trading_pair == trading_pair)
-            
+
         query = query.order_by(FundingPayment.timestamp.desc()).limit(limit)
-        
+
         result = await self.session.execute(query)
         return result.scalars().all()
 
-    async def get_total_funding_fees(self, account_name: str, connector_name: str, 
-                                   trading_pair: str) -> Dict:
+    async def get_total_funding_fees(self, account_name: str, connector_name: str,
+                                     trading_pair: str) -> Dict:
         """Get total funding fees for a specific trading pair."""
         query = select(FundingPayment).where(
             FundingPayment.account_name == account_name,
             FundingPayment.connector_name == connector_name,
             FundingPayment.trading_pair == trading_pair
         )
-        
+
         result = await self.session.execute(query)
         payments = result.scalars().all()
-        
+
         total_funding = Decimal('0')
         payment_count = 0
-        
+
         for payment in payments:
             total_funding += Decimal(str(payment.funding_payment))
             payment_count += 1
-            
+
         return {
             "total_funding_fees": float(total_funding),
             "payment_count": payment_count,

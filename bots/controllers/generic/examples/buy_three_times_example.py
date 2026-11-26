@@ -29,7 +29,9 @@ class BuyThreeTimesExample(ControllerBase):
         self.max_buys = 3
 
     async def update_processed_data(self):
-        mid_price = self.market_data_provider.get_price_by_type(self.config.connector_name, self.config.trading_pair, PriceType.MidPrice)
+        mid_price = self.market_data_provider.get_price_by_type(
+            self.config.connector_name, self.config.trading_pair, PriceType.MidPrice
+        )
         n_active_executors = len([executor for executor in self.executors_info if executor.is_active])
         self.processed_data = {
             "mid_price": mid_price,

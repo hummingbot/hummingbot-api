@@ -7,6 +7,7 @@ from .funding_repository import FundingRepository
 from .gateway_amm_repository import GatewayAMMRepository
 from .gateway_clmm_repository import GatewayCLMMRepository
 from .gateway_swap_repository import GatewaySwapRepository
+from .idempotency_repository import IdempotencyRepository
 from .order_repository import OrderRepository
 from .trade_repository import TradeRepository
 
@@ -17,6 +18,7 @@ __all__ = [
     "ExecutorPerformanceRepository",
     "ExecutorRepository",
     "FundingRepository",
+    "IdempotencyRepository",
     "OrderRepository",
     "TradeRepository",
     "GatewaySwapRepository",

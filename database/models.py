@@ -581,6 +581,34 @@ class PositionHoldRecord(Base):
     cleared_at = Column(TIMESTAMP(timezone=True), nullable=True)
 
 
+class RequestIdempotency(Base):
+    """A claimed Idempotency-Key for a write route, and the response to replay on a retry.
+
+    The claim is `INSERT ... ON CONFLICT (idempotency_key) DO NOTHING` (IdempotencyRepository):
+    the insert itself is the arbiter between two concurrent requests racing for the same key,
+    which a select-then-insert on any database cannot settle atomically. Postgres-specific,
+    consistent with the rest of this repo defaulting to postgresql+asyncpg.
+    """
+    __tablename__ = "request_idempotency"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    idempotency_key = Column(String, nullable=False, unique=True, index=True)
+    route = Column(String, nullable=False)
+    # sha256 of the canonicalized request body, so a key reused for a different request is
+    # caught rather than answered with the first request's response.
+    request_hash = Column(String, nullable=False)
+
+    # Filled once the claim settles.
+    response_status = Column(Integer, nullable=True)
+    response_body = Column(Text, nullable=True)
+
+    state = Column(String, nullable=False, index=True)  # IN_FLIGHT, COMPLETED, FAILED
+
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False, index=True)
+    completed_at = Column(TIMESTAMP(timezone=True), nullable=True)
+
+
 class ExecutorOrder(Base):
     """Database model for orders created by executors."""
     __tablename__ = "executor_orders"

@@ -201,7 +201,10 @@ class MultiGridStrike(ControllerBase):
         active_grids = len([g for g in self.config.grids if g.enabled])
         total_grids = len(self.config.grids)
         total_amount = self.config.total_amount_quote
-        info_line = f"│ Mid Price: {mid_price:.4f} │ Active Grids: {active_grids}/{total_grids} │ Total Amount: {total_amount:.2f} │"
+        info_line = (
+            f"│ Mid Price: {mid_price:.4f} │ Active Grids: {active_grids}/{total_grids} │ "
+            f"Total Amount: {total_amount:.2f} │"
+        )
         info_line += " " * (box_width - len(info_line) + 1) + "│"
         status.append(info_line)
 
@@ -224,7 +227,10 @@ class MultiGridStrike(ControllerBase):
             # Grid configuration
             grid_amount = self.calculate_grid_amount(grid)
             pct_display = f"{grid.amount_quote_pct * 100:.1f}%"
-            config_line = f"│ Start: {grid.start_price:.4f} │ End: {grid.end_price:.4f} │ Side: {grid.side} │ Limit: {grid.limit_price:.4f} │ Amount: {grid_amount:.2f} ({pct_display}) │"
+            config_line = (
+                f"│ Start: {grid.start_price:.4f} │ End: {grid.end_price:.4f} │ Side: {grid.side} │ "
+                f"Limit: {grid.limit_price:.4f} │ Amount: {grid_amount:.2f} ({pct_display}) │"
+            )
             config_line += " " * (box_width - len(config_line) + 1) + "│"
             status.append(config_line)
 
@@ -247,8 +253,10 @@ class MultiGridStrike(ControllerBase):
                     f"COMPLETE: {executor.custom_info.get('levels_by_state', {}).get('COMPLETE', 0)}"
                 ]
 
+                order_keys = ['filled_orders', 'failed_orders', 'canceled_orders']
+                total_orders = sum(len(executor.custom_info.get(k, [])) for k in order_keys)
                 order_stats_data = [
-                    f"Total: {sum(len(executor.custom_info.get(k, [])) for k in ['filled_orders', 'failed_orders', 'canceled_orders'])}",
+                    f"Total: {total_orders}",
                     f"Filled: {len(executor.custom_info.get('filled_orders', []))}",
                     f"Failed: {len(executor.custom_info.get('failed_orders', []))}",
                     f"Canceled: {len(executor.custom_info.get('canceled_orders', []))}"
@@ -281,7 +289,10 @@ class MultiGridStrike(ControllerBase):
 
                 # Liquidity line
                 status.append("├" + "─" * box_width + "┤")
-                liquidity_line = f"│ Open Liquidity: {executor.custom_info.get('open_liquidity_placed', 0):.4f} │ Close Liquidity: {executor.custom_info.get('close_liquidity_placed', 0):.4f} │"
+                liquidity_line = (
+                    f"│ Open Liquidity: {executor.custom_info.get('open_liquidity_placed', 0):.4f} │ "
+                    f"Close Liquidity: {executor.custom_info.get('close_liquidity_placed', 0):.4f} │"
+                )
                 liquidity_line += " " * (box_width - len(liquidity_line) + 1) + "│"
                 status.append(liquidity_line)
 

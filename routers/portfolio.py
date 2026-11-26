@@ -1,7 +1,7 @@
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 
 from deps import get_accounts_service
 from models import PaginatedResponse
@@ -117,7 +117,7 @@ async def get_portfolio_history(
                             if connector_name in account_data
                         }
                         state[account_name] = filtered_connectors
-        
+
         return PaginatedResponse(
             data=data,
             pagination={
@@ -145,10 +145,10 @@ async def get_portfolio_distribution(
 ):
     """
     Get portfolio distribution by tokens with percentages across all or filtered accounts.
-    
+
     Args:
         filter_request: JSON payload with filtering criteria
-        
+
     Returns:
         Dictionary with token distribution including percentages, values, and breakdown by accounts/connectors
     """
@@ -166,14 +166,14 @@ async def get_portfolio_distribution(
             "token_count": 0,
             "accounts": {}
         }
-        
+
         for account_name in filter_request.account_names:
             account_dist = accounts_service.get_portfolio_distribution(account_name)
-            
+
             # Skip if account doesn't exist or has error
             if account_dist.get("error") or account_dist.get("token_count", 0) == 0:
                 continue
-            
+
             # Aggregate token data
             for token, token_data in account_dist.get("tokens", {}).items():
                 if token not in aggregated_distribution["tokens"]:
@@ -183,31 +183,31 @@ async def get_portfolio_distribution(
                         "percentage": 0,
                         "accounts": {}
                     }
-                
+
                 aggregated_distribution["tokens"][token]["value"] += token_data.get("value", 0)
-                
+
                 # Copy account-specific data
                 for acc_name, acc_data in token_data.get("accounts", {}).items():
                     aggregated_distribution["tokens"][token]["accounts"][acc_name] = acc_data
-            
+
             aggregated_distribution["total_value"] += account_dist.get("total_value", 0)
             aggregated_distribution["accounts"][account_name] = account_dist.get("accounts", {}).get(account_name, {})
-        
+
         # Recalculate percentages
         total_value = aggregated_distribution["total_value"]
         if total_value > 0:
             for token_data in aggregated_distribution["tokens"].values():
                 token_data["percentage"] = (token_data["value"] / total_value) * 100
-        
+
         aggregated_distribution["token_count"] = len(aggregated_distribution["tokens"])
-        
+
         distribution = aggregated_distribution
-    
+
     # Apply connector filter if specified
     if filter_request.connector_names:
         filtered_distribution = []
         filtered_total_value = 0
-        
+
         for token_data in distribution.get("distribution", []):
             filtered_token = {
                 "token": token_data["token"],
@@ -216,21 +216,21 @@ async def get_portfolio_distribution(
                 "percentage": 0,
                 "accounts": {}
             }
-            
+
             # Filter each account's connectors
             for account_name, account_data in token_data.get("accounts", {}).items():
                 if "connectors" in account_data:
                     filtered_connectors = {}
                     account_value = 0
                     account_units = 0
-                    
+
                     # Only include specified connectors
                     for connector_name in filter_request.connector_names:
                         if connector_name in account_data["connectors"]:
                             filtered_connectors[connector_name] = account_data["connectors"][connector_name]
                             account_value += account_data["connectors"][connector_name].get("value", 0)
                             account_units += account_data["connectors"][connector_name].get("units", 0)
-                    
+
                     # Only include account if it has matching connectors
                     if filtered_connectors:
                         filtered_token["accounts"][account_name] = {
@@ -239,15 +239,15 @@ async def get_portfolio_distribution(
                             "percentage": 0,  # Will be recalculated later
                             "connectors": filtered_connectors
                         }
-                        
+
                         filtered_token["total_value"] += account_value
                         filtered_token["total_units"] += account_units
-            
+
             # Only include token if it has values after filtering
             if filtered_token["total_value"] > 0:
                 filtered_distribution.append(filtered_token)
                 filtered_total_value += filtered_token["total_value"]
-        
+
         # Recalculate percentages after filtering
         if filtered_total_value > 0:
             for token_data in filtered_distribution:
@@ -255,10 +255,10 @@ async def get_portfolio_distribution(
                 # Update account percentages
                 for account_data in token_data["accounts"].values():
                     account_data["percentage"] = round((account_data["value"] / filtered_total_value) * 100, 4)
-        
+
         # Sort by value (descending)
         filtered_distribution.sort(key=lambda x: x["total_value"], reverse=True)
-        
+
         # Update the distribution
         distribution = {
             "total_portfolio_value": round(filtered_total_value, 6),
@@ -266,7 +266,7 @@ async def get_portfolio_distribution(
             "distribution": filtered_distribution,
             "account_filter": distribution.get("account_filter", "filtered")
         }
-    
+
     return distribution
 
 

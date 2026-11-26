@@ -1,0 +1,70 @@
+name: Hummingbot-API CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -l {0}
+    env:
+      CONDA_PKGS_DIRS: ~/conda_pkgs_dir
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4.1.1
+
+      - name: Cache conda packages
+        uses: actions/cache@v4
+        with:
+          path: ~/conda_pkgs_dir
+          key: conda-pkgs-${{ runner.os }}-${{ hashFiles('environment.yml') }}
+
+      - name: Set up Miniconda
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          miniforge-version: latest
+          environment-file: environment.yml
+          activate-environment: hummingbot-api
+          use-mamba: true
+
+      - name: Run test suite
+        run: make test
+
+  lint:
+    runs-on: ubuntu-latest
+    # ARCH-127 reconciles the toolchain and clears the 296 existing flake8
+    # violations; flip this to blocking as part of that item.
+    continue-on-error: true
+    defaults:
+      run:
+        shell: bash -l {0}
+    env:
+      CONDA_PKGS_DIRS: ~/conda_pkgs_dir
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4.1.1
+
+      - name: Cache conda packages
+        uses: actions/cache@v4
+        with:
+          path: ~/conda_pkgs_dir
+          key: conda-pkgs-${{ runner.os }}-${{ hashFiles('environment.yml') }}
+
+      - name: Set up Miniconda
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          miniforge-version: latest
+          environment-file: environment.yml
+          activate-environment: hummingbot-api
+          use-mamba: true
+
+      - name: Run pre-commit
+        run: pre-commit run --all-files

@@ -1,6 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, Dict, List, Literal, Optional
+from typing import Dict, List, Literal, Optional
 
 from hummingbot.core.data_type.common import OrderType, PositionAction, TradeType
 from pydantic import BaseModel, Field, field_validator
@@ -17,7 +17,9 @@ class TradeRequest(BaseModel):
     amount: Decimal = Field(description="Amount to trade", gt=0)
     order_type: Literal["LIMIT", "MARKET", "LIMIT_MAKER"] = Field(default="LIMIT", description="Type of order")
     price: Optional[Decimal] = Field(default=None, description="Price for limit orders")
-    position_action: Literal["OPEN", "CLOSE"] = Field(default="OPEN", description="Position action for perpetual contracts (OPEN/CLOSE)")
+    position_action: Literal["OPEN", "CLOSE"] = Field(
+        default="OPEN", description="Position action for perpetual contracts (OPEN/CLOSE)"
+    )
 
     @field_validator('trade_type')
     @classmethod

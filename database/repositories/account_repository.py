@@ -73,7 +73,7 @@ class AccountRepository:
         return sampled
 
     async def save_account_state(self, account_name: str, connector_name: str, tokens_info: List[Dict],
-                                snapshot_timestamp: Optional[datetime] = None) -> AccountState:
+                                 snapshot_timestamp: Optional[datetime] = None) -> AccountState:
         """
         Save account state with token information to the database.
         If snapshot_timestamp is provided, use it instead of server default.
@@ -87,16 +87,16 @@ class AccountRepository:
             "account_name": account_name,
             "connector_name": connector_name
         }
-        
+
         # If a specific timestamp is provided, use it instead of server default
         if snapshot_timestamp:
             account_state_data["timestamp"] = snapshot_timestamp
-            
+
         account_state = AccountState(**account_state_data)
-        
+
         self.session.add(account_state)
         await self.session.flush()  # Get the ID
-        
+
         for token_info in tokens_info:
             token_state = TokenState(
                 account_state_id=account_state.id,
@@ -124,7 +124,7 @@ class AccountRepository:
             .group_by(AccountState.account_name, AccountState.connector_name)
             .subquery()
         )
-        
+
         # Get the full records for the latest timestamps
         query = (
             select(AccountState)
@@ -136,31 +136,31 @@ class AccountRepository:
                 (AccountState.timestamp == subquery.c.max_timestamp)
             )
         )
-        
+
         result = await self.session.execute(query)
         account_states = result.unique().scalars().all()
-        
+
         # Convert to the expected format
         accounts_state = {}
         for account_state in account_states:
             if account_state.account_name not in accounts_state:
                 accounts_state[account_state.account_name] = {}
-                
+
             token_info = [self._token_state_to_dict(token_state) for token_state in account_state.token_states]
 
             accounts_state[account_state.account_name][account_state.connector_name] = token_info
-        
+
         return accounts_state
 
     async def get_account_state_history(self,
-                                      limit: Optional[int] = None,
-                                      account_name: Optional[str] = None,
-                                      account_names: Optional[List[str]] = None,
-                                      connector_name: Optional[str] = None,
-                                      cursor: Optional[str] = None,
-                                      start_time: Optional[datetime] = None,
-                                      end_time: Optional[datetime] = None,
-                                      interval: str = "5m") -> Tuple[List[Dict], Optional[str], bool]:
+                                        limit: Optional[int] = None,
+                                        account_name: Optional[str] = None,
+                                        account_names: Optional[List[str]] = None,
+                                        connector_name: Optional[str] = None,
+                                        cursor: Optional[str] = None,
+                                        start_time: Optional[datetime] = None,
+                                        end_time: Optional[datetime] = None,
+                                        interval: str = "5m") -> Tuple[List[Dict], Optional[str], bool]:
         """
         Get historical account states with cursor-based pagination and interval sampling.
 
@@ -275,7 +275,7 @@ class AccountRepository:
             next_cursor = sampled_history[-1]["timestamp"]
 
         return sampled_history, next_cursor, has_more
-    
+
     async def get_account_current_state(self, account_name: str) -> Dict[str, List[Dict]]:
         """
         Get the current state for a specific account.
@@ -289,7 +289,7 @@ class AccountRepository:
             .group_by(AccountState.connector_name)
             .subquery()
         )
-        
+
         query = (
             select(AccountState)
             .options(joinedload(AccountState.token_states))
@@ -300,17 +300,17 @@ class AccountRepository:
             )
             .filter(AccountState.account_name == account_name)
         )
-        
+
         result = await self.session.execute(query)
         account_states = result.unique().scalars().all()
-        
+
         state = {}
         for account_state in account_states:
             token_info = [self._token_state_to_dict(token_state) for token_state in account_state.token_states]
             state[account_state.connector_name] = token_info
-        
+
         return state
-    
+
     async def get_connector_current_state(self, account_name: str, connector_name: str) -> List[Dict]:
         """
         Get the current state for a specific connector.
@@ -325,17 +325,17 @@ class AccountRepository:
             .order_by(desc(AccountState.timestamp))
             .limit(1)
         )
-        
+
         result = await self.session.execute(query)
         account_state = result.unique().scalar_one_or_none()
-        
+
         if not account_state:
             return []
-        
+
         token_info = [self._token_state_to_dict(token_state) for token_state in account_state.token_states]
 
         return token_info
-    
+
     async def get_all_unique_tokens(self) -> List[str]:
         """
         Get all unique tokens across all accounts and connectors.
@@ -345,12 +345,12 @@ class AccountRepository:
             .distinct()
             .order_by(TokenState.token)
         )
-        
+
         result = await self.session.execute(query)
         tokens = result.scalars().all()
-        
+
         return list(tokens)
-    
+
     async def get_token_current_state(self, token: str) -> List[Dict]:
         """
         Get current state of a specific token across all accounts.
@@ -366,7 +366,7 @@ class AccountRepository:
             .group_by(AccountState.account_name, AccountState.connector_name, AccountState.id)
             .subquery()
         )
-        
+
         query = (
             select(TokenState, AccountState.account_name, AccountState.connector_name)
             .join(AccountState)
@@ -377,10 +377,10 @@ class AccountRepository:
             )
             .filter(TokenState.token == token)
         )
-        
+
         result = await self.session.execute(query)
         token_states = result.all()
-        
+
         states = []
         for token_state, account_name, connector_name in token_states:
             states.append({
@@ -391,9 +391,9 @@ class AccountRepository:
                 "value": float(token_state.value),
                 "available_units": float(token_state.available_units)
             })
-        
+
         return states
-    
+
     async def get_portfolio_value(self, account_name: Optional[str] = None) -> Dict:
         """
         Get total portfolio value, optionally filtered by account.
@@ -407,12 +407,12 @@ class AccountRepository:
             )
             .group_by(AccountState.account_name, AccountState.connector_name)
         )
-        
+
         if account_name:
             subquery = subquery.filter(AccountState.account_name == account_name)
-        
+
         subquery = subquery.subquery()
-        
+
         # Get token values
         query = (
             select(
@@ -428,17 +428,17 @@ class AccountRepository:
             )
             .group_by(AccountState.account_name)
         )
-        
+
         result = await self.session.execute(query)
         values = result.all()
-        
+
         portfolio = {
             "accounts": {},
             "total_value": 0
         }
-        
+
         for account, value in values:
             portfolio["accounts"][account] = float(value or 0)
             portfolio["total_value"] += float(value or 0)
-        
+
         return portfolio

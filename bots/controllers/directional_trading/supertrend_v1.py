@@ -1,14 +1,13 @@
 from typing import List
 
 import pandas_ta as ta  # noqa: F401
-from pydantic import Field, field_validator
-from pydantic_core.core_schema import ValidationInfo
-
 from hummingbot.data_feed.candles_feed.data_types import CandlesConfig
 from hummingbot.strategy_v2.controllers.directional_trading_controller_base import (
     DirectionalTradingControllerBase,
     DirectionalTradingControllerConfigBase,
 )
+from pydantic import Field, field_validator
+from pydantic_core.core_schema import ValidationInfo
 
 
 class SuperTrendConfig(DirectionalTradingControllerConfigBase):
@@ -67,8 +66,10 @@ class SuperTrend(DirectionalTradingControllerBase):
         df["percentage_distance"] = abs(df["close"] - df[f"SUPERT_{self.config.length}_{self.config.multiplier}"]) / df["close"]
 
         # Generate long and short conditions
-        long_condition = (df[f"SUPERTd_{self.config.length}_{self.config.multiplier}"] == 1) & (df["percentage_distance"] < self.config.percentage_threshold)
-        short_condition = (df[f"SUPERTd_{self.config.length}_{self.config.multiplier}"] == -1) & (df["percentage_distance"] < self.config.percentage_threshold)
+        supertd_column = df[f"SUPERTd_{self.config.length}_{self.config.multiplier}"]
+        within_threshold = df["percentage_distance"] < self.config.percentage_threshold
+        long_condition = (supertd_column == 1) & within_threshold
+        short_condition = (supertd_column == -1) & within_threshold
 
         # Choose side
         df['signal'] = 0

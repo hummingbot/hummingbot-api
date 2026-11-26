@@ -64,6 +64,7 @@ class MarketDataService:
             ticker_update_interval: int = 30,
             ticker_max_age: int = 60,
             ticker_subscription_ttl: int = 600,
+            external_price_max_age: int = 300,
     ):
         """
         Initialize the MarketDataService.
@@ -77,6 +78,8 @@ class MarketDataService:
             ticker_max_age: Max age of cached tickers before an on-demand request refetches them
             ticker_subscription_ttl: How long a ticker-only connector stays in the background
                 refresh cycle after its last on-demand request (seconds)
+            external_price_max_age: Max age of an externally pushed price (e.g. Gateway DEX
+                quotes) before it is dropped from the price pool (seconds)
         """
         self._connector_service = connector_service
         self._quote_token = quote_token
@@ -85,6 +88,7 @@ class MarketDataService:
         self._ticker_update_interval = ticker_update_interval
         self._ticker_max_age = ticker_max_age
         self._ticker_subscription_ttl = ticker_subscription_ttl
+        self._external_price_max_age = external_price_max_age
 
         # Candle feeds management. Creating a feed validates the pair over the network before
         # the feed lands in _candle_feeds, so a per-key lock collapses concurrent first-touch
@@ -97,10 +101,12 @@ class MarketDataService:
 
         # Ticker pool: per-connector tickers gathered from connected exchanges, plus a merged
         # price dict used by the cross-rate finder. External (e.g. blockchain/Gateway) prices
-        # are kept separately so the periodic ticker rebuild never wipes them.
+        # are kept separately so the periodic ticker rebuild never wipes them, but they expire
+        # the same way tickers do: _external_updated_at mirrors _ticker_updated_at.
         self._tickers: Dict[str, Dict[str, Ticker]] = {}
         self._prices: Dict[str, Decimal] = {}
         self._external_prices: Dict[str, Decimal] = {}
+        self._external_updated_at: Dict[str, float] = {}
 
         # On-demand ticker fetching: last successful fetch per connector, a per-connector lock
         # that collapses concurrent requests into a single upstream call, and the last time each
@@ -168,6 +174,8 @@ class MarketDataService:
         self._ticker_updated_at.clear()
         self._ticker_requests.clear()
         self._ticker_locks.clear()
+        self._external_prices.clear()
+        self._external_updated_at.clear()
 
         logger.info("MarketDataService stopped")
 
@@ -631,12 +639,15 @@ class MarketDataService:
     def set_price(self, trading_pair: str, price: Decimal):
         """
         Push an external price into the pool (e.g. blockchain/Gateway DEX prices that are
-        not covered by CEX tickers). External prices persist across ticker refreshes and
-        take precedence over collected ticker prices for the same pair.
+        not covered by CEX tickers). A fresh external price persists across ticker refreshes
+        and takes precedence over a collected ticker price for the same pair, but only for
+        external_price_max_age: past that it is dropped on the next rebuild rather than served
+        stale.
         """
         try:
             self._external_prices[trading_pair] = Decimal(str(price))
-            self._prices[trading_pair] = self._external_prices[trading_pair]
+            self._external_updated_at[trading_pair] = time.time()
+            self._rebuild_price_pool()
         except Exception as e:
             logger.debug(f"Failed to set price for {trading_pair}: {e}")
 
@@ -850,8 +861,10 @@ class MarketDataService:
         Rebuild the merged ``trading_pair -> price`` pool from all connectors' tickers.
 
         On duplicate pairs across exchanges, the entry with the higher 24h volume wins
-        (more liquid market). Externally pushed prices are layered on top last so they are
-        never overwritten by ticker data.
+        (more liquid market). Externally pushed prices are layered on top last, so a fresh
+        one still wins over ticker data for the same pair — but an entry older than
+        external_price_max_age is dropped here instead of being served stale, so the pool
+        falls back to the ticker (or to nothing) once it expires.
         """
         best: Dict[str, Ticker] = {}
         for tickers in self._tickers.values():
@@ -860,6 +873,16 @@ class MarketDataService:
                 if current is None or self._is_more_liquid(ticker, current):
                     best[pair] = ticker
         merged = {pair: ticker.price for pair, ticker in best.items()}
+
+        now = time.time()
+        expired = [
+            pair for pair, updated_at in self._external_updated_at.items()
+            if now - updated_at > self._external_price_max_age
+        ]
+        for pair in expired:
+            self._external_prices.pop(pair, None)
+            self._external_updated_at.pop(pair, None)
+
         merged.update(self._external_prices)
         self._prices = merged
 

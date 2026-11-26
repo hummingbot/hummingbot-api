@@ -131,11 +131,27 @@ class DockerService:
             return self._failure("Could not list exited containers")
 
     def clean_exited_containers(self):
+        """Remove this API's own exited bot containers.
+
+        Not `containers.prune()`: that removes every exited container on the daemon,
+        and this daemon is shared with other projects' containers. A container is ours
+        to remove only if it owns a `bots/instances/<name>` directory -- the same
+        ownership marker `routers.docker.remove_container` checks.
+        """
         try:
-            self.client.containers.prune()
-            return {"success": True, "message": "Exited containers removed."}
+            exited = self.client.containers.list(filters={"status": "exited"}, all=True)
+            removed = []
+            for container in exited:
+                try:
+                    instance_dir = self.resolve_instance_dir(container.name)
+                except ValueError:
+                    continue
+                if os.path.isdir(instance_dir):
+                    container.remove()
+                    removed.append(container.name)
+            return {"success": True, "message": f"Removed {len(removed)} exited bot container(s): {removed}."}
         except DockerException as e:
-            logger.error(f"Error pruning exited containers: {e}")
+            logger.error(f"Error removing exited bot containers: {e}")
             return self._failure("Could not remove exited containers")
 
     def is_docker_running(self):

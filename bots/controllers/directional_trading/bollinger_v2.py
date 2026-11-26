@@ -4,15 +4,14 @@ from typing import List
 import pandas as pd
 import pandas_ta as ta  # noqa: F401
 import talib
-from pydantic import Field, field_validator
-from pydantic_core.core_schema import ValidationInfo
-from talib import MA_Type
-
 from hummingbot.data_feed.candles_feed.data_types import CandlesConfig
 from hummingbot.strategy_v2.controllers.directional_trading_controller_base import (
     DirectionalTradingControllerBase,
     DirectionalTradingControllerConfigBase,
 )
+from pydantic import Field, field_validator
+from pydantic_core.core_schema import ValidationInfo
+from talib import MA_Type
 
 
 class BollingerV2ControllerConfig(DirectionalTradingControllerConfigBase):
@@ -93,7 +92,10 @@ class BollingerV2Controller(DirectionalTradingControllerBase):
                                                       max_records=self.max_records)
         # Add indicators
         df.ta.bbands(length=self.config.bb_length, lower_std=self.config.bb_std, upper_std=self.config.bb_std, append=True)
-        df["upperband"], df["middleband"], df["lowerband"] = talib.BBANDS(real=df["close"], timeperiod=self.config.bb_length, nbdevup=self.config.bb_std, nbdevdn=self.config.bb_std, matype=MA_Type.SMA)
+        df["upperband"], df["middleband"], df["lowerband"] = talib.BBANDS(
+            real=df["close"], timeperiod=self.config.bb_length,
+            nbdevup=self.config.bb_std, nbdevdn=self.config.bb_std, matype=MA_Type.SMA
+        )
 
         ulr = self.non_zero_range(df["upperband"], df["lowerband"])
         bbp = self.non_zero_range(df["close"], df["lowerband"]) / ulr

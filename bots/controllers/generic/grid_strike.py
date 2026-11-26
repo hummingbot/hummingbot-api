@@ -122,12 +122,18 @@ class GridStrike(ControllerBase):
         config_line1 += " " * padding2 + "│"
         status.append(config_line1)
         # Second line: Configuration parameters
-        config_line2 = f"│ Start: {self.config.start_price:.4f} │ End: {self.config.end_price:.4f} │ Side: {self.config.side} │ Limit: {self.config.limit_price:.4f} │ Mid Price: {mid_price:.4f} │"
+        config_line2 = (
+            f"│ Start: {self.config.start_price:.4f} │ End: {self.config.end_price:.4f} │ Side: {self.config.side} │ "
+            f"Limit: {self.config.limit_price:.4f} │ Mid Price: {mid_price:.4f} │"
+        )
         padding = box_width - len(config_line2) + 1  # +1 for correct right border alignment
         config_line2 += " " * padding + "│"
         status.append(config_line2)
         # Third line: Max orders and Inside bounds
-        config_line3 = f"│ Max Orders: {self.config.max_open_orders}   │ Inside bounds: {1 if self.is_inside_bounds(mid_price) else 0}"
+        config_line3 = (
+            f"│ Max Orders: {self.config.max_open_orders}   │ "
+            f"Inside bounds: {1 if self.is_inside_bounds(mid_price) else 0}"
+        )
         padding = box_width - len(config_line3) + 1  # +1 for correct right border alignment
         config_line3 += " " * padding + "│"
         status.append(config_line3)
@@ -185,7 +191,10 @@ class GridStrike(ControllerBase):
                 status.append(row)
             # Liquidity line with perfect alignment
             status.append("├" + "─" * total_width + "┤")
-            liquidity_line = f"│ Open Liquidity: {level.custom_info['open_liquidity_placed']:.4f} │ Close Liquidity: {level.custom_info['close_liquidity_placed']:.4f} │"
+            liquidity_line = (
+                f"│ Open Liquidity: {level.custom_info['open_liquidity_placed']:.4f} │ "
+                f"Close Liquidity: {level.custom_info['close_liquidity_placed']:.4f} │"
+            )
             liquidity_line += " " * (total_width - len(liquidity_line) + 1)  # +1 for correct right border alignment
             liquidity_line += "│"
             status.append(liquidity_line)

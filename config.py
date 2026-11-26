@@ -84,6 +84,12 @@ class MarketDataSettings(BaseSettings):
         description="How long a ticker-only connector stays in the background refresh cycle "
                     "after its last request, in seconds"
     )
+    external_price_max_age: int = Field(
+        default=300,
+        description="Max age of an externally pushed price (e.g. Gateway DEX quotes) before "
+                    "it is dropped from the price pool, in seconds. Longer than ticker_max_age "
+                    "because an on-chain quote only refreshes when someone asks for balances"
+    )
     hyperliquid_hip3_interval: int = Field(
         default=120,
         description="How often to refresh Hyperliquid HIP-3 (builder-deployed perp dex) tickers, "
@@ -299,6 +305,26 @@ class PerformanceSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="PERFORMANCE_", extra="ignore")
 
 
+class IdempotencySettings(BaseSettings):
+    """Idempotency-Key claims for order placement (POST /trading/orders)."""
+
+    in_flight_timeout_seconds: int = Field(
+        default=300,
+        description="An IN_FLIGHT idempotency claim older than this is swept to FAILED, so a "
+                    "process that died between claiming a key and completing it does not wedge "
+                    "that key behind a 409 forever. A retry past the timeout is then answered "
+                    "FAILED rather than placed a second time."
+    )
+    retention_days: int = Field(
+        default=7,
+        description="Delete idempotency claims (any state) older than this many days. Unlike "
+                    "performance snapshots this is bookkeeping for the retry window, not an "
+                    "operator's history, so it is pruned by default."
+    )
+
+    model_config = SettingsConfigDict(env_prefix="IDEMPOTENCY_", extra="ignore")
+
+
 class Settings(BaseSettings):
     """Combined application settings."""
 
@@ -312,6 +338,7 @@ class Settings(BaseSettings):
     app: AppSettings = Field(default_factory=AppSettings)
     backtesting: BacktestingSettings = Field(default_factory=BacktestingSettings)
     performance: PerformanceSettings = Field(default_factory=PerformanceSettings)
+    idempotency: IdempotencySettings = Field(default_factory=IdempotencySettings)
 
     # Direct banned_tokens field to handle env parsing
     banned_tokens: List[str] = Field(
